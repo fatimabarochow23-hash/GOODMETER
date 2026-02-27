@@ -162,26 +162,32 @@ private:
     //==========================================================================
     /**
      * Create wavy inner tube path (PhaseCorrelation.tsx lines 87-98)
+     * 1:1 pixel-perfect replication of Web Canvas drawing
      */
     juce::Path createInnerTubePath(float startX, float endX, float cy, float condenserWidth, float condenserHeight)
     {
         juce::Path innerPath;
 
-        // Start directly at tube beginning (no 80px extension)
-        innerPath.startNewSubPath(startX, cy);
+        // CRITICAL: ±80px extensions are intentional for smooth visual connection!
+        // PhaseCorrelation.tsx line 89-90
+        innerPath.startNewSubPath(startX - 80.0f, cy);
+        innerPath.lineTo(startX, cy);
 
         // Draw sinusoidal path (PhaseCorrelation.tsx lines 91-96)
-        const int steps = loops * 40;
+        // EXACT formula: x = startX + t * condenserWidth
+        //                y = cy + Math.sin(t * Math.PI * 2 * loops) * (condenserHeight/2 - 28)
+        const int steps = loops * 40;  // PhaseCorrelation.tsx line 91
         for (int i = 0; i <= steps; ++i)
         {
             const float t = static_cast<float>(i) / static_cast<float>(steps);
             const float x = startX + t * condenserWidth;
-            const float y = cy + std::sin(t * juce::MathConstants<float>::pi * 2.0f * loops) * (condenserHeight/2.0f - 28.0f);
+            const float y = cy + std::sin(t * juce::MathConstants<float>::pi * 2.0f * static_cast<float>(loops))
+                                * (condenserHeight / 2.0f - 28.0f);
             innerPath.lineTo(x, y);
         }
 
-        // End directly at tube end (no 80px extension)
-        innerPath.lineTo(endX, cy);
+        // PhaseCorrelation.tsx line 97
+        innerPath.lineTo(endX + 80.0f, cy);
 
         return innerPath;
     }
@@ -206,6 +212,13 @@ private:
     //==========================================================================
     /**
      * Draw colored liquid blob with clipping (PhaseCorrelation.tsx lines 112-124)
+     *
+     * CRITICAL CLIP TECHNIQUE:
+     * 1. Save graphics state
+     * 2. Create rectangular clip region based on phase position
+     * 3. Draw FULL inner tube path with colored stroke
+     * 4. Only the clipped portion shows (creating liquid effect)
+     * 5. Restore state (removes clip)
      */
     void drawLiquidBlob(juce::Graphics& g, float startX, float condenserWidth, float cy, float condenserHeight, const juce::Rectangle<float>& bounds)
     {
@@ -213,20 +226,30 @@ private:
         const float blobWidth = 160.0f;
         const float mappedX = startX + ((smoothedPhase + 1.0f) / 2.0f) * condenserWidth;
 
-        // Create clipping rectangle (PhaseCorrelation.tsx lines 116-118)
+        // 🔥 CLIP MAGIC: Save state and create clipping rectangle (PhaseCorrelation.tsx lines 113-118)
         juce::Graphics::ScopedSaveState saveState(g);
+
+        // Create clip region: vertical strip centered at liquid position
+        // PhaseCorrelation.tsx: ctx.rect(mappedX - blobWidth/2, 0, blobWidth, height);
         g.reduceClipRegion(juce::Rectangle<int>(
-            static_cast<int>(mappedX - blobWidth/2.0f),
+            static_cast<int>(mappedX - blobWidth / 2.0f),
             0,
             static_cast<int>(blobWidth),
             static_cast<int>(bounds.getHeight())
         ));
 
-        // Draw colored liquid (PhaseCorrelation.tsx lines 120-123)
+        // Draw FULL inner tube path with colored stroke (PhaseCorrelation.tsx lines 120-123)
+        // Only the portion within clip region will be visible!
         auto innerPath = createInnerTubePath(startX, startX + condenserWidth, cy, condenserWidth, condenserHeight);
-        juce::Colour liquidColour = smoothedPhase > 0.0f ? GoodMeterLookAndFeel::accentCyan : GoodMeterLookAndFeel::accentPink;
+
+        juce::Colour liquidColour = smoothedPhase > 0.0f
+            ? GoodMeterLookAndFeel::accentCyan   // Positive: cyan (#06D6A0)
+            : GoodMeterLookAndFeel::accentPink;  // Negative: pink (#E6335F)
+
         g.setColour(liquidColour);
         g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));
+
+        // saveState destructor automatically restores clip region (PhaseCorrelation.tsx line 124: ctx.restore())
     }
 
     //==========================================================================
