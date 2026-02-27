@@ -100,11 +100,11 @@ private:
         // Try to get latest FFT data from left channel
         if (audioProcessor.fftFifoL.pop(fftData.data(), numBins))
         {
-            // 🎨 平滑处理：减少闪烁感，让波浪更流畅
+            // 🎨 时间平滑处理：让频谱像流体一样波动（丝滑海浪效果）
             for (int i = 0; i < numBins; ++i)
             {
-                // 平滑系数 0.3f（30% 追赶速度）
-                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.3f;
+                // 平滑系数 0.15f（15% 追赶速度 = 更慢、更丝滑）
+                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.15f;
             }
 
             hasValidData = true;
@@ -198,8 +198,15 @@ private:
         spectrumPath.lineTo(bounds.getRight(), bounds.getBottom());
         spectrumPath.closeSubPath();
 
-        // 🎨 粉色海浪：半透明填充（0.25f 介于 0.2-0.3 之间）
-        g.setColour(GoodMeterLookAndFeel::accentPink.withAlpha(0.25f));
+        // 🎨 纵向渐变填充：顶部不透明 → 底部透明（流体海浪质感）
+        juce::ColourGradient gradient(
+            GoodMeterLookAndFeel::accentPink.withAlpha(0.4f),  // 顶部：40% 不透明
+            bounds.getCentreX(), bounds.getY(),
+            GoodMeterLookAndFeel::accentPink.withAlpha(0.0f),  // 底部：完全透明
+            bounds.getCentreX(), bounds.getBottom(),
+            false
+        );
+        g.setGradientFill(gradient);
         g.fillPath(spectrumPath);
 
         // 🎨 粉色实线描边

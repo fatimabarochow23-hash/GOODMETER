@@ -139,42 +139,66 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         buffer.clear(i, 0, buffer.getNumSamples());
 
     //==========================================================================
-    // 🎵 TEST SIGNAL GENERATOR (Pulsing Noise with LFO Modulation)
-    // 方便在 Standalone 模式下测试所有表盘的动画和物理阻尼
+    // 🎵 TEST SIGNAL GENERATOR (Multi-Tone Synthesis)
+    // 更像音乐的测试信号：4 个不同频率的正弦波叠加
     //==========================================================================
     #define ENABLE_TEST_SIGNAL 1  // ✅ RE-ENABLED
     #if ENABLE_TEST_SIGNAL
     {
+        static float phase1 = 0.0f;  // 100 Hz (低频)
+        static float phase2 = 0.0f;  // 440 Hz (A4 音符)
+        static float phase3 = 0.0f;  // 1000 Hz (中频)
+        static float phase4 = 0.0f;  // 4000 Hz (高频)
         static float lfoPhase = 0.0f;
-        static juce::Random random;
 
-        // 产生一个大概 1Hz - 2Hz 的缓慢脉冲包络 (0.0 到 1.0)
-        const float lfoStep = juce::MathConstants<float>::twoPi * 1.5f / static_cast<float>(currentSampleRate);
+        const float sampleRate = static_cast<float>(currentSampleRate);
+
+        // 4 个频率的步进值
+        const float step1 = juce::MathConstants<float>::twoPi * 100.0f / sampleRate;
+        const float step2 = juce::MathConstants<float>::twoPi * 440.0f / sampleRate;
+        const float step3 = juce::MathConstants<float>::twoPi * 1000.0f / sampleRate;
+        const float step4 = juce::MathConstants<float>::twoPi * 4000.0f / sampleRate;
+
+        // LFO 控制整体包络（1.5 Hz 呼吸节奏）
+        const float lfoStep = juce::MathConstants<float>::twoPi * 1.5f / sampleRate;
 
         for (int i = 0; i < buffer.getNumSamples(); ++i)
         {
+            // 更新相位
+            phase1 += step1;
+            phase2 += step2;
+            phase3 += step3;
+            phase4 += step4;
             lfoPhase += lfoStep;
-            if (lfoPhase >= juce::MathConstants<float>::twoPi)
-                lfoPhase -= juce::MathConstants<float>::twoPi;
 
-            // 呼吸包络：让声音有节奏地变大变小
+            // 防止相位溢出
+            if (phase1 >= juce::MathConstants<float>::twoPi) phase1 -= juce::MathConstants<float>::twoPi;
+            if (phase2 >= juce::MathConstants<float>::twoPi) phase2 -= juce::MathConstants<float>::twoPi;
+            if (phase3 >= juce::MathConstants<float>::twoPi) phase3 -= juce::MathConstants<float>::twoPi;
+            if (phase4 >= juce::MathConstants<float>::twoPi) phase4 -= juce::MathConstants<float>::twoPi;
+            if (lfoPhase >= juce::MathConstants<float>::twoPi) lfoPhase -= juce::MathConstants<float>::twoPi;
+
+            // 呼吸包络
             const float envelope = (std::sin(lfoPhase) + 1.0f) * 0.5f;
 
-            // 🎯 生成左声道噪音
-            const float noiseL = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
+            // 🎼 4 个正弦波叠加（不同振幅）
+            const float tone1 = std::sin(phase1) * 0.15f;  // 低频较强
+            const float tone2 = std::sin(phase2) * 0.20f;  // 440Hz 主旋律
+            const float tone3 = std::sin(phase3) * 0.10f;  // 中频
+            const float tone4 = std::sin(phase4) * 0.05f;  // 高频较弱
 
-            // 🔄 右声道带有相位关联：随 LFO 在 +1 到 -1 之间游走
-            // cos(lfoPhase) 提供相关性，sin(lfoPhase) 提供去相关性
-            const float correlation = std::cos(lfoPhase);        // +1 到 -1
-            const float decorrelation = std::sin(lfoPhase);      // 正交分量
-            const float independentNoise = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
-            const float noiseR = noiseL * correlation + independentNoise * decorrelation;
+            const float mixedL = (tone1 + tone2 + tone3 + tone4) * envelope;
+
+            // 🔄 右声道带有相位关联变化
+            const float correlation = std::cos(lfoPhase);
+            const float decorrelation = std::sin(lfoPhase);
+            const float mixedR = mixedL * correlation + (tone3 + tone4) * decorrelation * 0.3f;
 
             // 强制覆盖输入缓冲区
-            buffer.setSample(0, i, noiseL);
+            buffer.setSample(0, i, mixedL);
             if (buffer.getNumChannels() > 1)
             {
-                buffer.setSample(1, i, noiseR);
+                buffer.setSample(1, i, mixedR);
             }
         }
     }
