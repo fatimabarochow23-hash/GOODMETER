@@ -25,6 +25,10 @@ class MeterCardComponent : public juce::Component,
 {
 public:
     //==========================================================================
+    // Callback for height changes (to notify PluginEditor)
+    std::function<void()> onHeightChanged;
+
+    //==========================================================================
     MeterCardComponent(const juce::String& title,
                       const juce::Colour& indicatorColour = GoodMeterLookAndFeel::accentPink,
                       bool defaultExpanded = false)
@@ -33,11 +37,13 @@ public:
           isExpanded(defaultExpanded)
     {
         // Initialize animation state
-        currentHeight = static_cast<float>(getDesiredHeight());
+        // Note: getDesiredHeight() will be called again in setContentComponent()
+        // after content is set, so this is just the header-only initial state
+        currentHeight = static_cast<float>(headerHeight);
         targetHeight = currentHeight;
 
-        // Set initial size
-        setSize(500, static_cast<int>(currentHeight));
+        // Set initial size (header-only at construction)
+        setSize(500, headerHeight);
     }
 
     ~MeterCardComponent() override
@@ -160,12 +166,19 @@ public:
             addAndMakeVisible(contentComponent.get());
             contentComponent->setVisible(isExpanded);
 
-            // Recalculate heights with new content
-            targetHeight = static_cast<float>(getDesiredHeight());
-            currentHeight = targetHeight;
-            setSize(getWidth(), static_cast<int>(currentHeight));
+            // CRITICAL: Recalculate heights with new content
+            // This must happen AFTER content is set, not in constructor
+            int desiredHeight = getDesiredHeight();
+            targetHeight = static_cast<float>(desiredHeight);
+            currentHeight = targetHeight;  // Snap to target (no animation on initial set)
+
+            setSize(getWidth(), desiredHeight);
 
             resized();
+
+            // Notify PluginEditor to relayout all cards
+            if (onHeightChanged)
+                onHeightChanged();
         }
     }
 
@@ -208,9 +221,9 @@ public:
             if (contentComponent != nullptr)
                 contentComponent->setVisible(shouldExpand);
 
-            // Trigger parent relayout immediately
-            if (auto* parent = getParentComponent())
-                parent->resized();
+            // Notify PluginEditor to relayout
+            if (onHeightChanged)
+                onHeightChanged();
         }
 
         repaint();
@@ -258,10 +271,10 @@ public:
         // Update component size
         setSize(getWidth(), static_cast<int>(std::round(currentHeight)));
 
-        // 🔥 CRITICAL: Force parent to relayout ALL cards every frame
+        // 🔥 CRITICAL: Notify PluginEditor to relayout ALL cards every frame
         // This creates the smooth "push-down" effect for cards below
-        if (auto* parent = getParentComponent())
-            parent->resized();
+        if (onHeightChanged)
+            onHeightChanged();
 
         // Stop animation when close enough (< 1px difference)
         if (std::abs(delta) < 1.0f)
@@ -277,9 +290,9 @@ public:
             if (contentComponent != nullptr && !isExpanded)
                 contentComponent->setVisible(false);
 
-            // Final parent relayout
-            if (auto* parent = getParentComponent())
-                parent->resized();
+            // Final notification
+            if (onHeightChanged)
+                onHeightChanged();
 
             repaint();
         }

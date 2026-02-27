@@ -80,6 +80,20 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
         false
     );
 
+    // Bind height change callbacks to all cards
+    // This allows cards to notify the editor to relayout when they expand/collapse
+    auto cardStateChangedCallback = [this]() {
+        this->resized();
+    };
+
+    levelsCard->onHeightChanged = cardStateChangedCallback;
+    vuMeterCard->onHeightChanged = cardStateChangedCallback;
+    threeBandCard->onHeightChanged = cardStateChangedCallback;
+    spectrumCard->onHeightChanged = cardStateChangedCallback;
+    phaseCard->onHeightChanged = cardStateChangedCallback;
+    stereoImageCard->onHeightChanged = cardStateChangedCallback;
+    spectrogramCard->onHeightChanged = cardStateChangedCallback;
+
     // Add cards to content component
     contentComponent->addAndMakeVisible(levelsCard.get());
     contentComponent->addAndMakeVisible(vuMeterCard.get());
