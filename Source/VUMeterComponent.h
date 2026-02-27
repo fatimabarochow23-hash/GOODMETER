@@ -53,8 +53,17 @@ public:
 
         // 底部留边距，圆心在下方，画半圆
         float cx = bounds.getCentreX();
-        float cy = bounds.getBottom() - 30.0f;
-        float radius = bounds.getWidth() * 0.4f;
+        float cy = bounds.getBottom() - 20.0f;  // 底部留点边距
+
+        // 🔒 安全半径上限保护（防止削顶）
+        // 1. 按宽度计算的理想半径
+        float radiusByWidth = bounds.getWidth() * 0.4f;
+
+        // 2. 按高度计算的极限半径（顶部留出 10px 安全区防止削顶）
+        float radiusByHeight = cy - bounds.getY() - 10.0f;
+
+        // 3. 取两者的最小值！这样无论怎么拉伸，都不会冲出盒子！
+        float radius = juce::jmin(radiusByWidth, radiusByHeight);
 
         // ✅ 2. 强制使用正确的弧度范围
         // JUCE: 0° = 12点钟方向（正上方）
