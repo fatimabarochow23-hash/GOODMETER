@@ -72,15 +72,11 @@ public:
         currentPeakR = peakR_dB;
         currentLUFS = lufs_dB;
 
-        // 🎯 文字降帧策略：每 10 帧（约 6Hz）才更新一次显示缓存
-        // 进度条继续使用 currentXXX 保持 60Hz 实时响应
-        if (++textUpdateCounter >= 10)
-        {
-            displayPeakL = currentPeakL;
-            displayPeakR = currentPeakR;
-            displayLUFS = currentLUFS;
-            textUpdateCounter = 0;
-        }
+        // 🎯 平滑插值策略：每帧追赶目标值（0.15f 平滑系数）
+        // 营造数字快速但连续滚动的质感，避免跳跃突变
+        displayPeakL += (currentPeakL - displayPeakL) * 0.15f;
+        displayPeakR += (currentPeakR - displayPeakR) * 0.15f;
+        displayLUFS += (currentLUFS - displayLUFS) * 0.15f;
 
         // Update peak holds (logic from Levels.tsx lines 41-56)
         auto now = juce::Time::getMillisecondCounterHiRes();
@@ -130,12 +126,11 @@ private:
     float currentPeakR = -90.0f;
     float currentLUFS = -70.0f;
 
-    // 📊 文字降帧策略：缓存显示值（每 10 帧更新一次）
-    // 进度条用 currentXXX（60Hz 实时），文字用 displayXXX（6Hz 降帧）
+    // 📊 平滑插值显示值（每帧追赶，0.15f 平滑系数）
+    // 营造数字快速但连续滚动的质感
     float displayPeakL = -90.0f;
     float displayPeakR = -90.0f;
     float displayLUFS = -70.0f;
-    int textUpdateCounter = 0;  // 帧计数器
 
     // Peak hold state (Levels.tsx lines 25-28)
     float peakHoldL = -60.0f;

@@ -110,11 +110,18 @@ public:
         // Skip header area
         bounds.removeFromTop(headerHeight);
 
-        // Position content (if expanded and exists)
+        // 🔒 CRITICAL: Web overflow: hidden 思想
+        // 父容器（卡片）变小时，子容器尺寸不变，只做裁剪！
+        // 绝对不要改变 contentComponent 的高度，否则内部组件坐标系崩溃
         if (contentComponent != nullptr)
         {
-            auto contentBounds = bounds.reduced(GoodMeterLookAndFeel::cardPadding);
-            contentComponent->setBounds(contentBounds);
+            // 保持 content 自身初始化时的高度，只调整 X 和 Width
+            contentComponent->setBounds(
+                GoodMeterLookAndFeel::cardPadding,
+                headerHeight,
+                getWidth() - GoodMeterLookAndFeel::cardPadding * 2,
+                contentComponent->getHeight()  // ✅ 保持原始高度！
+            );
             contentComponent->setVisible(isExpanded || isAnimating);
         }
     }
