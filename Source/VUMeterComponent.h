@@ -41,7 +41,7 @@ public:
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
-        // ✅ FIX 1: 使用本地边界计算相对坐标
+        // ✅ 1. 动态中心与半径（绝不写死）
         auto bounds = getLocalBounds().toFloat();
 
         // Safety check
@@ -51,36 +51,28 @@ public:
         // Background
         g.fillAll(juce::Colours::white);
 
-        // ✅ FIX 1: 动态计算几何参数（基于组件大小）
-        const float cx = bounds.getCentreX();
-        const float cy = bounds.getBottom() + 40.0f;  // 支点在底部下方
-        const float radius = bounds.getWidth() * 0.45f;  // 半径基于宽度
+        // 底部留边距，圆心在下方，画半圆
+        float cx = bounds.getCentreX();
+        float cy = bounds.getBottom() - 30.0f;
+        float radius = bounds.getWidth() * 0.4f;
 
-        // ✅ FIX 2: JUCE 角度系统修正
-        // JUCE: 0° = 12点方向（上），顺时针旋转
-        // Canvas: 0° = 3点方向（右），顺时针旋转
-        // 需要将 Canvas 角度转换为 JUCE 角度
+        // ✅ 2. 强制使用正确的弧度范围
+        // JUCE: 0° = 12点钟方向（正上方）
+        // VU 表从 -60° 到 +60° 摆动
+        float minAngle = -juce::MathConstants<float>::pi / 3.0f;  // -60°
+        float maxAngle = juce::MathConstants<float>::pi / 3.0f;   // +60°
 
-        const float spread = 0.65f;  // 弧度范围
-
-        // Canvas angles (from ClassicVUMeter.tsx)
-        const float canvasStartAngle = -juce::MathConstants<float>::pi / 2.0f - spread;  // -π/2 - 0.65
-        const float canvasEndAngle = -juce::MathConstants<float>::pi / 2.0f + spread;    // -π/2 + 0.65
-
-        // Convert to JUCE angles: add π/2 to rotate from 3 o'clock to 12 o'clock reference
-        const float startAngle = canvasStartAngle + juce::MathConstants<float>::pi / 2.0f;  // -0.65
-        const float endAngle = canvasEndAngle + juce::MathConstants<float>::pi / 2.0f;      // +0.65
-
-        const float zeroVuAngle = startAngle + ((0.0f - minVu) / (maxVu - minVu)) * (endAngle - startAngle);
+        // 计算 0 VU 的角度位置
+        float zeroVuAngle = juce::jmap(0.0f, minVu, maxVu, minAngle, maxAngle);
 
         // Draw normal arc (-30 to 0)
-        drawArc(g, cx, cy, radius, startAngle, zeroVuAngle, GoodMeterLookAndFeel::border, 6.0f);
+        drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, 6.0f);
 
         // Draw danger arc (0 to +3)
-        drawArc(g, cx, cy, radius, zeroVuAngle, endAngle, GoodMeterLookAndFeel::accentPink, 6.0f);
+        drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, 6.0f);
 
         // Draw ticks and labels
-        drawTicksAndLabels(g, cx, cy, radius, startAngle, endAngle, zeroVuAngle);
+        drawTicksAndLabels(g, cx, cy, radius, minAngle, maxAngle);
 
         // Draw "VU" text
         g.setColour(GoodMeterLookAndFeel::border);
@@ -88,8 +80,8 @@ public:
         auto textBounds = bounds.removeFromBottom(50);
         g.drawText("VU", textBounds, juce::Justification::centred, false);
 
-        // Draw needle
-        drawNeedle(g, cx, cy, radius, startAngle, endAngle);
+        // ✅ 3. 完美的指针旋转法 (AffineTransform)
+        drawNeedle(g, cx, cy, radius, minAngle, maxAngle);
     }
 
     void resized() override
@@ -160,79 +152,87 @@ private:
 
     //==========================================================================
     /**
-     * Draw ticks and labels (ClassicVUMeter.tsx lines 83-119)
+     * Draw ticks and labels
      */
     void drawTicksAndLabels(juce::Graphics& g,
-                           float centerX, float centerY, float radius,
-                           float startAngle, float endAngle, float zeroVuAngle)
+                           float cx, float cy, float radius,
+                           float minAngle, float maxAngle)
     {
-        // Tick positions (ClassicVUMeter.tsx line 83)
+        // Tick positions
         const int ticks[] = { -30, -20, -10, -5, -3, -1, 0, 1, 2, 3 };
 
         for (int tickVu : ticks)
         {
-            // Calculate angle for this tick
-            const float t = (static_cast<float>(tickVu) - minVu) / (maxVu - minVu);
-            const float angle = startAngle + t * (endAngle - startAngle);
+            // Map VU value to angle using juce::jmap
+            const float angle = juce::jmap(static_cast<float>(tickVu), minVu, maxVu, minAngle, maxAngle);
 
             const bool isDanger = (tickVu > 0);
             const bool isZero = (tickVu == 0);
 
-            // Tick dimensions (ClassicVUMeter.tsx lines 96-97)
-            const float tickLength = isZero ? 36.0f : 20.0f;
+            // Tick dimensions
+            const float tickLength = isZero ? 30.0f : 15.0f;
             const float innerRadius = radius - tickLength;
 
-            // Tick endpoints
-            const float x1 = centerX + std::cos(angle) * radius;
-            const float y1 = centerY + std::sin(angle) * radius;
-            const float x2 = centerX + std::cos(angle) * innerRadius;
-            const float y2 = centerY + std::sin(angle) * innerRadius;
+            // Tick endpoints (从圆心向外辐射)
+            const float x1 = cx + std::sin(angle) * radius;
+            const float y1 = cy - std::cos(angle) * radius;
+            const float x2 = cx + std::sin(angle) * innerRadius;
+            const float y2 = cy - std::cos(angle) * innerRadius;
 
-            // Draw tick line (ClassicVUMeter.tsx lines 104-109)
+            // Draw tick line
             juce::Line<float> tickLine(x1, y1, x2, y2);
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.drawLine(tickLine, isZero ? 8.0f : 6.0f);
+            g.drawLine(tickLine, isZero ? 4.0f : 3.0f);
 
-            // Draw label (ClassicVUMeter.tsx lines 112-118)
-            const float labelRadius = radius - tickLength - 16.0f;
-            const float lx = centerX + std::cos(angle) * labelRadius;
-            const float ly = centerY + std::sin(angle) * labelRadius;
+            // Draw label
+            const float labelRadius = radius - tickLength - 10.0f;
+            const float lx = cx + std::sin(angle) * labelRadius;
+            const float ly = cy - std::cos(angle) * labelRadius;
 
             juce::String labelText = (tickVu > 0) ? ("+" + juce::String(tickVu)) : juce::String(tickVu);
 
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.setFont(juce::Font(18.0f, juce::Font::bold));  // ✅ FIX: 缩小字体 36→18
+            g.setFont(juce::Font(14.0f, juce::Font::bold));
             g.drawText(labelText,
-                      static_cast<int>(lx - 20), static_cast<int>(ly - 10),
-                      40, 20,
+                      static_cast<int>(lx - 15), static_cast<int>(ly - 8),
+                      30, 16,
                       juce::Justification::centred, false);
         }
     }
 
     //==========================================================================
     /**
-     * Draw needle using rotation transform (ClassicVUMeter.tsx lines 127-139)
+     * Draw needle using AffineTransform rotation (CORRECT METHOD)
      *
-     * CRITICAL: Use juce::Graphics::addTransform for rotation instead of
-     * manually calculating endpoint coordinates (error-prone)
+     * Pattern from user's template:
+     * 1. Map currentVuDisplay (0.0-1.0) to angle range using jmap
+     * 2. Create vertical needle path pointing straight up (12 o'clock)
+     * 3. Save graphics state with ScopedSaveState
+     * 4. Apply rotation transform around pivot point (cx, cy)
+     * 5. Stroke the transformed path
      */
     void drawNeedle(juce::Graphics& g,
                    float centerX, float centerY, float radius,
-                   float startAngle, float endAngle)
+                   float minAngle, float maxAngle)
     {
-        // Calculate needle angle based on current display value
-        const float needleAngle = startAngle + currentVuDisplay * (endAngle - startAngle);
-        const float needleLength = radius + 32.0f;  // Extend slightly past arc
+        // Map current VU display value to angle using jmap
+        const float mappedAngle = juce::jmap(currentVuDisplay, 0.0f, 1.0f, minAngle, maxAngle);
 
-        // Calculate needle endpoint (ClassicVUMeter.tsx lines 130-131)
-        const float nx = centerX + std::cos(needleAngle) * needleLength;
-        const float ny = centerY + std::sin(needleAngle) * needleLength;
+        // Needle length extends slightly past arc
+        const float needleLength = radius * 0.9f;
 
-        // Draw needle line (ClassicVUMeter.tsx lines 133-139)
-        juce::Line<float> needleLine(centerX, centerY, nx, ny);
+        // Create vertical needle path pointing straight up (12 o'clock direction)
+        juce::Path needle;
+        needle.startNewSubPath(centerX, centerY);
+        needle.lineTo(centerX, centerY - needleLength);
 
+        // Save graphics state and apply rotation transform
+        juce::Graphics::ScopedSaveState state(g);
+        g.addTransform(juce::AffineTransform::rotation(mappedAngle, centerX, centerY));
+
+        // Draw rotated needle
         g.setColour(GoodMeterLookAndFeel::border);
-        g.drawLine(needleLine, 8.0f);  // lineWidth = 8.0f
+        g.strokePath(needle, juce::PathStrokeType(8.0f));
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VUMeterComponent)
