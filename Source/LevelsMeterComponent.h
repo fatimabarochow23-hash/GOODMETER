@@ -238,8 +238,8 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // ✅ 左右预留 20px padding，防止刻度文字被裁
-        auto area = bounds.reduced(20, 0);
+        // ✅ 上下左右全方位 padding：防止横条顶部撞头，底部留呼吸空间
+        auto area = bounds.reduced(20, 16);
 
         // Draw L channel bar
         auto barL = area.removeFromTop(barHeight);
@@ -281,9 +281,10 @@ private:
      */
     void drawLUFSInfo(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // ✅ 响应式单位隐藏：窄于 400px 时隐藏单位，缩小字体
-        bool showUnit = bounds.getWidth() > 400;
-        float valueFontSize = showUnit ? 19.2f : 16.0f;
+        // ✅ 响应式单位隐藏：提高阈值到 480px，避免单位被半截腰裁剪
+        bool showUnit = bounds.getWidth() > 480;
+        // ✅ 强化数值冲击力：大幅增加字体（28pt vs 22pt）
+        float valueFontSize = showUnit ? 28.0f : 22.0f;
 
         // Background box (Levels.tsx line 166)
         g.setColour(juce::Colour(0xFFEAEAEA));
@@ -304,13 +305,13 @@ private:
                                        .withWidth(colWidth)
                                        .withHeight(28);
 
-            // Label (Levels.tsx: text-[0.8rem] font-[600] lowercase)
-            // Use separate bounds for label to avoid modifying cellBounds
-            auto labelBounds = cellBounds.removeFromLeft(colWidth / 2);
+            // ✅ Label 占 35% 宽度，给数值留更多空间（避免单位被裁）
+            auto labelArea = cellBounds.removeFromLeft(static_cast<int>(colWidth * 0.35f));
             g.setColour(GoodMeterLookAndFeel::textMuted);
-            g.setFont(juce::Font(12.8f, juce::Font::bold));
+            // ✅ 压小标签字体（11pt），拉开主次对比
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
             g.drawText(label.toLowerCase(),
-                      labelBounds,
+                      labelArea,
                       juce::Justification::centredLeft, false);
 
             // ✅ Value with conditional unit display
@@ -318,10 +319,11 @@ private:
             if (showUnit)
                 valueStr += " " + unit;
 
+            // ✅ 高亮数值用纯色（无透明度），增强视觉冲击力
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(valueFontSize, juce::Font::bold));
             g.drawText(valueStr,
-                      cellBounds,  // This now correctly uses the remaining right half
+                      cellBounds,  // 剩余 65% 空间给数值
                       juce::Justification::centredRight, false);
         };
 
