@@ -138,6 +138,42 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
+    //==========================================================================
+    // 🎵 TEST SIGNAL GENERATOR (Pulsing Noise with LFO Modulation)
+    // 方便在 Standalone 模式下测试所有表盘的动画和物理阻尼
+    //==========================================================================
+    #define ENABLE_TEST_SIGNAL 1
+    #if ENABLE_TEST_SIGNAL
+    {
+        static float lfoPhase = 0.0f;
+        static juce::Random random;
+
+        // 产生一个大概 1Hz - 2Hz 的缓慢脉冲包络 (0.0 到 1.0)
+        const float lfoStep = juce::MathConstants<float>::twoPi * 1.5f / static_cast<float>(currentSampleRate);
+
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            lfoPhase += lfoStep;
+            if (lfoPhase >= juce::MathConstants<float>::twoPi)
+                lfoPhase -= juce::MathConstants<float>::twoPi;
+
+            // 呼吸包络：让声音有节奏地变大变小
+            const float envelope = (std::sin(lfoPhase) + 1.0f) * 0.5f;
+
+            // 生成随机噪音，并套用包络，音量控制在大概 -12dB 到 -6dB 左右
+            const float noiseL = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
+            const float noiseR = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
+
+            // 强制覆盖输入缓冲区
+            buffer.setSample(0, i, noiseL);
+            if (buffer.getNumChannels() > 1)
+            {
+                buffer.setSample(1, i, noiseR);
+            }
+        }
+    }
+    #endif
+
     // Handle mono input (duplicate to both channels)
     const int numChannels = juce::jmin(2, totalNumInputChannels);
     const int numSamples = buffer.getNumSamples();

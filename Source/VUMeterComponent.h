@@ -215,8 +215,18 @@ private:
                    float centerX, float centerY, float radius,
                    float minAngle, float maxAngle)
     {
+        // 🔒 CRITICAL: 数值安全锁 - 防止 NaN/Infinity 炸毁 AffineTransform
+        float safeVuDisplay = currentVuDisplay;
+
+        // 检查并修复 NaN/Infinity
+        if (std::isnan(safeVuDisplay) || std::isinf(safeVuDisplay))
+            safeVuDisplay = 0.0f;  // 重置到最小位置
+
+        // 严格限幅到 0.0-1.0 范围
+        safeVuDisplay = juce::jlimit(0.0f, 1.0f, safeVuDisplay);
+
         // Map current VU display value to angle using jmap
-        const float mappedAngle = juce::jmap(currentVuDisplay, 0.0f, 1.0f, minAngle, maxAngle);
+        const float mappedAngle = juce::jmap(safeVuDisplay, 0.0f, 1.0f, minAngle, maxAngle);
 
         // Needle length extends slightly past arc
         const float needleLength = radius * 0.9f;
@@ -226,13 +236,14 @@ private:
         needle.startNewSubPath(centerX, centerY);
         needle.lineTo(centerX, centerY - needleLength);
 
+        // 🎨 Z-Index 正确顺序：先画所有背景，最后画指针
         // Save graphics state and apply rotation transform
         juce::Graphics::ScopedSaveState state(g);
         g.addTransform(juce::AffineTransform::rotation(mappedAngle, centerX, centerY));
 
-        // Draw rotated needle
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.strokePath(needle, juce::PathStrokeType(8.0f));
+        // 🔴 Draw rotated needle in RED (highly visible)
+        g.setColour(juce::Colours::red);
+        g.strokePath(needle, juce::PathStrokeType(3.0f));
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VUMeterComponent)
