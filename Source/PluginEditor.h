@@ -17,6 +17,7 @@
 #include "PhaseCorrelationComponent.h"
 #include "VUMeterComponent.h"
 #include "SpectrumAnalyzerComponent.h"
+#include "SpectrogramComponent.h"
 
 //==============================================================================
 /**
@@ -47,6 +48,7 @@ private:
     PhaseCorrelationComponent* phaseMeter = nullptr;
     VUMeterComponent* vuMeter = nullptr;
     SpectrumAnalyzerComponent* spectrumAnalyzer = nullptr;
+    SpectrogramComponent* spectrogramMeter = nullptr;
 
     // Meter card components (Phase 3 will add remaining meters)
     std::unique_ptr<MeterCardComponent> levelsCard;

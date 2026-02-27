@@ -85,8 +85,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     spectrogramCard = std::make_unique<MeterCardComponent>(
         "SPECTROGRAM",
         GoodMeterLookAndFeel::accentYellow,
-        false
+        true  // ✅ Expanded to show waterfall spectrogram
     );
+
+    // Create Spectrogram and transfer ownership to card
+    spectrogramMeter = new SpectrogramComponent(audioProcessor);
+    spectrogramCard->setContentComponent(std::unique_ptr<juce::Component>(spectrogramMeter));
 
     // Bind height change callbacks to all cards
     // This allows cards to notify the editor to relayout when they expand/collapse
@@ -121,11 +125,10 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
         return std::unique_ptr<juce::Component>(label);
     };
 
-    // Note: levelsCard, vuMeterCard, phaseCard, and spectrumCard already have their content set above
+    // Note: levelsCard, vuMeterCard, phaseCard, spectrumCard, and spectrogramCard already have their content set above
     // DO NOT overwrite them with placeholders!
     threeBandCard->setContentComponent(createPlaceholder("Low/Mid/High meters will be here"));
     stereoImageCard->setContentComponent(createPlaceholder("Goniometer/Lissajous will be here"));
-    spectrogramCard->setContentComponent(createPlaceholder("Waterfall spectrogram will be here"));
 
     // Set initial size (matches typical plugin dimensions)
     setSize(500, 700);
