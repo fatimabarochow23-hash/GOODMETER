@@ -92,22 +92,21 @@ public:
     //==========================================================================
     /**
      * Update VU value from processor (called from PluginEditor::timerCallback)
+     *
+     * CRITICAL: Processor 传入的已经是 dB 值（rmsL_dB, rmsR_dB）
+     * 不要再做 log10 转换！
      */
-    void updateVU(float rmsL, float rmsR)
+    void updateVU(float rmsL_dB, float rmsR_dB)
     {
-        // 1. Calculate max RMS (ClassicVUMeter.tsx line 32)
-        const float rms = std::max(rmsL, rmsR);
+        // 1. Calculate max RMS in dB (ClassicVUMeter.tsx line 32)
+        const float vu_dB = std::max(rmsL_dB, rmsR_dB);
 
-        // 2. Strict VU math (ClassicVUMeter.tsx lines 35-36)
-        // dBFS = 20 * log10(rms + epsilon)
-        float dbfs = 20.0f * std::log10(rms + 0.00001f);
-        float vu = dbfs;  // Direct 1:1 mapping to dBFS
-
-        // 3. Normalize to 0.0-1.0 range (ClassicVUMeter.tsx lines 42-43)
-        float targetLevel = (vu - minVu) / (maxVu - minVu);
+        // 2. Normalize to 0.0-1.0 range (ClassicVUMeter.tsx lines 42-43)
+        // VU range: -30 dB to +3 dB
+        float targetLevel = (vu_dB - minVu) / (maxVu - minVu);
         targetLevel = juce::jlimit(0.0f, 1.0f, targetLevel);
 
-        // 4. Apply ballistics (smoothing) (ClassicVUMeter.tsx line 46)
+        // 3. Apply ballistics (smoothing) (ClassicVUMeter.tsx line 46)
         currentVuDisplay += (targetLevel - currentVuDisplay) * vuSmoothing;
 
         repaint();
