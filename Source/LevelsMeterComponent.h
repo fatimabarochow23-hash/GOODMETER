@@ -72,6 +72,12 @@ public:
         currentPeakR = peakR_dB;
         currentLUFS = lufs_dB;
 
+        // 🔄 平滑显示值（仅用于文字标签，不影响进度条实时性）
+        // 较慢的追赶速度（0.1 = 10% per frame），让数字可读
+        displayedPeakL += (currentPeakL - displayedPeakL) * 0.1f;
+        displayedPeakR += (currentPeakR - displayedPeakR) * 0.1f;
+        displayedLUFS += (currentLUFS - displayedLUFS) * 0.1f;
+
         // Update peak holds (logic from Levels.tsx lines 41-56)
         auto now = juce::Time::getMillisecondCounterHiRes();
 
@@ -115,10 +121,16 @@ public:
 
 private:
     //==========================================================================
-    // Current values
+    // Current values (updated every frame from processor)
     float currentPeakL = -90.0f;
     float currentPeakR = -90.0f;
     float currentLUFS = -70.0f;
+
+    // 📊 Smoothed display values (for text labels only - bars stay responsive)
+    // 文字数字平滑显示，避免肉眼眩晕
+    float displayedPeakL = -90.0f;
+    float displayedPeakR = -90.0f;
+    float displayedLUFS = -70.0f;
 
     // Peak hold state (Levels.tsx lines 25-28)
     float peakHoldL = -60.0f;
@@ -308,16 +320,17 @@ private:
                       juce::Justification::centredRight, false);
         };
 
+        // 📊 使用平滑后的显示值（避免数字滚动眩晕）
         // Column 1
-        drawMetric(0, 0, "momentary", currentLUFS, "LUFS", currentLUFS > -10.0f);
-        drawMetric(0, 1, "true peak l", currentPeakL, "dBTP", currentPeakL > -1.0f);
+        drawMetric(0, 0, "momentary", displayedLUFS, "LUFS", displayedLUFS > -10.0f);
+        drawMetric(0, 1, "true peak l", displayedPeakL, "dBTP", displayedPeakL > -1.0f);
 
         // Column 2
-        drawMetric(1, 0, "short-term", currentLUFS, "LUFS");  // Simplified for now
-        drawMetric(1, 1, "true peak r", currentPeakR, "dBTP", currentPeakR > -1.0f);
+        drawMetric(1, 0, "short-term", displayedLUFS, "LUFS");  // Simplified for now
+        drawMetric(1, 1, "true peak r", displayedPeakR, "dBTP", displayedPeakR > -1.0f);
 
         // Column 3
-        drawMetric(2, 0, "integrated", currentLUFS, "LUFS");  // Simplified for now
+        drawMetric(2, 0, "integrated", displayedLUFS, "LUFS");  // Simplified for now
         drawMetric(2, 1, "lu range", 5.2f, "LU");  // Mock value
     }
 
