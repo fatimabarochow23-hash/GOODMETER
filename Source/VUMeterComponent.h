@@ -26,8 +26,8 @@ public:
     //==========================================================================
     VUMeterComponent()
     {
-        // Set fixed height (from ClassicVUMeter.tsx: 180px)
-        setSize(500, 180);
+        // ✅ FIX 1: 强制设定合理边界
+        setSize(500, 220);  // 增加高度以容纳完整刻度盘
 
         // Start 60Hz timer for smooth needle animation
         startTimerHz(60);
@@ -41,45 +41,55 @@ public:
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
-        auto bounds = getLocalBounds();
+        // ✅ FIX 1: 使用本地边界计算相对坐标
+        auto bounds = getLocalBounds().toFloat();
 
         // Safety check
         if (bounds.isEmpty())
             return;
 
-        const float width = static_cast<float>(bounds.getWidth());
-        const float height = static_cast<float>(bounds.getHeight());
-
-        // Background (ClassicVUMeter.tsx lines 59-60)
+        // Background
         g.fillAll(juce::Colours::white);
 
-        // Wide, flat arc geometry (ClassicVUMeter.tsx lines 52-54)
-        const float centerX = width / 2.0f;
-        const float centerY = height * 2.5f;  // Pivot far below for flat arc
-        const float radius = height * 2.2f;   // Large radius
+        // ✅ FIX 1: 动态计算几何参数（基于组件大小）
+        const float cx = bounds.getCentreX();
+        const float cy = bounds.getBottom() + 40.0f;  // 支点在底部下方
+        const float radius = bounds.getWidth() * 0.45f;  // 半径基于宽度
 
-        // Angles (ClassicVUMeter.tsx lines 63-66)
-        const float spread = 0.65f;  // Radians
-        const float startAngle = -juce::MathConstants<float>::pi / 2.0f - spread;
-        const float endAngle = -juce::MathConstants<float>::pi / 2.0f + spread;
+        // ✅ FIX 2: JUCE 角度系统修正
+        // JUCE: 0° = 12点方向（上），顺时针旋转
+        // Canvas: 0° = 3点方向（右），顺时针旋转
+        // 需要将 Canvas 角度转换为 JUCE 角度
+
+        const float spread = 0.65f;  // 弧度范围
+
+        // Canvas angles (from ClassicVUMeter.tsx)
+        const float canvasStartAngle = -juce::MathConstants<float>::pi / 2.0f - spread;  // -π/2 - 0.65
+        const float canvasEndAngle = -juce::MathConstants<float>::pi / 2.0f + spread;    // -π/2 + 0.65
+
+        // Convert to JUCE angles: add π/2 to rotate from 3 o'clock to 12 o'clock reference
+        const float startAngle = canvasStartAngle + juce::MathConstants<float>::pi / 2.0f;  // -0.65
+        const float endAngle = canvasEndAngle + juce::MathConstants<float>::pi / 2.0f;      // +0.65
+
         const float zeroVuAngle = startAngle + ((0.0f - minVu) / (maxVu - minVu)) * (endAngle - startAngle);
 
-        // Draw normal arc (-30 to 0) (ClassicVUMeter.tsx lines 68-73)
-        drawArc(g, centerX, centerY, radius, startAngle, zeroVuAngle, GoodMeterLookAndFeel::border, 6.0f);
+        // Draw normal arc (-30 to 0)
+        drawArc(g, cx, cy, radius, startAngle, zeroVuAngle, GoodMeterLookAndFeel::border, 6.0f);
 
-        // Draw danger arc (0 to +3) (ClassicVUMeter.tsx lines 76-80)
-        drawArc(g, centerX, centerY, radius, zeroVuAngle, endAngle, GoodMeterLookAndFeel::accentPink, 6.0f);
+        // Draw danger arc (0 to +3)
+        drawArc(g, cx, cy, radius, zeroVuAngle, endAngle, GoodMeterLookAndFeel::accentPink, 6.0f);
 
-        // Draw ticks and labels (ClassicVUMeter.tsx lines 82-119)
-        drawTicksAndLabels(g, centerX, centerY, radius, startAngle, endAngle, zeroVuAngle);
+        // Draw ticks and labels
+        drawTicksAndLabels(g, cx, cy, radius, startAngle, endAngle, zeroVuAngle);
 
-        // Draw "VU" text (ClassicVUMeter.tsx lines 122-124)
+        // Draw "VU" text
         g.setColour(GoodMeterLookAndFeel::border);
-        g.setFont(juce::Font(48.0f, juce::Font::bold));
-        g.drawText("VU", bounds.removeFromBottom(80), juce::Justification::centred, false);
+        g.setFont(juce::Font(32.0f, juce::Font::bold));
+        auto textBounds = bounds.removeFromBottom(50);
+        g.drawText("VU", textBounds, juce::Justification::centred, false);
 
-        // Draw needle (ClassicVUMeter.tsx lines 127-139)
-        drawNeedle(g, centerX, centerY, radius, startAngle, endAngle);
+        // Draw needle
+        drawNeedle(g, cx, cy, radius, startAngle, endAngle);
     }
 
     void resized() override
@@ -191,10 +201,10 @@ private:
             juce::String labelText = (tickVu > 0) ? ("+" + juce::String(tickVu)) : juce::String(tickVu);
 
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.setFont(juce::Font(36.0f, juce::Font::bold));
+            g.setFont(juce::Font(18.0f, juce::Font::bold));  // ✅ FIX: 缩小字体 36→18
             g.drawText(labelText,
-                      static_cast<int>(lx - 30), static_cast<int>(ly),
-                      60, 40,
+                      static_cast<int>(lx - 20), static_cast<int>(ly - 10),
+                      40, 20,
                       juce::Justification::centred, false);
         }
     }
