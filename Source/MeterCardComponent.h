@@ -97,7 +97,7 @@ public:
         // Draw expand/collapse arrow
         auto arrowBounds = headerBounds.removeFromRight(40);
         g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(isExpanded ? "▼" : "▶",
+        g.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"▼")) : juce::String(juce::CharPointer_UTF8(u8"▶")),
                   arrowBounds,
                   juce::Justification::centred,
                   false);

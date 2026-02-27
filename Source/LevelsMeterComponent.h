@@ -298,7 +298,7 @@ private:
 
             // Value (Levels.tsx: text-[1.2rem] font-[800])
             // cellBounds now contains the right half for the value
-            juce::String valueStr = (value <= -60.0f) ? "-∞" : juce::String(value, 1);
+            juce::String valueStr = (value <= -60.0f) ? juce::String(juce::CharPointer_UTF8(u8"-∞")) : juce::String(value, 1);
             valueStr += " " + unit;
 
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);

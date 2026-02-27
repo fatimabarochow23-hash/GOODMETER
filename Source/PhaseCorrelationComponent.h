@@ -167,8 +167,8 @@ private:
     {
         juce::Path innerPath;
 
-        innerPath.startNewSubPath(startX - 80.0f, cy);
-        innerPath.lineTo(startX, cy);
+        // Start directly at tube beginning (no 80px extension)
+        innerPath.startNewSubPath(startX, cy);
 
         // Draw sinusoidal path (PhaseCorrelation.tsx lines 91-96)
         const int steps = loops * 40;
@@ -180,7 +180,8 @@ private:
             innerPath.lineTo(x, y);
         }
 
-        innerPath.lineTo(endX + 80.0f, cy);
+        // End directly at tube end (no 80px extension)
+        innerPath.lineTo(endX, cy);
 
         return innerPath;
     }
