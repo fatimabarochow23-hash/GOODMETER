@@ -65,11 +65,7 @@ private:
 class KWeightingFilter
 {
 public:
-    KWeightingFilter()
-    {
-        highShelf.setType(juce::dsp::StateVariableTPTFilterType::highshelf);
-        highPass.setType(juce::dsp::StateVariableTPTFilterType::highpass);
-    }
+    KWeightingFilter() = default;
 
     void prepare(double sampleRate)
     {
@@ -78,21 +74,23 @@ public:
         spec.maximumBlockSize = 512;
         spec.numChannels = 1;
 
+        // ITU-R BS.1770-4 K-weighting: high-shelf @ 1500Hz +4dB, highpass @ 38Hz
+        // Using IIR filters for proper high-shelf
+        auto highShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
+            sampleRate, 1500.0f, 0.707f, juce::Decibels::decibelsToGain(4.0f));
+        highShelf.coefficients = highShelfCoeffs;
+
+        auto highPassCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighPass(
+            sampleRate, 38.0f, 0.5f);
+        highPass.coefficients = highPassCoeffs;
+
         highShelf.prepare(spec);
         highPass.prepare(spec);
-
-        // ITU-R BS.1770-4 K-weighting parameters
-        highShelf.setCutoffFrequency(1500.0f);
-        highShelf.setResonance(0.707f);
-        highShelf.setGain(juce::Decibels::decibelsToGain(4.0f));
-
-        highPass.setCutoffFrequency(38.0f);
-        highPass.setResonance(0.5f);
     }
 
     float processSample(float sample)
     {
-        return highPass.processSample(0, highShelf.processSample(0, sample));
+        return highPass.processSample(highShelf.processSample(sample));
     }
 
     void reset()
@@ -102,8 +100,8 @@ public:
     }
 
 private:
-    juce::dsp::StateVariableTPTFilter<float> highShelf;
-    juce::dsp::StateVariableTPTFilter<float> highPass;
+    juce::dsp::IIR::Filter<float> highShelf;
+    juce::dsp::IIR::Filter<float> highPass;
 };
 
 //==============================================================================

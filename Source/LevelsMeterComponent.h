@@ -219,16 +219,18 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
+        // Create mutable copy
+        auto area = bounds;
+
         // Draw L channel bar
-        auto barL = bounds.removeFromTop(barHeight);
+        auto barL = area.removeFromTop(barHeight);
         drawPeakBar(g, barL, currentPeakL, peakHoldL);
 
         // Gap
-        auto gap = bounds.removeFromTop(barGap);
-        juce::ignoreUnused(gap);
+        area.removeFromTop(barGap);
 
         // Draw R channel bar
-        auto barR = bounds.removeFromTop(barHeight);
+        auto barR = area.removeFromTop(barHeight);
         drawPeakBar(g, barR, currentPeakR, peakHoldR);
 
         // Draw scale ticks (Levels.tsx lines 154-161)
