@@ -3,8 +3,10 @@
     MeterCardComponent.h
     GOODMETER - Collapsible meter card container
 
-    Translated from MeterCard.tsx
-    Features: Thick border, status dot, expand/collapse animation
+    REFACTORED: Fixed Web → JUCE migration traps:
+    1. Removed juce::TextButton (Z-index occlusion)
+    2. Hand-rolled 60Hz animation with parent layout triggering
+    3. Defensive height calculation with fallback
   ==============================================================================
 */
 
@@ -15,11 +17,11 @@
 
 //==============================================================================
 /**
- * Collapsible card component for meter modules
- * Implements the MeterCard.tsx design with expand/collapse functionality
+ * Collapsible card component with smooth push-down animation
+ * Implements hand-rolled animation to trigger parent relayout every frame
  */
 class MeterCardComponent : public juce::Component,
-                          public juce::Button::Listener
+                          public juce::Timer
 {
 public:
     //==========================================================================
@@ -30,21 +32,17 @@ public:
           statusColour(indicatorColour),
           isExpanded(defaultExpanded)
     {
-        // Create header button (for expand/collapse)
-        headerButton = std::make_unique<juce::TextButton>();
-        headerButton->setButtonText("");  // Custom painting
-        headerButton->addListener(this);
-        addAndMakeVisible(headerButton.get());
+        // Initialize animation state
+        currentHeight = static_cast<float>(getDesiredHeight());
+        targetHeight = currentHeight;
 
-        // Create content container
-        contentComponent = std::make_unique<juce::Component>();
-        addAndMakeVisible(contentComponent.get());
-        contentComponent->setVisible(isExpanded);
+        // Set initial size
+        setSize(500, static_cast<int>(currentHeight));
     }
 
     ~MeterCardComponent() override
     {
-        headerButton->removeListener(this);
+        stopTimer();
     }
 
     //==========================================================================
@@ -55,22 +53,34 @@ public:
         // Draw card background with thick border
         GoodMeterLookAndFeel::drawCard(g, bounds);
 
-        // Draw header background (hover effect handled by button)
+        // Draw header background
         auto headerBounds = bounds.removeFromTop(headerHeight);
+
+        // Header hover effect (manual hover tracking)
+        if (isHeaderHovered)
+        {
+            g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
+            g.fillRect(headerBounds);
+        }
+
         if (isExpanded)
         {
             // Draw bottom border of header
             g.setColour(GoodMeterLookAndFeel::border);
-            g.fillRect(headerBounds.removeFromBottom(2));
+            g.fillRect(headerBounds.getX(),
+                      headerBounds.getBottom() - 2,
+                      headerBounds.getWidth(),
+                      2);
         }
 
         // Draw status indicator dot
-        auto dotX = headerBounds.getX() + GoodMeterLookAndFeel::cardPadding;
-        auto dotY = headerBounds.getCentreY() - dotDiameter * 0.5f;
+        auto dotX = static_cast<float>(headerBounds.getX() + GoodMeterLookAndFeel::cardPadding);
+        auto dotY = static_cast<float>(headerBounds.getCentreY()) - dotDiameter * 0.5f;
         GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dotDiameter, statusColour);
 
         // Draw title text
-        auto textBounds = headerBounds.withTrimmedLeft(GoodMeterLookAndFeel::cardPadding + dotDiameter + 12);
+        auto textBounds = headerBounds.withTrimmedLeft(GoodMeterLookAndFeel::cardPadding +
+                                                       static_cast<int>(dotDiameter) + 12);
         g.setColour(GoodMeterLookAndFeel::textMain);
         g.setFont(juce::Font(15.0f, juce::Font::bold));
         g.drawText(cardTitle.toUpperCase(),
@@ -91,15 +101,46 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // Position header button
-        auto headerBounds = bounds.removeFromTop(headerHeight);
-        headerButton->setBounds(headerBounds);
+        // Skip header area
+        bounds.removeFromTop(headerHeight);
 
-        // Position content (if expanded)
-        if (isExpanded && contentComponent != nullptr)
+        // Position content (if expanded and exists)
+        if (contentComponent != nullptr)
         {
             auto contentBounds = bounds.reduced(GoodMeterLookAndFeel::cardPadding);
             contentComponent->setBounds(contentBounds);
+            contentComponent->setVisible(isExpanded || isAnimating);
+        }
+    }
+
+    //==========================================================================
+    /**
+     * Mouse handling for header clicks (replaces juce::TextButton)
+     */
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        // Check if click is within header area
+        if (event.y <= headerHeight)
+        {
+            setExpanded(!isExpanded, true);
+        }
+    }
+
+    void mouseMove(const juce::MouseEvent& event) override
+    {
+        bool wasHovered = isHeaderHovered;
+        isHeaderHovered = (event.y <= headerHeight);
+
+        if (wasHovered != isHeaderHovered)
+            repaint();
+    }
+
+    void mouseExit(const juce::MouseEvent&) override
+    {
+        if (isHeaderHovered)
+        {
+            isHeaderHovered = false;
+            repaint();
         }
     }
 
@@ -118,6 +159,12 @@ public:
         {
             addAndMakeVisible(contentComponent.get());
             contentComponent->setVisible(isExpanded);
+
+            // Recalculate heights with new content
+            targetHeight = static_cast<float>(getDesiredHeight());
+            currentHeight = targetHeight;
+            setSize(getWidth(), static_cast<int>(currentHeight));
+
             resized();
         }
     }
@@ -130,8 +177,9 @@ public:
         return contentComponent.get();
     }
 
+    //==========================================================================
     /**
-     * Toggle expand/collapse state
+     * Toggle expand/collapse state with smooth animation
      */
     void setExpanded(bool shouldExpand, bool animate = true)
     {
@@ -139,29 +187,30 @@ public:
             return;
 
         isExpanded = shouldExpand;
+        targetHeight = static_cast<float>(getDesiredHeight());
 
-        if (contentComponent != nullptr)
+        if (animate)
         {
-            if (animate)
-            {
-                // Animate height change
-                juce::Desktop::getInstance().getAnimator().animateComponent(
-                    this,
-                    getBounds().withHeight(getDesiredHeight()),
-                    1.0f,
-                    200,  // 200ms duration (matches MeterCard.tsx)
-                    false,
-                    1.0,
-                    0.0
-                );
+            // Start hand-rolled 60Hz animation
+            isAnimating = true;
+            startTimerHz(60);
 
+            // Show content immediately for expand, hide after animation for collapse
+            if (contentComponent != nullptr && shouldExpand)
+                contentComponent->setVisible(true);
+        }
+        else
+        {
+            // Instant transition
+            currentHeight = targetHeight;
+            setSize(getWidth(), static_cast<int>(currentHeight));
+
+            if (contentComponent != nullptr)
                 contentComponent->setVisible(shouldExpand);
-            }
-            else
-            {
-                contentComponent->setVisible(shouldExpand);
-                setSize(getWidth(), getDesiredHeight());
-            }
+
+            // Trigger parent relayout immediately
+            if (auto* parent = getParentComponent())
+                parent->resized();
         }
 
         repaint();
@@ -171,6 +220,7 @@ public:
 
     /**
      * Calculate desired height based on expanded state
+     * Defensive: returns fallback if content has no size
      */
     int getDesiredHeight() const
     {
@@ -179,17 +229,59 @@ public:
 
         int contentHeight = 0;
         if (contentComponent != nullptr)
-            contentHeight = contentComponent->getHeight() + GoodMeterLookAndFeel::cardPadding * 2;
+        {
+            contentHeight = contentComponent->getHeight();
+
+            // Defensive fallback: if content has no height, use default
+            if (contentHeight <= 0)
+                contentHeight = defaultContentHeight;
+
+            contentHeight += GoodMeterLookAndFeel::cardPadding * 2;
+        }
 
         return headerHeight + contentHeight;
     }
 
     //==========================================================================
-    void buttonClicked(juce::Button* button) override
+    /**
+     * Hand-rolled 60Hz animation timer callback
+     * CRITICAL: Calls parent->resized() every frame for smooth push-down effect
+     */
+    void timerCallback() override
     {
-        if (button == headerButton.get())
+        // Eased interpolation (ease-out cubic)
+        const float delta = targetHeight - currentHeight;
+        const float smoothingFactor = 0.2f;  // Higher = faster animation
+
+        currentHeight += delta * smoothingFactor;
+
+        // Update component size
+        setSize(getWidth(), static_cast<int>(std::round(currentHeight)));
+
+        // 🔥 CRITICAL: Force parent to relayout ALL cards every frame
+        // This creates the smooth "push-down" effect for cards below
+        if (auto* parent = getParentComponent())
+            parent->resized();
+
+        // Stop animation when close enough (< 1px difference)
+        if (std::abs(delta) < 1.0f)
         {
-            setExpanded(!isExpanded, true);
+            // Snap to target and stop
+            currentHeight = targetHeight;
+            setSize(getWidth(), static_cast<int>(currentHeight));
+
+            stopTimer();
+            isAnimating = false;
+
+            // Hide content after collapse animation finishes
+            if (contentComponent != nullptr && !isExpanded)
+                contentComponent->setVisible(false);
+
+            // Final parent relayout
+            if (auto* parent = getParentComponent())
+                parent->resized();
+
+            repaint();
         }
     }
 
@@ -197,12 +289,19 @@ private:
     juce::String cardTitle;
     juce::Colour statusColour;
     bool isExpanded;
+    bool isAnimating = false;
+    bool isHeaderHovered = false;
 
-    std::unique_ptr<juce::TextButton> headerButton;
     std::unique_ptr<juce::Component> contentComponent;
 
+    // Animation state
+    float currentHeight = 0.0f;
+    float targetHeight = 0.0f;
+
+    // Constants
     static constexpr int headerHeight = 48;
     static constexpr float dotDiameter = 14.0f;
+    static constexpr int defaultContentHeight = 150;  // Fallback when content has no size
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MeterCardComponent)
 };
