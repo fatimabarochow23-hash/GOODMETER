@@ -13,6 +13,7 @@
 #include "PluginProcessor.h"
 #include "GoodMeterLookAndFeel.h"
 #include "MeterCardComponent.h"
+#include "LevelsMeterComponent.h"
 
 //==============================================================================
 /**
@@ -38,7 +39,10 @@ private:
     // Custom LookAndFeel
     GoodMeterLookAndFeel customLookAndFeel;
 
-    // Meter card components (Phase 3 will add actual meter content)
+    // Meter components (raw pointers - owned by MeterCardComponents)
+    LevelsMeterComponent* levelsMeter = nullptr;
+
+    // Meter card components (Phase 3 will add remaining meters)
     std::unique_ptr<MeterCardComponent> levelsCard;
     std::unique_ptr<MeterCardComponent> vuMeterCard;
     std::unique_ptr<MeterCardComponent> threeBandCard;

@@ -25,12 +25,20 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     viewport->setViewedComponent(contentComponent.get(), false);
     viewport->setScrollBarsShown(true, false);  // Vertical scroll only
 
-    // Create meter cards (Phase 2: Empty placeholders, Phase 3: Add actual meters)
+    //==========================================================================
+    // Create meter cards
+    //==========================================================================
+
     levelsCard = std::make_unique<MeterCardComponent>(
         "LEVELS",
         GoodMeterLookAndFeel::accentPink,
         true  // Default expanded
     );
+
+    // Create Levels Meter and transfer ownership to card
+    levelsMeter = new LevelsMeterComponent();
+    levelsMeter->setStandard("EBU R128");  // Default standard
+    levelsCard->setContentComponent(std::unique_ptr<juce::Component>(levelsMeter));
 
     vuMeterCard = std::make_unique<MeterCardComponent>(
         "VU METER",
@@ -154,23 +162,19 @@ void GOODMETERAudioProcessorEditor::resized()
 //==============================================================================
 void GOODMETERAudioProcessorEditor::timerCallback()
 {
-    // Phase 3: Read atomic values from processor and update meter components
-    // For now, this is a placeholder
+    // Read atomic values from processor (thread-safe)
+    float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
+    float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
+    float lufs = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
 
-    // Example of how to read values (Phase 3 implementation):
-    // float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
-    // float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
-    // float rmsL = audioProcessor.rmsLevelL.load(std::memory_order_relaxed);
-    // float rmsR = audioProcessor.rmsLevelR.load(std::memory_order_relaxed);
-    // float lufs = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
-    // float phase = audioProcessor.phaseCorrelation.load(std::memory_order_relaxed);
+    // Update Levels Meter
+    if (levelsMeter != nullptr)
+    {
+        levelsMeter->updateMetrics(peakL, peakR, lufs);
+    }
 
-    // Update meter components with new values (Phase 3)
-    // levelsMeter->setPeakLevels(peakL, peakR);
-    // levelsMeter->setRMSLevels(rmsL, rmsR);
-    // levelsMeter->setLUFS(lufs);
-    // phaseMeter->setCorrelation(phase);
-
-    // Trigger repaint for smooth 60Hz updates
-    // repaint();
+    // Phase 3: Update other meter components here
+    // vuMeter->updateValue(...);
+    // phaseMeter->updateCorrelation(...);
+    // etc.
 }
