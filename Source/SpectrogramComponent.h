@@ -29,6 +29,9 @@ public:
     SpectrogramComponent(GOODMETERAudioProcessor& processor)
         : audioProcessor(processor)
     {
+        // Initialize smoothed FFT buffer to zero
+        smoothedFftData.fill(0.0f);
+
         // Set fixed height
         setSize(100, 300);
 
@@ -101,6 +104,10 @@ private:
     static constexpr int numBins = GOODMETERAudioProcessor::fftSize / 2;
     std::array<float, numBins> fftData;
 
+    // ✅ 时间平滑缓冲（核心云雾魔法）
+    std::array<float, numBins> smoothedFftData;
+    bool isFirstFrame = true;
+
     // Frequency range (logarithmic)
     static constexpr float minFreq = 20.0f;    // 20 Hz (bottom)
     static constexpr float maxFreq = 20000.0f; // 20 kHz (top)
@@ -116,6 +123,22 @@ private:
         if (!audioProcessor.fftFifoL.pop(fftData.data(), numBins))
             return;  // 没有新数据
 
+        // 🌫️ 时间平滑处理（核心云雾魔法）
+        // Web 版 smoothingTimeConstant = 0.85 → 0.85 旧数据 + 0.15 新数据
+        if (isFirstFrame)
+        {
+            // 首帧直接复制，避免从 0 开始的长尾巴
+            smoothedFftData = fftData;
+            isFirstFrame = false;
+        }
+        else
+        {
+            for (int i = 0; i < numBins; ++i)
+            {
+                smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
+            }
+        }
+
         if (spectrogramImage.isNull())
             return;
 
@@ -123,20 +146,17 @@ private:
         if (height <= 0)
             return;
 
-        // 🎨 创建离屏 Graphics 上下文
-        juce::Graphics g(spectrogramImage);
-
         // 绘制单列像素（从上到下）
         for (int y = 0; y < height; ++y)
         {
             // ✅ Y 轴反转：top (y=0) = 20kHz, bottom (y=height-1) = 20Hz
             const float freq = yToFrequency(y, height);
 
-            // 获取该频率的幅度
+            // ✅ 使用平滑后的数据（而非原始 fftData）
             const float magnitude = getMagnitudeAtFrequency(freq);
             const float db = magnitudeToDb(magnitude);
 
-            // 映射为粉色能量流颜色
+            // 映射为粉色云雾颜色
             const juce::Colour colour = getColourForDb(db);
 
             // 🚀 极速写入：使用 setPixelAt 直接写入像素
@@ -179,12 +199,12 @@ private:
     }
 
     /**
-     * Get magnitude at specific frequency (with interpolation)
+     * Get magnitude at specific frequency (使用平滑后的数据)
      */
     float getMagnitudeAtFrequency(float freq) const
     {
         const int bin = frequencyToBin(freq);
-        return fftData[bin];
+        return smoothedFftData[bin];  // ✅ 使用平滑缓冲
     }
 
     /**
@@ -196,32 +216,34 @@ private:
     }
 
     /**
-     * 🌸 粉色能量流调色板（全新审美）
-     * -90dB: 完全透明白色（底噪消失）
-     * -45dB: 半透明柔和粉色（能量体主体）
-     * 0dB: 炽热发光粉色（峰值冲击）
+     * 🌸 粉色云雾调色板（Goodhertz 风格）
+     * -90dB: 完全透明白色（静音，露出底层白色）
+     * -45dB: 半透明柔和粉（云雾主体，alpha=0.35）
+     * 0dB: 纯实心粉色（峰值冲击，alpha=1.0，绝不发白！）
      */
     juce::Colour getColourForDb(float db) const
     {
-        // 归一化到 0.0-1.0 范围
-        const float normalized = juce::jmap(db, minDb, maxDb, 0.0f, 1.0f);
+        // 钳制并归一化到 0.0-1.0 范围
+        const float clamped = juce::jlimit(minDb, maxDb, db);
+        const float normalized = juce::jmap(clamped, minDb, maxDb, 0.0f, 1.0f);
 
-        // 三段式渐变
+        // 三种核心色
+        const juce::Colour bg = juce::Colours::white.withAlpha(0.0f);        // 静音：全透明
+        const juce::Colour mid = juce::Colour(230, 51, 95).withAlpha(0.35f); // 中等：半透明粉（云雾主体）
+        const juce::Colour peak = juce::Colour(230, 51, 95).withAlpha(1.0f); // 峰值：纯实心粉（不发白）
+
+        // 分段插值
         if (normalized < 0.5f)
         {
-            // -90dB to -45dB: 透明白色 → 半透明粉色
-            const float t = normalized * 2.0f;  // 0.0 to 1.0
-            const juce::Colour transparentWhite = juce::Colours::white.withAlpha(0.0f);
-            const juce::Colour softPink = GoodMeterLookAndFeel::accentPink.withAlpha(0.5f);
-            return transparentWhite.interpolatedWith(softPink, t);
+            // 0.0 ~ 0.5: bg → mid
+            const float t = normalized * 2.0f;
+            return bg.interpolatedWith(mid, t);
         }
         else
         {
-            // -45dB to 0dB: 半透明粉色 → 炽热发光粉色
-            const float t = (normalized - 0.5f) * 2.0f;  // 0.0 to 1.0
-            const juce::Colour softPink = GoodMeterLookAndFeel::accentPink.withAlpha(0.5f);
-            const juce::Colour hotPink = GoodMeterLookAndFeel::accentPink.brighter(0.8f).withAlpha(1.0f);
-            return softPink.interpolatedWith(hotPink, t);
+            // 0.5 ~ 1.0: mid → peak
+            const float t = (normalized - 0.5f) * 2.0f;
+            return mid.interpolatedWith(peak, t);
         }
     }
 
