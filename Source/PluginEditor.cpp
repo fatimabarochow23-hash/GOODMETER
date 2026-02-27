@@ -141,7 +141,11 @@ void GOODMETERAudioProcessorEditor::resized()
     auto layoutCard = [&](MeterCardComponent* card) {
         if (card != nullptr)
         {
-            int cardHeight = card->getDesiredHeight();
+            // CRITICAL: Use actual current height, not getDesiredHeight()
+            // This preserves animation state during 60Hz timer callbacks
+            int cardHeight = card->getHeight();
+
+            // Only update X, Y, Width - preserve animated Height
             card->setBounds(GoodMeterLookAndFeel::cardSpacing,
                           yPos,
                           bounds.getWidth() - GoodMeterLookAndFeel::cardSpacing * 2,

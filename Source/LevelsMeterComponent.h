@@ -288,20 +288,23 @@ private:
                                        .withHeight(28);
 
             // Label (Levels.tsx: text-[0.8rem] font-[600] lowercase)
+            // Use separate bounds for label to avoid modifying cellBounds
+            auto labelBounds = cellBounds.removeFromLeft(colWidth / 2);
             g.setColour(GoodMeterLookAndFeel::textMuted);
             g.setFont(juce::Font(12.8f, juce::Font::bold));
             g.drawText(label.toLowerCase(),
-                      cellBounds.removeFromLeft(colWidth / 2),
+                      labelBounds,
                       juce::Justification::centredLeft, false);
 
             // Value (Levels.tsx: text-[1.2rem] font-[800])
+            // cellBounds now contains the right half for the value
             juce::String valueStr = (value <= -60.0f) ? "-∞" : juce::String(value, 1);
             valueStr += " " + unit;
 
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(19.2f, juce::Font::bold));
             g.drawText(valueStr,
-                      cellBounds,
+                      cellBounds,  // This now correctly uses the remaining right half
                       juce::Justification::centredRight, false);
         };
 
