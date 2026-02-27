@@ -192,8 +192,10 @@ private:
     int lufsBufferIndex = 0;
 
     // FFT accumulation buffers
-    std::array<float, fftSize> fftBufferL;
-    std::array<float, fftSize> fftBufferR;
+    // IMPORTANT: performFrequencyOnlyForwardTransform requires fftSize * 2 elements!
+    // First fftSize elements are input data, second fftSize elements are used as working memory
+    std::array<float, fftSize * 2> fftBufferL;
+    std::array<float, fftSize * 2> fftBufferR;
     int fftBufferIndex = 0;
 
     // FFT engine
