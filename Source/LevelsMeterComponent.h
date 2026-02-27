@@ -47,12 +47,12 @@ public:
         if (bounds.isEmpty())
             return;
 
-        // Draw peak bars section (top 68px)
-        auto barsBounds = bounds.removeFromTop(68);
+        // ✅ Draw peak bars section (增高到 90px，给横条和刻度足够空间)
+        auto barsBounds = bounds.removeFromTop(90);
         drawPeakBars(g, barsBounds);
 
-        // Draw LUFS info section (bottom, with 36px gap from Levels.tsx line 166)
-        bounds.removeFromTop(36);
+        // ✅ Draw LUFS info section (缩减间距到 14px)
+        bounds.removeFromTop(14);
         auto infoBounds = bounds;
         drawLUFSInfo(g, infoBounds);
     }
@@ -238,8 +238,8 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // Create mutable copy
-        auto area = bounds;
+        // ✅ 左右预留 20px padding，防止刻度文字被裁
+        auto area = bounds.reduced(20, 0);
 
         // Draw L channel bar
         auto barL = area.removeFromTop(barHeight);
@@ -259,7 +259,8 @@ private:
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
         {
-            float x = dbToX(static_cast<float>(db), static_cast<float>(bounds.getWidth()));
+            // ✅ 使用 area 的宽度和 X 起点，而非原始 bounds
+            float x = area.getX() + dbToX(static_cast<float>(db), static_cast<float>(area.getWidth()));
 
             // Tick line
             g.drawVerticalLine(static_cast<int>(x), 0.0f, static_cast<float>(barHeight * 2 + barGap));
@@ -280,6 +281,10 @@ private:
      */
     void drawLUFSInfo(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
+        // ✅ 响应式单位隐藏：窄于 400px 时隐藏单位，缩小字体
+        bool showUnit = bounds.getWidth() > 400;
+        float valueFontSize = showUnit ? 19.2f : 16.0f;
+
         // Background box (Levels.tsx line 166)
         g.setColour(juce::Colour(0xFFEAEAEA));
         g.fillRoundedRectangle(bounds.toFloat(), 4.0f);
@@ -308,13 +313,13 @@ private:
                       labelBounds,
                       juce::Justification::centredLeft, false);
 
-            // Value (Levels.tsx: text-[1.2rem] font-[800])
-            // cellBounds now contains the right half for the value
+            // ✅ Value with conditional unit display
             juce::String valueStr = (value <= -60.0f) ? juce::String(juce::CharPointer_UTF8(u8"-∞")) : juce::String(value, 1);
-            valueStr += " " + unit;
+            if (showUnit)
+                valueStr += " " + unit;
 
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
-            g.setFont(juce::Font(19.2f, juce::Font::bold));
+            g.setFont(juce::Font(valueFontSize, juce::Font::bold));
             g.drawText(valueStr,
                       cellBounds,  // This now correctly uses the remaining right half
                       juce::Justification::centredRight, false);
