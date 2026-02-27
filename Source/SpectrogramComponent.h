@@ -46,8 +46,8 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // Background
-        g.fillAll(juce::Colours::black);
+        // ✅ 背景必须是干净的白色（通透感）
+        g.fillAll(juce::Colours::white);
 
         // Safety check
         if (spectrogramImage.isNull() || bounds.isEmpty())
@@ -129,19 +129,18 @@ private:
         // 绘制单列像素（从上到下）
         for (int y = 0; y < height; ++y)
         {
-            // ✅ Y 轴对数映射：bottom = 20Hz, top = 20kHz
+            // ✅ Y 轴反转：top (y=0) = 20kHz, bottom (y=height-1) = 20Hz
             const float freq = yToFrequency(y, height);
 
             // 获取该频率的幅度
             const float magnitude = getMagnitudeAtFrequency(freq);
             const float db = magnitudeToDb(magnitude);
 
-            // 映射为颜色
+            // 映射为粉色能量流颜色
             const juce::Colour colour = getColourForDb(db);
 
-            // 在 drawX 位置画 1 像素
-            g.setColour(colour);
-            g.fillRect(drawX, y, 1, 1);
+            // 🚀 极速写入：使用 setPixelAt 直接写入像素
+            spectrogramImage.setPixelAt(drawX, y, colour);
         }
 
         // 🔄 推进环形游标
@@ -154,11 +153,11 @@ private:
     //==========================================================================
     /**
      * Convert Y pixel coordinate to frequency (Hz)
-     * Logarithmic mapping: bottom (height-1) = 20Hz, top (0) = 20kHz
+     * ✅ 反转映射：top (y=0) = 20kHz, bottom (y=height-1) = 20Hz
      */
     float yToFrequency(int y, int height) const
     {
-        // Invert Y: top (0) = maxFreq, bottom (height-1) = minFreq
+        // 归一化：top (0) = 1.0, bottom (height-1) = 0.0
         const float normalized = 1.0f - (static_cast<float>(y) / static_cast<float>(height - 1));
 
         // Logarithmic interpolation
@@ -197,33 +196,32 @@ private:
     }
 
     /**
-     * Map dB value to color gradient
-     * -90dB: Transparent gray (底噪)
-     * -45dB: Pink (中等能量)
-     * 0dB: Bright yellow (峰值)
+     * 🌸 粉色能量流调色板（全新审美）
+     * -90dB: 完全透明白色（底噪消失）
+     * -45dB: 半透明柔和粉色（能量体主体）
+     * 0dB: 炽热发光粉色（峰值冲击）
      */
     juce::Colour getColourForDb(float db) const
     {
-        const float clamped = juce::jlimit(minDb, maxDb, db);
-        const float normalized = (clamped - minDb) / (maxDb - minDb);
+        // 归一化到 0.0-1.0 范围
+        const float normalized = juce::jmap(db, minDb, maxDb, 0.0f, 1.0f);
 
-        // Color gradient stops
-        const juce::Colour darkGray = juce::Colour(0x20202020);  // Almost transparent dark gray
-        const juce::Colour pink = GoodMeterLookAndFeel::accentPink;
-        const juce::Colour brightYellow = juce::Colour(0xFFFFFF00);  // Bright yellow
-
-        // Three-stage gradient
+        // 三段式渐变
         if (normalized < 0.5f)
         {
-            // -90dB to -45dB: dark gray → pink
+            // -90dB to -45dB: 透明白色 → 半透明粉色
             const float t = normalized * 2.0f;  // 0.0 to 1.0
-            return darkGray.interpolatedWith(pink, t);
+            const juce::Colour transparentWhite = juce::Colours::white.withAlpha(0.0f);
+            const juce::Colour softPink = GoodMeterLookAndFeel::accentPink.withAlpha(0.5f);
+            return transparentWhite.interpolatedWith(softPink, t);
         }
         else
         {
-            // -45dB to 0dB: pink → bright yellow
+            // -45dB to 0dB: 半透明粉色 → 炽热发光粉色
             const float t = (normalized - 0.5f) * 2.0f;  // 0.0 to 1.0
-            return pink.interpolatedWith(brightYellow, t);
+            const juce::Colour softPink = GoodMeterLookAndFeel::accentPink.withAlpha(0.5f);
+            const juce::Colour hotPink = GoodMeterLookAndFeel::accentPink.brighter(0.8f).withAlpha(1.0f);
+            return softPink.interpolatedWith(hotPink, t);
         }
     }
 
