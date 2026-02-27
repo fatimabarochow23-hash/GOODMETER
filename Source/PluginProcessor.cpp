@@ -142,7 +142,7 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     // 🎵 TEST SIGNAL GENERATOR (Pulsing Noise with LFO Modulation)
     // 方便在 Standalone 模式下测试所有表盘的动画和物理阻尼
     //==========================================================================
-    #define ENABLE_TEST_SIGNAL 1
+    #define ENABLE_TEST_SIGNAL 0  // ✅ DISABLED - 已撤掉测试信号
     #if ENABLE_TEST_SIGNAL
     {
         static float lfoPhase = 0.0f;
@@ -160,7 +160,7 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
             // 呼吸包络：让声音有节奏地变大变小
             const float envelope = (std::sin(lfoPhase) + 1.0f) * 0.5f;
 
-            // 生成随机噪音，并套用包络，音量控制在大概 -12dB 到 -6dB 左右
+            // 生成随机噪音，并套用包络,音量控制在大概 -12dB 到 -6dB 左右
             const float noiseL = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
             const float noiseR = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
 
