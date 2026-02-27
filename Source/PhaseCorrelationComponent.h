@@ -211,26 +211,29 @@ private:
 
     //==========================================================================
     /**
-     * Draw colored liquid blob with clipping (PhaseCorrelation.tsx lines 112-124)
+     * Draw colored liquid blob with clipping and feathered gradient (enhanced version)
      *
-     * CRITICAL CLIP TECHNIQUE:
+     * IMPROVEMENTS:
+     * 1. Reduced blob width: 160px → 40px (concentrated liquid)
+     * 2. Feathered edges: horizontal gradient from transparent → opaque → transparent
+     *
+     * CLIP + GRADIENT TECHNIQUE:
      * 1. Save graphics state
-     * 2. Create rectangular clip region based on phase position
-     * 3. Draw FULL inner tube path with colored stroke
-     * 4. Only the clipped portion shows (creating liquid effect)
+     * 2. Create narrow rectangular clip region (40px wide)
+     * 3. Apply horizontal gradient (center opaque, edges transparent)
+     * 4. Draw FULL inner tube path with gradient stroke
      * 5. Restore state (removes clip)
      */
     void drawLiquidBlob(juce::Graphics& g, float startX, float condenserWidth, float cy, float condenserHeight, const juce::Rectangle<float>& bounds)
     {
-        // Calculate blob position based on phase (PhaseCorrelation.tsx lines 114-115)
-        const float blobWidth = 160.0f;
+        // Calculate blob position based on phase
+        const float blobWidth = 40.0f;  // ✅ FIXED: Reduced from 160px to 40px
         const float mappedX = startX + ((smoothedPhase + 1.0f) / 2.0f) * condenserWidth;
 
-        // 🔥 CLIP MAGIC: Save state and create clipping rectangle (PhaseCorrelation.tsx lines 113-118)
+        // 🔥 CLIP MAGIC: Save state and create clipping rectangle
         juce::Graphics::ScopedSaveState saveState(g);
 
-        // Create clip region: vertical strip centered at liquid position
-        // PhaseCorrelation.tsx: ctx.rect(mappedX - blobWidth/2, 0, blobWidth, height);
+        // Create narrow clip region: vertical strip centered at liquid position
         g.reduceClipRegion(juce::Rectangle<int>(
             static_cast<int>(mappedX - blobWidth / 2.0f),
             0,
@@ -238,18 +241,31 @@ private:
             static_cast<int>(bounds.getHeight())
         ));
 
-        // Draw FULL inner tube path with colored stroke (PhaseCorrelation.tsx lines 120-123)
-        // Only the portion within clip region will be visible!
-        auto innerPath = createInnerTubePath(startX, startX + condenserWidth, cy, condenserWidth, condenserHeight);
-
+        // ✨ FEATHERED GRADIENT: Center opaque → Edges transparent
         juce::Colour liquidColour = smoothedPhase > 0.0f
             ? GoodMeterLookAndFeel::accentCyan   // Positive: cyan (#06D6A0)
             : GoodMeterLookAndFeel::accentPink;  // Negative: pink (#E6335F)
 
-        g.setColour(liquidColour);
+        // Create horizontal gradient (left to right across blob width)
+        juce::ColourGradient gradient(
+            liquidColour.withAlpha(0.0f),  // Left edge: transparent
+            mappedX - blobWidth / 2.0f, cy,
+            liquidColour.withAlpha(0.0f),  // Right edge: transparent
+            mappedX + blobWidth / 2.0f, cy,
+            false
+        );
+
+        // Add center stop: fully opaque at liquid center
+        gradient.addColour(0.5, liquidColour);  // Center: 100% opaque
+
+        // Apply gradient fill
+        g.setGradientFill(gradient);
+
+        // Draw FULL inner tube path with gradient stroke
+        auto innerPath = createInnerTubePath(startX, startX + condenserWidth, cy, condenserWidth, condenserHeight);
         g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));
 
-        // saveState destructor automatically restores clip region (PhaseCorrelation.tsx line 124: ctx.restore())
+        // saveState destructor automatically restores clip region
     }
 
     //==========================================================================
