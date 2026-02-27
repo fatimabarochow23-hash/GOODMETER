@@ -61,8 +61,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     phaseCard = std::make_unique<MeterCardComponent>(
         "PHASE",
         GoodMeterLookAndFeel::accentGreen,
-        false
+        true  // Expanded for testing
     );
+
+    // Create Phase Correlation Meter
+    phaseMeter = new PhaseCorrelationComponent();
+    phaseCard->setContentComponent(std::unique_ptr<juce::Component>(phaseMeter));
 
     stereoImageCard = std::make_unique<MeterCardComponent>(
         "STEREO",
@@ -166,6 +170,7 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
     float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
     float lufs = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
+    float phase = audioProcessor.phaseCorrelation.load(std::memory_order_relaxed);
 
     // Update Levels Meter
     if (levelsMeter != nullptr)
@@ -173,8 +178,13 @@ void GOODMETERAudioProcessorEditor::timerCallback()
         levelsMeter->updateMetrics(peakL, peakR, lufs);
     }
 
+    // Update Phase Correlation Meter
+    if (phaseMeter != nullptr)
+    {
+        phaseMeter->updateCorrelation(phase);
+    }
+
     // Phase 3: Update other meter components here
     // vuMeter->updateValue(...);
-    // phaseMeter->updateCorrelation(...);
     // etc.
 }
