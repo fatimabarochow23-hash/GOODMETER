@@ -97,7 +97,7 @@ private:
     void drawCondenser(juce::Graphics& g, const juce::Rectangle<float>& bounds, float cx, float cy)
     {
         const float condenserWidth = bounds.getWidth() * 0.7f;  // PhaseCorrelation.tsx line 40
-        const float condenserHeight = 120.0f;  // PhaseCorrelation.tsx line 41
+        const float condenserHeight = 80.0f;  // ✅ SLIMMED: 120 → 80 (更细长的玻璃管)
         const float startX = cx - condenserWidth / 2.0f;
         const float endX = cx + condenserWidth / 2.0f;
 
@@ -132,14 +132,14 @@ private:
 
         // Left end caps
         outerTube.startNewSubPath(startX, cy - condenserHeight/2.0f);
-        outerTube.lineTo(startX, cy - 24.0f);
-        outerTube.startNewSubPath(startX, cy + 24.0f);
+        outerTube.lineTo(startX, cy - 16.0f);  // ✅ SLIMMED: 24 → 16
+        outerTube.startNewSubPath(startX, cy + 16.0f);  // ✅ SLIMMED: 24 → 16
         outerTube.lineTo(startX, cy + condenserHeight/2.0f);
 
         // Right end caps
         outerTube.startNewSubPath(endX, cy - condenserHeight/2.0f);
-        outerTube.lineTo(endX, cy - 24.0f);
-        outerTube.startNewSubPath(endX, cy + 24.0f);
+        outerTube.lineTo(endX, cy - 16.0f);  // ✅ SLIMMED: 24 → 16
+        outerTube.startNewSubPath(endX, cy + 16.0f);  // ✅ SLIMMED: 24 → 16
         outerTube.lineTo(endX, cy + condenserHeight/2.0f);
 
         // Inlet (top left)
@@ -175,14 +175,14 @@ private:
 
         // Draw sinusoidal path (PhaseCorrelation.tsx lines 91-96)
         // EXACT formula: x = startX + t * condenserWidth
-        //                y = cy + Math.sin(t * Math.PI * 2 * loops) * (condenserHeight/2 - 28)
+        //                y = cy + Math.sin(t * Math.PI * 2 * loops) * (condenserHeight/2 - 18)
         const int steps = loops * 40;  // PhaseCorrelation.tsx line 91
         for (int i = 0; i <= steps; ++i)
         {
             const float t = static_cast<float>(i) / static_cast<float>(steps);
             const float x = startX + t * condenserWidth;
             const float y = cy + std::sin(t * juce::MathConstants<float>::pi * 2.0f * static_cast<float>(loops))
-                                * (condenserHeight / 2.0f - 28.0f);
+                                * (condenserHeight / 2.0f - 18.0f);  // ✅ SLIMMED: 28 → 18 (适配更矮的管子)
             innerPath.lineTo(x, y);
         }
 
@@ -202,11 +202,11 @@ private:
 
         // 1. Inner tube outline (thick black) - PhaseCorrelation.tsx lines 101-104
         g.setColour(GoodMeterLookAndFeel::border);
-        g.strokePath(innerPath, juce::PathStrokeType(24.0f, juce::PathStrokeType::curved));
+        g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 24 → 16
 
         // 2. Inner tube inside (white) - PhaseCorrelation.tsx lines 107-110
         g.setColour(juce::Colours::white);
-        g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));
+        g.strokePath(innerPath, juce::PathStrokeType(10.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 16 → 10
     }
 
     //==========================================================================
@@ -263,7 +263,7 @@ private:
 
         // Draw FULL inner tube path with gradient stroke
         auto innerPath = createInnerTubePath(startX, startX + condenserWidth, cy, condenserWidth, condenserHeight);
-        g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));
+        g.strokePath(innerPath, juce::PathStrokeType(10.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 16 → 10
 
         // saveState destructor automatically restores clip region
     }
