@@ -47,8 +47,8 @@ public:
         if (bounds.isEmpty())
             return;
 
-        // ✅ Draw peak bars section (增高到 90px，给横条和刻度足够空间)
-        auto barsBounds = bounds.removeFromTop(90);
+        // ✅ Draw peak bars section (增高到 110px，给两条横条 + 刻度足够空间)
+        auto barsBounds = bounds.removeFromTop(110);
         drawPeakBars(g, barsBounds);
 
         // ✅ Draw LUFS info section (缩减间距到 14px)
@@ -238,8 +238,8 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // ✅ 上下左右全方位 padding：防止横条顶部撞头，底部留呼吸空间
-        auto area = bounds.reduced(20, 16);
+        // ✅ 单边裁剪：左右各 20px，顶部往下推 16px（不削减底部！）
+        auto area = bounds.reduced(20, 0).withTrimmedTop(16);
 
         // Draw L channel bar
         auto barL = area.removeFromTop(barHeight);
@@ -256,20 +256,24 @@ private:
         g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
         g.setFont(10.0f);
 
+        // ✅ 获取准确的上下边界（相对于 area）
+        float lineTop = static_cast<float>(barL.getY());
+        float lineBottom = static_cast<float>(barR.getBottom() + 4);
+
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
         {
             // ✅ 使用 area 的宽度和 X 起点，而非原始 bounds
-            float x = area.getX() + dbToX(static_cast<float>(db), static_cast<float>(area.getWidth()));
+            float x = static_cast<float>(barL.getX()) + dbToX(static_cast<float>(db), static_cast<float>(barL.getWidth()));
 
-            // Tick line
-            g.drawVerticalLine(static_cast<int>(x), 0.0f, static_cast<float>(barHeight * 2 + barGap));
+            // Tick line (从 L 通道顶部画到 R 通道底部)
+            g.drawVerticalLine(static_cast<int>(x), lineTop, lineBottom);
 
-            // Label
+            // Label (贴在竖线底部)
             juce::String label = juce::String(db);
             g.setColour(GoodMeterLookAndFeel::textMuted);
             g.drawText(label,
-                      static_cast<int>(x - 15), barHeight * 2 + barGap + 2,
+                      static_cast<int>(x - 15), static_cast<int>(lineBottom + 2),
                       30, 12,
                       juce::Justification::centred, false);
         }
