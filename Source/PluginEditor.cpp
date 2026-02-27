@@ -43,7 +43,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     vuMeterCard = std::make_unique<MeterCardComponent>(
         "VU METER",
         GoodMeterLookAndFeel::accentYellow,
-        true
+        false  // Default collapsed for now
     );
 
     threeBandCard = std::make_unique<MeterCardComponent>(

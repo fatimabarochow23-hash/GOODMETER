@@ -26,6 +26,9 @@ public:
     //==========================================================================
     LevelsMeterComponent()
     {
+        // Set fixed height for this component (from Levels.tsx: 200px)
+        setSize(500, 200);
+
         // Start timer for peak hold decay (matches Levels.tsx: 1000ms hold)
         startTimer(16);  // ~60Hz for smooth decay
     }
@@ -39,6 +42,10 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
+
+        // Safety check
+        if (bounds.isEmpty())
+            return;
 
         // Draw peak bars section (top 68px)
         auto barsBounds = bounds.removeFromTop(68);
