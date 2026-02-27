@@ -89,8 +89,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     contentComponent->addAndMakeVisible(stereoImageCard.get());
     contentComponent->addAndMakeVisible(spectrogramCard.get());
 
-    // Set placeholder content height for each card
-    // Phase 3 will replace these with actual meter components
+    // Set placeholder content for remaining cards (Phase 3 will replace these)
     auto createPlaceholder = [](const juce::String& text) {
         auto* label = new juce::Label();
         label->setText(text, juce::dontSendNotification);
@@ -100,11 +99,11 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
         return std::unique_ptr<juce::Component>(label);
     };
 
-    levelsCard->setContentComponent(createPlaceholder("Peak, RMS, LUFS meters will be here"));
+    // Note: levelsCard and phaseCard already have their content set above (LevelsMeterComponent, PhaseCorrelationComponent)
+    // DO NOT overwrite them with placeholders!
     vuMeterCard->setContentComponent(createPlaceholder("Classic VU meter will be here"));
     threeBandCard->setContentComponent(createPlaceholder("Low/Mid/High meters will be here"));
     spectrumCard->setContentComponent(createPlaceholder("Spectrum analyzer will be here"));
-    phaseCard->setContentComponent(createPlaceholder("Phase correlation meter will be here"));
     stereoImageCard->setContentComponent(createPlaceholder("Goniometer/Lissajous will be here"));
     spectrogramCard->setContentComponent(createPlaceholder("Waterfall spectrogram will be here"));
 
