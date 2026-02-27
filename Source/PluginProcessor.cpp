@@ -11,6 +11,7 @@
 */
 
 #include "PluginProcessor.h"
+#include "PluginEditor.h"
 
 //==============================================================================
 GOODMETERAudioProcessor::GOODMETERAudioProcessor()
@@ -327,8 +328,7 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 //==============================================================================
 juce::AudioProcessorEditor* GOODMETERAudioProcessor::createEditor()
 {
-    // TODO: Phase 2 - Create custom PluginEditor
-    return new juce::GenericAudioProcessorEditor(*this);
+    return new GOODMETERAudioProcessorEditor(*this);
 }
 
 bool GOODMETERAudioProcessor::hasEditor() const
