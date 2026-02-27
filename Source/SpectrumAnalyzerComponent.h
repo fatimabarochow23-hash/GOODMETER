@@ -31,8 +31,8 @@ public:
         // Initialize smoothed data to zero
         smoothedData.fill(0.0f);
 
-        // Set fixed height (from SpectrumAnalyzer.tsx)
-        setSize(500, 200);
+        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
+        setSize(100, 200);  // 初始宽度会被父容器覆盖
 
         // Start timer for FFT data updates (30Hz is sufficient for spectrum)
         startTimerHz(30);

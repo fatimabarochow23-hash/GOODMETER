@@ -26,8 +26,8 @@ public:
     //==========================================================================
     PhaseCorrelationComponent()
     {
-        // Set fixed height (from PhaseCorrelation.tsx: 180px)
-        setSize(500, 180);
+        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
+        setSize(100, 180);  // 初始宽度会被父容器覆盖
 
         // Start timer for smooth animation
         startTimer(16);  // ~60Hz

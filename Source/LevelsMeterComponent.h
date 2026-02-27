@@ -26,8 +26,8 @@ public:
     //==========================================================================
     LevelsMeterComponent()
     {
-        // Set fixed height for this component (from Levels.tsx: 200px)
-        setSize(500, 200);
+        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
+        setSize(100, 200);  // 初始宽度会被父容器覆盖
 
         // Start timer for peak hold decay (matches Levels.tsx: 1000ms hold)
         startTimer(16);  // ~60Hz for smooth decay

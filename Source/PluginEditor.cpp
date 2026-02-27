@@ -130,6 +130,11 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     // Set initial size (matches typical plugin dimensions)
     setSize(500, 700);
 
+    // 🎨 开启自由横向缩放（对标专业插件）
+    setResizable(true, true);
+    setResizeLimits(400, 400,   // 最小宽度 400px, 最小高度 400px
+                    1000, 2000); // 最大宽度 1000px, 最大高度 2000px
+
     // Start 60Hz timer for UI updates
     startTimerHz(60);
 }
@@ -154,36 +159,91 @@ void GOODMETERAudioProcessorEditor::resized()
     // Position viewport to fill entire editor
     viewport->setBounds(bounds);
 
-    // Layout meter cards vertically
-    auto contentBounds = juce::Rectangle<int>(0, 0, bounds.getWidth(), 0);
-    int yPos = GoodMeterLookAndFeel::cardSpacing;
+    // 🎨 响应式布局阈值：800px
+    const int dualColumnThreshold = 800;
+    const bool isDualColumnMode = bounds.getWidth() >= dualColumnThreshold;
 
-    auto layoutCard = [&](MeterCardComponent* card) {
-        if (card != nullptr)
-        {
-            // CRITICAL: Use actual current height, not getDesiredHeight()
-            // This preserves animation state during 60Hz timer callbacks
-            int cardHeight = card->getHeight();
+    if (isDualColumnMode)
+    {
+        // ✅ 双列模式：左侧主表 + 右侧频谱类
+        const int leftColumnWidth = 400;  // 左侧固定宽度
+        const int columnGap = GoodMeterLookAndFeel::cardSpacing;
+        const int rightColumnX = leftColumnWidth + columnGap * 2;
+        const int rightColumnWidth = bounds.getWidth() - rightColumnX - GoodMeterLookAndFeel::cardSpacing;
 
-            // Only update X, Y, Width - preserve animated Height
-            card->setBounds(GoodMeterLookAndFeel::cardSpacing,
-                          yPos,
-                          bounds.getWidth() - GoodMeterLookAndFeel::cardSpacing * 2,
-                          cardHeight);
-            yPos += cardHeight + GoodMeterLookAndFeel::cardSpacing;
-        }
-    };
+        // 左侧列布局
+        int leftY = GoodMeterLookAndFeel::cardSpacing;
+        auto layoutLeftCard = [&](MeterCardComponent* card) {
+            if (card != nullptr)
+            {
+                int cardHeight = card->getHeight();
+                card->setBounds(GoodMeterLookAndFeel::cardSpacing,
+                              leftY,
+                              leftColumnWidth,
+                              cardHeight);
+                leftY += cardHeight + GoodMeterLookAndFeel::cardSpacing;
+            }
+        };
 
-    layoutCard(levelsCard.get());
-    layoutCard(vuMeterCard.get());
-    layoutCard(threeBandCard.get());
-    layoutCard(spectrumCard.get());
-    layoutCard(phaseCard.get());
-    layoutCard(stereoImageCard.get());
-    layoutCard(spectrogramCard.get());
+        layoutLeftCard(levelsCard.get());
+        layoutLeftCard(vuMeterCard.get());
+        layoutLeftCard(phaseCard.get());
 
-    // Set content component size
-    contentComponent->setSize(bounds.getWidth(), yPos);
+        // 右侧列布局
+        int rightY = GoodMeterLookAndFeel::cardSpacing;
+        auto layoutRightCard = [&](MeterCardComponent* card) {
+            if (card != nullptr)
+            {
+                int cardHeight = card->getHeight();
+                card->setBounds(rightColumnX,
+                              rightY,
+                              rightColumnWidth,
+                              cardHeight);
+                rightY += cardHeight + GoodMeterLookAndFeel::cardSpacing;
+            }
+        };
+
+        layoutRightCard(spectrumCard.get());
+        layoutRightCard(threeBandCard.get());
+        layoutRightCard(stereoImageCard.get());
+        layoutRightCard(spectrogramCard.get());
+
+        // Content height = max of both columns
+        int contentHeight = juce::jmax(leftY, rightY);
+        contentComponent->setSize(bounds.getWidth(), contentHeight);
+    }
+    else
+    {
+        // ✅ 单列模式：原有垂直布局
+        int yPos = GoodMeterLookAndFeel::cardSpacing;
+
+        auto layoutCard = [&](MeterCardComponent* card) {
+            if (card != nullptr)
+            {
+                // CRITICAL: Use actual current height, not getDesiredHeight()
+                // This preserves animation state during 60Hz timer callbacks
+                int cardHeight = card->getHeight();
+
+                // Only update X, Y, Width - preserve animated Height
+                card->setBounds(GoodMeterLookAndFeel::cardSpacing,
+                              yPos,
+                              bounds.getWidth() - GoodMeterLookAndFeel::cardSpacing * 2,
+                              cardHeight);
+                yPos += cardHeight + GoodMeterLookAndFeel::cardSpacing;
+            }
+        };
+
+        layoutCard(levelsCard.get());
+        layoutCard(vuMeterCard.get());
+        layoutCard(threeBandCard.get());
+        layoutCard(spectrumCard.get());
+        layoutCard(phaseCard.get());
+        layoutCard(stereoImageCard.get());
+        layoutCard(spectrogramCard.get());
+
+        // Set content component size
+        contentComponent->setSize(bounds.getWidth(), yPos);
+    }
 }
 
 //==============================================================================

@@ -26,8 +26,8 @@ public:
     //==========================================================================
     VUMeterComponent()
     {
-        // ✅ FIX 1: 强制设定合理边界
-        setSize(500, 220);  // 增加高度以容纳完整刻度盘
+        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
+        setSize(100, 220);  // 初始宽度会被父容器覆盖
 
         // Start 60Hz timer for smooth needle animation
         startTimerHz(60);
