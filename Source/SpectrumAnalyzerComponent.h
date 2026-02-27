@@ -28,6 +28,9 @@ public:
     SpectrumAnalyzerComponent(GOODMETERAudioProcessor& processor)
         : audioProcessor(processor)
     {
+        // Initialize smoothed data to zero
+        smoothedData.fill(0.0f);
+
         // Set fixed height (from SpectrumAnalyzer.tsx)
         setSize(500, 200);
 
@@ -79,15 +82,16 @@ private:
     // FFT data storage (half of fftSize due to Nyquist)
     static constexpr int numBins = GOODMETERAudioProcessor::fftSize / 2;
     std::array<float, numBins> fftData;
+    std::array<float, numBins> smoothedData;  // 平滑缓存
     bool hasValidData = false;
 
     // Frequency range
     static constexpr float minFreq = 20.0f;    // 20 Hz
     static constexpr float maxFreq = 20000.0f; // 20 kHz
 
-    // dB range
-    static constexpr float minDb = -80.0f;
-    static constexpr float maxDb = 0.0f;
+    // 🎨 Y 轴动态范围（舒适比例：增加动态范围 + 视觉天花板）
+    static constexpr float minDb = -100.0f;  // 能量地板
+    static constexpr float maxDb = 6.0f;     // 视觉天花板（提高此值会向下压）
 
     //==========================================================================
     void timerCallback() override
@@ -96,6 +100,13 @@ private:
         // Try to get latest FFT data from left channel
         if (audioProcessor.fftFifoL.pop(fftData.data(), numBins))
         {
+            // 🎨 平滑处理：减少闪烁感，让波浪更流畅
+            for (int i = 0; i < numBins; ++i)
+            {
+                // 平滑系数 0.3f（30% 追赶速度）
+                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.3f;
+            }
+
             hasValidData = true;
             repaint();
         }
@@ -134,23 +145,29 @@ private:
     }
 
     /**
-     * Convert dB to Y pixel coordinate (0 dB at top, -80 dB at bottom)
+     * Convert dB to Y pixel coordinate (0 dB at top, -100 dB at bottom)
+     * 🎨 给顶部留出 20% 空白区，营造呼吸感
      */
-    float dbToY(float db, float height) const
+    float dbToY(float db, float height, float topY) const
     {
-        const float clamped = juce::jlimit(minDb, maxDb, db);
-        const float normalized = (maxDb - clamped) / (maxDb - minDb);
-        return normalized * height;
+        // 顶部留出 20% 的空白区（舒适比例）
+        const float topPadding = height * 0.2f;
+
+        // 使用 jmap 从 minDb(-100) 映射到 maxDb(6.0)
+        // 注意：jmap(value, sourceMin, sourceMax, targetMin, targetMax)
+        return juce::jmap(db, minDb, maxDb, topY + height, topY + topPadding);
     }
 
     //==========================================================================
     /**
      * Draw smooth spectrum polygon with gradient fill
+     * 🎨 粉色海浪质感（0.2-0.3 透明度）
      */
     void drawSpectrum(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
         const float width = bounds.getWidth();
         const float height = bounds.getHeight();
+        const float topY = bounds.getY();
 
         // 🎨 创建平滑的多边形路径
         juce::Path spectrumPath;
@@ -167,11 +184,12 @@ private:
             if (freq < minFreq || freq > maxFreq)
                 continue;
 
-            const float magnitude = fftData[bin];
+            // 🎨 使用平滑后的数据，减少闪烁
+            const float magnitude = smoothedData[bin];
             const float db = magnitudeToDb(magnitude);
 
             const float x = bounds.getX() + frequencyToX(freq, width);
-            const float y = bounds.getY() + dbToY(db, height);
+            const float y = dbToY(db, height, topY);
 
             spectrumPath.lineTo(x, y);
         }
@@ -180,12 +198,12 @@ private:
         spectrumPath.lineTo(bounds.getRight(), bounds.getBottom());
         spectrumPath.closeSubPath();
 
-        // 🎨 Fill with semi-transparent cyan (SpectrumAnalyzer.tsx style)
-        g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.3f));
+        // 🎨 粉色海浪：半透明填充（0.25f 介于 0.2-0.3 之间）
+        g.setColour(GoodMeterLookAndFeel::accentPink.withAlpha(0.25f));
         g.fillPath(spectrumPath);
 
-        // 🎨 Stroke with solid cyan line for definition
-        g.setColour(GoodMeterLookAndFeel::accentCyan);
+        // 🎨 粉色实线描边
+        g.setColour(GoodMeterLookAndFeel::accentPink);
         g.strokePath(spectrumPath, juce::PathStrokeType(2.0f));
     }
 
