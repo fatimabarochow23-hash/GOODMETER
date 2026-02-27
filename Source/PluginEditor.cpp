@@ -43,8 +43,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     vuMeterCard = std::make_unique<MeterCardComponent>(
         "VU METER",
         GoodMeterLookAndFeel::accentYellow,
-        false  // Default collapsed for now
+        true  // ✅ Expanded to show VU meter
     );
+
+    // Create VU Meter and transfer ownership to card
+    vuMeter = new VUMeterComponent();
+    vuMeterCard->setContentComponent(std::unique_ptr<juce::Component>(vuMeter));
 
     threeBandCard = std::make_unique<MeterCardComponent>(
         "3-BAND",
@@ -113,9 +117,8 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
         return std::unique_ptr<juce::Component>(label);
     };
 
-    // Note: levelsCard and phaseCard already have their content set above (LevelsMeterComponent, PhaseCorrelationComponent)
+    // Note: levelsCard, vuMeterCard, and phaseCard already have their content set above
     // DO NOT overwrite them with placeholders!
-    vuMeterCard->setContentComponent(createPlaceholder("Classic VU meter will be here"));
     threeBandCard->setContentComponent(createPlaceholder("Low/Mid/High meters will be here"));
     spectrumCard->setContentComponent(createPlaceholder("Spectrum analyzer will be here"));
     stereoImageCard->setContentComponent(createPlaceholder("Goniometer/Lissajous will be here"));
@@ -186,6 +189,8 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     // Read atomic values from processor (thread-safe)
     float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
     float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
+    float rmsL = audioProcessor.rmsLevelL.load(std::memory_order_relaxed);
+    float rmsR = audioProcessor.rmsLevelR.load(std::memory_order_relaxed);
     float lufs = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
     float phase = audioProcessor.phaseCorrelation.load(std::memory_order_relaxed);
 
@@ -193,6 +198,12 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     if (levelsMeter != nullptr)
     {
         levelsMeter->updateMetrics(peakL, peakR, lufs);
+    }
+
+    // Update VU Meter
+    if (vuMeter != nullptr)
+    {
+        vuMeter->updateVU(rmsL, rmsR);
     }
 
     // Update Phase Correlation Meter

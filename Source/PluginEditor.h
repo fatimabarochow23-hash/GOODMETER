@@ -15,6 +15,7 @@
 #include "MeterCardComponent.h"
 #include "LevelsMeterComponent.h"
 #include "PhaseCorrelationComponent.h"
+#include "VUMeterComponent.h"
 
 //==============================================================================
 /**
@@ -43,6 +44,7 @@ private:
     // Meter components (raw pointers - owned by MeterCardComponents)
     LevelsMeterComponent* levelsMeter = nullptr;
     PhaseCorrelationComponent* phaseMeter = nullptr;
+    VUMeterComponent* vuMeter = nullptr;
 
     // Meter card components (Phase 3 will add remaining meters)
     std::unique_ptr<MeterCardComponent> levelsCard;
