@@ -285,8 +285,8 @@ private:
      */
     void drawLUFSInfo(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // ✅ 响应式单位隐藏：提高阈值到 480px，避免单位被半截腰裁剪
-        bool showUnit = bounds.getWidth() > 480;
+        // ✅ 响应式单位隐藏：提高阈值到 550px，确保绝对充足的物理空间
+        bool showUnit = bounds.getWidth() > 550;
         // ✅ 强化数值冲击力：大幅增加字体（28pt vs 22pt）
         float valueFontSize = showUnit ? 28.0f : 22.0f;
 
@@ -326,9 +326,13 @@ private:
             // ✅ 高亮数值用纯色（无透明度），增强视觉冲击力
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(valueFontSize, juce::Font::bold));
-            g.drawText(valueStr,
-                      cellBounds,  // 剩余 65% 空间给数值
-                      juce::Justification::centredRight, false);
+
+            // ✅ 使用 drawFittedText 防止字符截断（智能压缩到 75%，绝不裁剪）
+            g.drawFittedText(valueStr,
+                           cellBounds,  // 剩余 65% 空间给数值
+                           juce::Justification::centredRight,
+                           1,      // 最大行数
+                           0.75f); // 最小横向缩放比例（允许压缩到 75%）
         };
 
         // 📊 使用降帧后的显示值（每 10 帧更新，约 6Hz）
