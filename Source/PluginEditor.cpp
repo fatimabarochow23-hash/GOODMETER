@@ -59,8 +59,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     spectrumCard = std::make_unique<MeterCardComponent>(
         "SPECTRUM",
         GoodMeterLookAndFeel::accentCyan,
-        false
+        true  // ✅ Expanded to show spectrum analyzer
     );
+
+    // Create Spectrum Analyzer and transfer ownership to card
+    spectrumAnalyzer = new SpectrumAnalyzerComponent(audioProcessor);
+    spectrumCard->setContentComponent(std::unique_ptr<juce::Component>(spectrumAnalyzer));
 
     phaseCard = std::make_unique<MeterCardComponent>(
         "PHASE",
@@ -117,10 +121,9 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
         return std::unique_ptr<juce::Component>(label);
     };
 
-    // Note: levelsCard, vuMeterCard, and phaseCard already have their content set above
+    // Note: levelsCard, vuMeterCard, phaseCard, and spectrumCard already have their content set above
     // DO NOT overwrite them with placeholders!
     threeBandCard->setContentComponent(createPlaceholder("Low/Mid/High meters will be here"));
-    spectrumCard->setContentComponent(createPlaceholder("Spectrum analyzer will be here"));
     stereoImageCard->setContentComponent(createPlaceholder("Goniometer/Lissajous will be here"));
     spectrogramCard->setContentComponent(createPlaceholder("Waterfall spectrogram will be here"));
 
