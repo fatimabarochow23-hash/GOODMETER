@@ -88,6 +88,10 @@ public:
                                           bounds.getWidth(),
                                           bounds.getHeight(),
                                           true);  // Clear to transparent
+
+            // ✅ 立即用纯白色填充，消除初始灰色块
+            spectrogramImage.clear(spectrogramImage.getBounds(), juce::Colours::white);
+
             drawX = 0;  // 重置游标
         }
     }
@@ -109,12 +113,12 @@ private:
     bool isFirstFrame = true;
 
     // Frequency range (logarithmic)
-    static constexpr float minFreq = 20.0f;    // 20 Hz (bottom)
+    static constexpr float minFreq = 30.0f;    // 30 Hz (bottom) - 压缩底部无用空白
     static constexpr float maxFreq = 20000.0f; // 20 kHz (top)
 
-    // dB range for color mapping
-    static constexpr float minDb = -90.0f;
-    static constexpr float maxDb = 0.0f;
+    // dB range for color mapping (压榨动态范围！)
+    static constexpr float minDb = -80.0f;  // 底噪
+    static constexpr float maxDb = -10.0f;  // 天花板降低，普通音乐也能触发峰值色
 
     //==========================================================================
     void timerCallback() override
@@ -146,15 +150,46 @@ private:
         if (height <= 0)
             return;
 
-        // 绘制单列像素（从上到下）
+        // 🎨 像素级精准渲染：遍历屏幕 Y 坐标（而非 FFT 数组）
+        // 确保每个像素都有准确的频率对应，避免"横条纹"
+        const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
+        const float frequencyRatio = maxFreq / minFreq;  // 20000 / 20 = 1000
+
         for (int y = 0; y < height; ++y)
         {
-            // ✅ Y 轴反转：top (y=0) = 20kHz, bottom (y=height-1) = 20Hz
-            const float freq = yToFrequency(y, height);
+            // ✅ 严格的逆向对数映射：从像素 Y → 频率 Hz
+            // top (y=0) = 20kHz, bottom (y=height-1) = 30Hz
+            const float normalizedY = 1.0f - (static_cast<float>(y) / static_cast<float>(height));
+            const float currentFreq = minFreq * std::pow(frequencyRatio, normalizedY);
 
-            // ✅ 使用平滑后的数据（而非原始 fftData）
-            const float magnitude = getMagnitudeAtFrequency(freq);
-            const float db = magnitudeToDb(magnitude);
+            // ✅ 频率 → FFT bin（保留浮点精度用于插值！）
+            const float binFloat = (currentFreq * static_cast<float>(GOODMETERAudioProcessor::fftSize)) / sampleRate;
+
+            // 🎨 FFT 频段线性插值（消灭马赛克的核心魔法！）
+            // 取出整数部分和小数部分
+            const int binIndex = static_cast<int>(binFloat);
+            const float fraction = binFloat - static_cast<float>(binIndex);
+
+            float rawMagnitude = 0.0f;
+
+            // 在当前 bin 和下一个 bin 之间进行平滑过渡（抗锯齿插值）
+            if (binIndex >= 0 && binIndex < numBins - 1)
+            {
+                const float mag1 = smoothedFftData[binIndex];
+                const float mag2 = smoothedFftData[binIndex + 1];
+                rawMagnitude = mag1 + fraction * (mag2 - mag1);
+            }
+            else
+            {
+                // 越界保护
+                rawMagnitude = smoothedFftData[juce::jlimit(0, numBins - 1, binIndex)];
+            }
+
+            // 🎯 FFT 能量缩放：除以 FFT 尺寸得到真实振幅
+            const float scaledAmplitude = rawMagnitude / static_cast<float>(GOODMETERAudioProcessor::fftSize);
+
+            // 转换为 dB（使用 JUCE 的 Decibels 工具，-100dB 作为最小值）
+            const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
 
             // 映射为粉色云雾颜色
             const juce::Colour colour = getColourForDb(db);
@@ -216,34 +251,37 @@ private:
     }
 
     /**
-     * 🌸 粉色云雾调色板（Goodhertz 风格）
-     * -90dB: 完全透明白色（静音，露出底层白色）
-     * -45dB: 半透明柔和粉（云雾主体，alpha=0.35）
-     * 0dB: 纯实心粉色（峰值冲击，alpha=1.0，绝不发白！）
+     * 🌸 粉色云雾调色板（Web 版高动态范围复刻）
+     * 彻底废弃 Alpha 通道，使用纯色 RGB 插值！
+     *
+     * 三级调色板：
+     * - 0.0 (静音): 纯白色（与卡片背景融合）
+     * - 0.5 (中等): RGB(230, 51, 95) 标志性主粉色
+     * - 1.0 (峰值): RGB(110, 15, 40) 极深邃暗绯红色（深色线条）
+     *
+     * dB 映射：-80dB (底噪) → -10dB (天花板)
      */
     juce::Colour getColourForDb(float db) const
     {
-        // 钳制并归一化到 0.0-1.0 范围
-        const float clamped = juce::jlimit(minDb, maxDb, db);
-        const float normalized = juce::jmap(clamped, minDb, maxDb, 0.0f, 1.0f);
+        // 压榨动态范围：-80dB ~ -10dB 映射到 0.0 ~ 1.0
+        float normalized = juce::jmap(db, minDb, maxDb, 0.0f, 1.0f);
+        normalized = juce::jlimit(0.0f, 1.0f, normalized);  // 严格限制
 
-        // 三种核心色
-        const juce::Colour bg = juce::Colours::white.withAlpha(0.0f);        // 静音：全透明
-        const juce::Colour mid = juce::Colour(230, 51, 95).withAlpha(0.35f); // 中等：半透明粉（云雾主体）
-        const juce::Colour peak = juce::Colour(230, 51, 95).withAlpha(1.0f); // 峰值：纯实心粉（不发白）
+        // 三种纯色（无任何透明度！）
+        const juce::Colour bg = juce::Colours::white;   // 静音：纯白底色（与卡片融合）
+        const juce::Colour mid(230, 51, 95);            // 中等能量：标志性主粉色
+        const juce::Colour peak(110, 15, 40);           // 峰值：极深邃暗绯红（深色线条）
 
         // 分段插值
         if (normalized < 0.5f)
         {
-            // 0.0 ~ 0.5: bg → mid
-            const float t = normalized * 2.0f;
-            return bg.interpolatedWith(mid, t);
+            // 0.0 ~ 0.5: 灰白 → 纯粉色
+            return bg.interpolatedWith(mid, normalized * 2.0f);
         }
         else
         {
-            // 0.5 ~ 1.0: mid → peak
-            const float t = (normalized - 0.5f) * 2.0f;
-            return mid.interpolatedWith(peak, t);
+            // 0.5 ~ 1.0: 纯粉色 → 深暗绯红（爆音感）
+            return mid.interpolatedWith(peak, (normalized - 0.5f) * 2.0f);
         }
     }
 

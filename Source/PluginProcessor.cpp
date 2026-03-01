@@ -95,9 +95,41 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     kWeightingL.prepare(sampleRate);
     kWeightingR.prepare(sampleRate);
 
+    // Prepare 3-Band frequency filters
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = static_cast<juce::uint32>(samplesPerBlock);
+    spec.numChannels = 1;
+
+    // LOW band: Butterworth Low-pass @ 250Hz (4th order)
+    *lowPassL_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 250.0f, 0.707f);
+    *lowPassR_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 250.0f, 0.707f);
+
+    // MID band: Butterworth Band-pass 250Hz - 2kHz
+    *bandPassL_250_2k.coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate, 1000.0f, 2.0f);
+    *bandPassR_250_2k.coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate, 1000.0f, 2.0f);
+
+    // HIGH band: Butterworth High-pass @ 2kHz (4th order)
+    *highPassL_2kHz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 2000.0f, 0.707f);
+    *highPassR_2kHz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 2000.0f, 0.707f);
+
+    lowPassL_250Hz.prepare(spec);
+    lowPassR_250Hz.prepare(spec);
+    bandPassL_250_2k.prepare(spec);
+    bandPassR_250_2k.prepare(spec);
+    highPassL_2kHz.prepare(spec);
+    highPassR_2kHz.prepare(spec);
+
     // Reset all DSP state
     kWeightingL.reset();
     kWeightingR.reset();
+
+    lowPassL_250Hz.reset();
+    lowPassR_250Hz.reset();
+    bandPassL_250_2k.reset();
+    bandPassR_250_2k.reset();
+    highPassL_2kHz.reset();
+    highPassR_2kHz.reset();
 
     lufsBufferL.fill(0.0f);
     lufsBufferR.fill(0.0f);
@@ -139,66 +171,44 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         buffer.clear(i, 0, buffer.getNumSamples());
 
     //==========================================================================
-    // 🎵 TEST SIGNAL GENERATOR (Multi-Tone Synthesis)
-    // 更像音乐的测试信号：4 个不同频率的正弦波叠加
+    // 🎵 TEST SIGNAL GENERATOR (Broadband Breathing Noise)
+    // 宽带噪音 + 低频 LFO 呼吸包络（营造瀑布图的粉色云雾质感）
     //==========================================================================
-    #define ENABLE_TEST_SIGNAL 1  // ✅ RE-ENABLED
+    #define ENABLE_TEST_SIGNAL 0  // ✅ DISABLED - Pure audio passthrough for production
     #if ENABLE_TEST_SIGNAL
     {
-        static float phase1 = 0.0f;  // 100 Hz (低频)
-        static float phase2 = 0.0f;  // 440 Hz (A4 音符)
-        static float phase3 = 0.0f;  // 1000 Hz (中频)
-        static float phase4 = 0.0f;  // 4000 Hz (高频)
         static float lfoPhase = 0.0f;
+        static juce::Random random;
 
         const float sampleRate = static_cast<float>(currentSampleRate);
 
-        // 4 个频率的步进值
-        const float step1 = juce::MathConstants<float>::twoPi * 100.0f / sampleRate;
-        const float step2 = juce::MathConstants<float>::twoPi * 440.0f / sampleRate;
-        const float step3 = juce::MathConstants<float>::twoPi * 1000.0f / sampleRate;
-        const float step4 = juce::MathConstants<float>::twoPi * 4000.0f / sampleRate;
-
-        // LFO 控制整体包络（1.5 Hz 呼吸节奏）
+        // LFO 控制整体呼吸包络（1.5 Hz 呼吸节奏）
         const float lfoStep = juce::MathConstants<float>::twoPi * 1.5f / sampleRate;
 
         for (int i = 0; i < buffer.getNumSamples(); ++i)
         {
-            // 更新相位
-            phase1 += step1;
-            phase2 += step2;
-            phase3 += step3;
-            phase4 += step4;
+            // 更新 LFO 相位
             lfoPhase += lfoStep;
+            if (lfoPhase >= juce::MathConstants<float>::twoPi)
+                lfoPhase -= juce::MathConstants<float>::twoPi;
 
-            // 防止相位溢出
-            if (phase1 >= juce::MathConstants<float>::twoPi) phase1 -= juce::MathConstants<float>::twoPi;
-            if (phase2 >= juce::MathConstants<float>::twoPi) phase2 -= juce::MathConstants<float>::twoPi;
-            if (phase3 >= juce::MathConstants<float>::twoPi) phase3 -= juce::MathConstants<float>::twoPi;
-            if (phase4 >= juce::MathConstants<float>::twoPi) phase4 -= juce::MathConstants<float>::twoPi;
-            if (lfoPhase >= juce::MathConstants<float>::twoPi) lfoPhase -= juce::MathConstants<float>::twoPi;
-
-            // 呼吸包络
+            // 呼吸包络（0.0 ~ 1.0）
             const float envelope = (std::sin(lfoPhase) + 1.0f) * 0.5f;
 
-            // 🎼 4 个正弦波叠加（不同振幅）
-            const float tone1 = std::sin(phase1) * 0.15f;  // 低频较强
-            const float tone2 = std::sin(phase2) * 0.20f;  // 440Hz 主旋律
-            const float tone3 = std::sin(phase3) * 0.10f;  // 中频
-            const float tone4 = std::sin(phase4) * 0.05f;  // 高频较弱
+            // 🌫️ 宽带白噪（-1.0 ~ +1.0）
+            const float noiseL = (random.nextFloat() * 2.0f - 1.0f) * 0.3f * envelope;
 
-            const float mixedL = (tone1 + tone2 + tone3 + tone4) * envelope;
-
-            // 🔄 右声道带有相位关联变化
+            // 🔄 右声道添加去相关噪音（营造立体声宽度）
             const float correlation = std::cos(lfoPhase);
             const float decorrelation = std::sin(lfoPhase);
-            const float mixedR = mixedL * correlation + (tone3 + tone4) * decorrelation * 0.3f;
+            const float noiseR_decorrelated = (random.nextFloat() * 2.0f - 1.0f) * 0.3f;
+            const float noiseR = noiseL * correlation + noiseR_decorrelated * decorrelation * envelope;
 
             // 强制覆盖输入缓冲区
-            buffer.setSample(0, i, mixedL);
+            buffer.setSample(0, i, noiseL);
             if (buffer.getNumChannels() > 1)
             {
-                buffer.setSample(1, i, mixedR);
+                buffer.setSample(1, i, noiseR);
             }
         }
     }
@@ -389,6 +399,69 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     const float rmsSide_dB = rmsSide > 1e-8f ? 20.0f * std::log10(rmsSide) : -90.0f;
     rmsLevelMid.store(rmsMid_dB, std::memory_order_relaxed);
     rmsLevelSide.store(rmsSide_dB, std::memory_order_relaxed);
+
+    //==========================================================================
+    // 3-Band Frequency Analysis (LOW/MID/HIGH)
+    //==========================================================================
+    float localSumSquareLow = 0.0f;
+    float localSumSquareMid3Band = 0.0f;
+    float localSumSquareHigh = 0.0f;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float sampleL = channelDataL[i];
+        const float sampleR = channelDataR[i];
+
+        // Apply band filters
+        const float lowL = lowPassL_250Hz.processSample(sampleL);
+        const float lowR = lowPassR_250Hz.processSample(sampleR);
+        const float midL = bandPassL_250_2k.processSample(sampleL);
+        const float midR = bandPassR_250_2k.processSample(sampleR);
+        const float highL = highPassL_2kHz.processSample(sampleL);
+        const float highR = highPassR_2kHz.processSample(sampleR);
+
+        // Accumulate RMS for each band (stereo sum)
+        localSumSquareLow += (lowL * lowL + lowR * lowR);
+        localSumSquareMid3Band += (midL * midL + midR * midR);
+        localSumSquareHigh += (highL * highL + highR * highR);
+    }
+
+    // Calculate RMS and convert to dB
+    const float rmsLow = std::sqrt(localSumSquareLow / (numSamples * 2));
+    const float rmsMid3Band = std::sqrt(localSumSquareMid3Band / (numSamples * 2));
+    const float rmsHigh = std::sqrt(localSumSquareHigh / (numSamples * 2));
+
+    const float rmsLow_dB = rmsLow > 1e-8f ? 20.0f * std::log10(rmsLow) : -90.0f;
+    const float rmsMid3Band_dB = rmsMid3Band > 1e-8f ? 20.0f * std::log10(rmsMid3Band) : -90.0f;
+    const float rmsHigh_dB = rmsHigh > 1e-8f ? 20.0f * std::log10(rmsHigh) : -90.0f;
+
+    rmsLevelLow.store(rmsLow_dB, std::memory_order_relaxed);
+    rmsLevelMid3Band.store(rmsMid3Band_dB, std::memory_order_relaxed);
+    rmsLevelHigh.store(rmsHigh_dB, std::memory_order_relaxed);
+
+    //==========================================================================
+    // Stereo Image Sample Buffer (for Goniometer/Lissajous)
+    // 🎯 批量打包推送 512 个点到 FIFO（解决容量瓶颈 Bug）
+    //==========================================================================
+    // Downsample: push every 2nd sample (更密集的线条)
+    for (int i = 0; i < numSamples; i += 2)
+    {
+        const float sampleL = channelDataL[i];
+        const float sampleR = channelDataR[i];
+
+        // 积攒到本地缓冲区
+        tempStereoBufL[tempStereoIndex] = sampleL;
+        tempStereoBufR[tempStereoIndex] = sampleR;
+        tempStereoIndex++;
+
+        // 🎯 攒满 512 个点后，一次性打包推入 FIFO！
+        if (tempStereoIndex >= 512)
+        {
+            stereoSampleFifoL.push(tempStereoBufL.data(), 512);
+            stereoSampleFifoR.push(tempStereoBufR.data(), 512);
+            tempStereoIndex = 0;
+        }
+    }
 }
 
 //==============================================================================

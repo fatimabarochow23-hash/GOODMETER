@@ -34,8 +34,8 @@ public:
         // ✅ 只设置高度，宽度由父容器（MeterCard）控制
         setSize(100, 200);  // 初始宽度会被父容器覆盖
 
-        // Start timer for FFT data updates (30Hz is sufficient for spectrum)
-        startTimerHz(30);
+        // Start timer for FFT data updates (60Hz 满帧刷新)
+        startTimerHz(60);
     }
 
     ~SpectrumAnalyzerComponent() override
@@ -72,7 +72,22 @@ public:
 
     void resized() override
     {
-        // No child components
+        // 🎯 预先计算 X 坐标缓存池（只在窗口改变时执行一次！）
+        auto bounds = getLocalBounds().toFloat();
+
+        // Safety check
+        if (bounds.isEmpty() || bounds.getWidth() <= 0)
+            return;
+
+        const float width = bounds.getWidth();
+
+        // 为所有 FFT bin 预计算 X 坐标（将昂贵的 log10 运算转移到这里）
+        cachedXCoords.resize(numBins);
+        for (int bin = 0; bin < numBins; ++bin)
+        {
+            const float freq = binToFrequency(bin);
+            cachedXCoords[bin] = bounds.getX() + frequencyToX(freq, width);
+        }
     }
 
 private:
@@ -84,6 +99,10 @@ private:
     std::array<float, numBins> fftData;
     std::array<float, numBins> smoothedData;  // 平滑缓存
     bool hasValidData = false;
+
+    // 🎯 X 坐标缓存池 (空间换时间策略 - Lookup Table)
+    // 频率到 X 轴的对数映射极其昂贵，窗口不变时它就是常数！
+    std::vector<float> cachedXCoords;
 
     // Frequency range
     static constexpr float minFreq = 20.0f;    // 20 Hz
@@ -103,8 +122,8 @@ private:
             // 🎨 时间平滑处理：让频谱像流体一样波动（丝滑海浪效果）
             for (int i = 0; i < numBins; ++i)
             {
-                // 平滑系数 0.15f（15% 追赶速度 = 更慢、更丝滑）
-                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.15f;
+                // 平滑系数 0.35f（35% 追赶速度 = 极速响应 + 丝滑）
+                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.35f;
             }
 
             hasValidData = true;
@@ -162,6 +181,7 @@ private:
     /**
      * Draw smooth spectrum polygon with gradient fill
      * 🎨 粉色海浪质感（0.2-0.3 透明度）
+     * ⚡ 性能优化：降采样绘制 + X 坐标查表法（零 log10 运算）
      */
     void drawSpectrum(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
@@ -169,26 +189,41 @@ private:
         const float height = bounds.getHeight();
         const float topY = bounds.getY();
 
+        // Safety check: 确保缓存已初始化
+        if (cachedXCoords.empty())
+            return;
+
         // 🎨 创建平滑的多边形路径
         juce::Path spectrumPath;
 
         // Start at bottom-left corner
         spectrumPath.startNewSubPath(bounds.getX(), bounds.getBottom());
 
-        // Iterate through FFT bins and map to screen coordinates
-        for (int bin = 1; bin < numBins; ++bin)
+        // ⚡ 降采样步长：强制最多只抽样 250 个关键频点进行连线
+        // 屏幕宽度根本没有 2048 个像素！
+        const int maxPoints = 250;
+        const int step = juce::jmax(1, numBins / maxPoints);
+
+        // 🎯 极速纯粹的绘制循环 (The Fast Loop - Zero Math!)
+        for (int bin = 1; bin < numBins; bin += step)
         {
+            // 安全边界检查
+            if (bin >= static_cast<int>(cachedXCoords.size()))
+                break;
+
             const float freq = binToFrequency(bin);
 
             // Only draw frequencies in visible range (20Hz - 20kHz)
             if (freq < minFreq || freq > maxFreq)
                 continue;
 
-            // 🎨 使用平滑后的数据，减少闪烁
-            const float magnitude = smoothedData[bin];
-            const float db = magnitudeToDb(magnitude);
+            // 1️⃣ 极速查表：O(1) 复杂度，零数学运算！
+            const float x = cachedXCoords[bin];
 
-            const float x = bounds.getX() + frequencyToX(freq, width);
+            // 2️⃣ 将振幅转为 dB (这里只算 250 次，可接受)
+            const float rawMagnitude = smoothedData[bin];
+            const float scaledAmplitude = rawMagnitude / static_cast<float>(GOODMETERAudioProcessor::fftSize);
+            const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
             const float y = dbToY(db, height, topY);
 
             spectrumPath.lineTo(x, y);

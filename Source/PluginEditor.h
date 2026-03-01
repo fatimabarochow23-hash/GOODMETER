@@ -18,6 +18,8 @@
 #include "VUMeterComponent.h"
 #include "SpectrumAnalyzerComponent.h"
 #include "SpectrogramComponent.h"
+#include "StereoImageComponent.h"
+#include "Band3Component.h"
 
 //==============================================================================
 /**
@@ -49,6 +51,8 @@ private:
     VUMeterComponent* vuMeter = nullptr;
     SpectrumAnalyzerComponent* spectrumAnalyzer = nullptr;
     SpectrogramComponent* spectrogramMeter = nullptr;
+    StereoImageComponent* stereoImageMeter = nullptr;
+    Band3Component* band3Meter = nullptr;
 
     // Meter card components (Phase 3 will add remaining meters)
     std::unique_ptr<MeterCardComponent> levelsCard;

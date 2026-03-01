@@ -50,14 +50,15 @@ public:
         const float width = static_cast<float>(bounds.getWidth());
         const float height = static_cast<float>(bounds.getHeight());
         const float cx = width / 2.0f;
-        const float cy = height / 2.0f - 20.0f;  // PhaseCorrelation.tsx line 36
 
-        // Draw canvas section (top 140px from 180px total)
-        auto canvasBounds = bounds.removeFromTop(140);
-        drawCondenser(g, canvasBounds.toFloat(), cx, cy);
+        // 🎯 死死钉在绝对物理中心！实时获取垂直中心点
+        const float cy = bounds.toFloat().getCentreY();
 
-        // Draw labels at bottom (PhaseCorrelation.tsx lines 150-154)
-        auto labelBounds = bounds;
+        // Use full bounds for condenser drawing
+        drawCondenser(g, bounds.toFloat(), cx, cy);
+
+        // Draw labels at bottom (fixed height)
+        auto labelBounds = bounds.removeFromBottom(30);
         drawLabels(g, labelBounds);
     }
 

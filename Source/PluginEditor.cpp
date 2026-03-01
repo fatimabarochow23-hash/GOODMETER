@@ -53,8 +53,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     threeBandCard = std::make_unique<MeterCardComponent>(
         "3-BAND",
         GoodMeterLookAndFeel::accentPurple,
-        false  // Default collapsed
+        true  // ✅ Expanded to show chemical vessels
     );
+
+    // Create 3-Band Analyzer and transfer ownership to card
+    band3Meter = new Band3Component(audioProcessor);
+    threeBandCard->setContentComponent(std::unique_ptr<juce::Component>(band3Meter));
 
     spectrumCard = std::make_unique<MeterCardComponent>(
         "SPECTRUM",
@@ -79,8 +83,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     stereoImageCard = std::make_unique<MeterCardComponent>(
         "STEREO",
         GoodMeterLookAndFeel::accentPink,
-        false
+        true  // ✅ Expanded to show stereo field visualization
     );
+
+    // Create Stereo Image Meter and transfer ownership to card
+    stereoImageMeter = new StereoImageComponent(audioProcessor);
+    stereoImageCard->setContentComponent(std::unique_ptr<juce::Component>(stereoImageMeter));
 
     spectrogramCard = std::make_unique<MeterCardComponent>(
         "SPECTROGRAM",
@@ -115,28 +123,13 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     contentComponent->addAndMakeVisible(stereoImageCard.get());
     contentComponent->addAndMakeVisible(spectrogramCard.get());
 
-    // Set placeholder content for remaining cards (Phase 3 will replace these)
-    auto createPlaceholder = [](const juce::String& text) {
-        auto* label = new juce::Label();
-        label->setText(text, juce::dontSendNotification);
-        label->setJustificationType(juce::Justification::centred);
-        label->setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        label->setSize(400, 100);
-        return std::unique_ptr<juce::Component>(label);
-    };
-
-    // Note: levelsCard, vuMeterCard, phaseCard, spectrumCard, and spectrogramCard already have their content set above
-    // DO NOT overwrite them with placeholders!
-    threeBandCard->setContentComponent(createPlaceholder("Low/Mid/High meters will be here"));
-    stereoImageCard->setContentComponent(createPlaceholder("Goniometer/Lissajous will be here"));
-
     // Set initial size (matches typical plugin dimensions)
     setSize(500, 700);
 
     // 🎨 开启自由横向缩放（对标专业插件）
     setResizable(true, true);
-    setResizeLimits(400, 400,   // 最小宽度 400px, 最小高度 400px
-                    1000, 2000); // 最大宽度 1000px, 最大高度 2000px
+    setResizeLimits(760, 600,    // 🧱 Brick Wall: 最小宽度 760px, 最小高度 600px（保护 VU 表不被裁切）
+                    2400, 1600); // 最大宽度 2400px（支持三列布局）, 最大高度 1600px
 
     // Start 60Hz timer for UI updates
     startTimerHz(60);
@@ -162,77 +155,231 @@ void GOODMETERAudioProcessorEditor::resized()
     // Position viewport to fill entire editor
     viewport->setBounds(bounds);
 
-    // 🎨 响应式布局阈值：800px
+    const int width = bounds.getWidth();
+    const int spacing = GoodMeterLookAndFeel::cardSpacing;
+
+    // 🎯 动态更新窗口极限尺寸（响应当前列模式）
+    const int minCardWidth = 380;
+    const int minHeight = 500;
     const int dualColumnThreshold = 800;
-    const bool isDualColumnMode = bounds.getWidth() >= dualColumnThreshold;
 
-    if (isDualColumnMode)
+    if (width < dualColumnThreshold)
     {
-        // ✅ 双列模式：左侧主表 + 右侧频谱类
-        const int leftColumnWidth = 400;  // 左侧固定宽度
-        const int columnGap = GoodMeterLookAndFeel::cardSpacing;
-        const int rightColumnX = leftColumnWidth + columnGap * 2;
-        const int rightColumnWidth = bounds.getWidth() - rightColumnX - GoodMeterLookAndFeel::cardSpacing;
-
-        // 左侧列布局
-        int leftY = GoodMeterLookAndFeel::cardSpacing;
-        auto layoutLeftCard = [&](MeterCardComponent* card) {
-            if (card != nullptr)
-            {
-                int cardHeight = card->getHeight();
-                card->setBounds(GoodMeterLookAndFeel::cardSpacing,
-                              leftY,
-                              leftColumnWidth,
-                              cardHeight);
-                leftY += cardHeight + GoodMeterLookAndFeel::cardSpacing;
-            }
-        };
-
-        layoutLeftCard(levelsCard.get());
-        layoutLeftCard(vuMeterCard.get());
-        layoutLeftCard(phaseCard.get());
-
-        // 右侧列布局
-        int rightY = GoodMeterLookAndFeel::cardSpacing;
-        auto layoutRightCard = [&](MeterCardComponent* card) {
-            if (card != nullptr)
-            {
-                int cardHeight = card->getHeight();
-                card->setBounds(rightColumnX,
-                              rightY,
-                              rightColumnWidth,
-                              cardHeight);
-                rightY += cardHeight + GoodMeterLookAndFeel::cardSpacing;
-            }
-        };
-
-        layoutRightCard(spectrumCard.get());
-        layoutRightCard(threeBandCard.get());
-        layoutRightCard(stereoImageCard.get());
-        layoutRightCard(spectrogramCard.get());
-
-        // Content height = max of both columns
-        int contentHeight = juce::jmax(leftY, rightY);
-        contentComponent->setSize(bounds.getWidth(), contentHeight);
+        // 单列模式：允许缩小到 380px
+        setResizeLimits(minCardWidth, minHeight, 2400, 1600);
     }
     else
     {
-        // ✅ 单列模式：原有垂直布局
-        int yPos = GoodMeterLookAndFeel::cardSpacing;
+        // 双列/三列模式：根据实际列数动态计算
+        int minWidth = width >= 1200 ? (minCardWidth * 3 + spacing * 4) : (minCardWidth * 2 + spacing * 3);
+        setResizeLimits(minWidth, minHeight, 2400, 1600);
+    }
+
+    // ========================================================================
+    // 🎯 智能三列触发逻辑：根据第二列卡片展开状态决定是否启用第三列
+    // ========================================================================
+
+    // 统计第二列（Spectrum, 3-Band, Stereo）中非瀑布表的展开数量
+    int col2ExpandedCount = 0;
+    if (spectrumCard && spectrumCard->getExpanded()) col2ExpandedCount++;
+    if (threeBandCard && threeBandCard->getExpanded()) col2ExpandedCount++;
+    if (stereoImageCard && stereoImageCard->getExpanded()) col2ExpandedCount++;
+
+    bool spectrogramExpanded = spectrogramCard && spectrogramCard->getExpanded();
+
+    // ✅ 三列启用条件（防止空列）：
+    // 只有当【瀑布表是打开状态】且【第二列还有至少2个其他表打开】时，
+    // 才把瀑布表挤到第三列去！
+    bool shouldUseThreeColumns = spectrogramExpanded && (col2ExpandedCount >= 2);
+
+    // ========================================================================
+    // 三列专业模式（智能触发 + 严格等高网格 + 瀑布图'做自己'）
+    // ========================================================================
+    if (width >= dualColumnThreshold && shouldUseThreeColumns)
+    {
+        // 🎨 三列自动宽度分配
+        const int minColumnWidth = 330;  // 每列最小宽度（降低阈值，更易触发）
+        const int requiredWidth = minColumnWidth * 3 + spacing * 4;
+
+        // 如果窗口宽度不足以容纳三列，降级到双列
+        if (width < requiredWidth)
+        {
+            shouldUseThreeColumns = false;
+        }
+        else
+        {
+            // 计算三列均等宽度
+            const int availableWidth = width - spacing * 4;
+            const int columnWidth = availableWidth / 3;
+
+            // 定义三列起始位置
+            const int col1X = spacing;
+            const int col2X = col1X + columnWidth + spacing;
+            const int col3X = col2X + columnWidth + spacing;
+
+            // 🎯 手风琴弹性排版（Accordion Flex Layout）
+            const int headerHeight = 48;  // 折叠后标题栏高度
+            const int availableHeight = bounds.getHeight() - spacing * 2;
+
+            // ========== 第一列：手风琴排版 Levels, VU, Phase ==========
+            std::vector<MeterCardComponent*> col1Cards;
+            if (levelsCard != nullptr) col1Cards.push_back(levelsCard.get());
+            if (vuMeterCard != nullptr) col1Cards.push_back(vuMeterCard.get());
+            if (phaseCard != nullptr) col1Cards.push_back(phaseCard.get());
+
+            int col1ExpandedCount = 0;
+            for (auto* card : col1Cards)
+                if (card->getExpanded()) col1ExpandedCount++;
+
+            int col1TotalSpacing = spacing * (static_cast<int>(col1Cards.size()) - 1);
+            int col1FoldedTotal = (static_cast<int>(col1Cards.size()) - col1ExpandedCount) * headerHeight;
+            int col1AvailableForExpanded = availableHeight - col1TotalSpacing - col1FoldedTotal;
+            int col1ExpandedHeight = col1ExpandedCount > 0 ? (col1AvailableForExpanded / col1ExpandedCount) : 0;
+
+            int currentY1 = spacing;
+            for (auto* card : col1Cards)
+            {
+                int h = card->getExpanded() ? col1ExpandedHeight : headerHeight;
+                card->setBounds(col1X, currentY1, columnWidth, h);
+                currentY1 += h + spacing;
+            }
+
+            int col1Y = currentY1;
+
+            // ========== 第二列：手风琴排版 Spectrum, 3-Band, Stereo ==========
+            std::vector<MeterCardComponent*> col2Cards;
+            if (spectrumCard != nullptr) col2Cards.push_back(spectrumCard.get());
+            if (threeBandCard != nullptr) col2Cards.push_back(threeBandCard.get());
+            if (stereoImageCard != nullptr) col2Cards.push_back(stereoImageCard.get());
+
+            int col2ExpandedCount = 0;
+            for (auto* card : col2Cards)
+                if (card->getExpanded()) col2ExpandedCount++;
+
+            int col2TotalSpacing = spacing * (static_cast<int>(col2Cards.size()) - 1);
+            int col2FoldedTotal = (static_cast<int>(col2Cards.size()) - col2ExpandedCount) * headerHeight;
+            int col2AvailableForExpanded = availableHeight - col2TotalSpacing - col2FoldedTotal;
+            int col2ExpandedHeight = col2ExpandedCount > 0 ? (col2AvailableForExpanded / col2ExpandedCount) : 0;
+
+            int currentY2 = spacing;
+            for (auto* card : col2Cards)
+            {
+                int h = card->getExpanded() ? col2ExpandedHeight : headerHeight;
+                card->setBounds(col2X, currentY2, columnWidth, h);
+                currentY2 += h + spacing;
+            }
+
+            int col2Y = currentY2;
+
+            // ========== 第三列：Spectrogram '做自己'（舒适固定高度）==========
+            int col3Y = spacing;
+            if (spectrogramCard != nullptr && spectrogramCard->isVisible())
+            {
+                // 🎯 舒适的固定比例高度：可用高度的一半
+                const int spectrogramHeight = availableHeight / 2;
+                spectrogramCard->setBounds(col3X, col3Y, columnWidth, spectrogramHeight);
+                col3Y += spectrogramHeight + spacing;
+            }
+
+            // Content height = max of three columns
+            int contentHeight = juce::jmax(col1Y, juce::jmax(col2Y, col3Y));
+            contentComponent->setSize(width, contentHeight);
+
+            return;  // 完成三列布局，提前返回
+        }
+    }
+
+    // ========================================================================
+    // 双列模式 (width >= 800 且不满足三列条件 + 严格等高网格 + 瀑布图'做自己')
+    // ========================================================================
+    if (width >= dualColumnThreshold)
+    {
+        // 计算双列均等宽度
+        const int availableWidth = width - spacing * 3;
+        const int columnWidth = availableWidth / 2;
+
+        const int col1X = spacing;
+        const int col2X = col1X + columnWidth + spacing;
+
+        // 🎯 手风琴弹性排版
+        const int headerHeight = 48;
+        const int availableHeight = bounds.getHeight() - spacing * 2;
+
+        // ========== 左列：手风琴排版 Levels, VU, Phase ==========
+        std::vector<MeterCardComponent*> col1Cards;
+        if (levelsCard != nullptr) col1Cards.push_back(levelsCard.get());
+        if (vuMeterCard != nullptr) col1Cards.push_back(vuMeterCard.get());
+        if (phaseCard != nullptr) col1Cards.push_back(phaseCard.get());
+
+        int col1ExpandedCount = 0;
+        for (auto* card : col1Cards)
+            if (card->getExpanded()) col1ExpandedCount++;
+
+        int col1TotalSpacing = spacing * (static_cast<int>(col1Cards.size()) - 1);
+        int col1FoldedTotal = (static_cast<int>(col1Cards.size()) - col1ExpandedCount) * headerHeight;
+        int col1AvailableForExpanded = availableHeight - col1TotalSpacing - col1FoldedTotal;
+        int col1ExpandedHeight = col1ExpandedCount > 0 ? (col1AvailableForExpanded / col1ExpandedCount) : 0;
+
+        int currentY1 = spacing;
+        for (auto* card : col1Cards)
+        {
+            int h = card->getExpanded() ? col1ExpandedHeight : headerHeight;
+            card->setBounds(col1X, currentY1, columnWidth, h);
+            currentY1 += h + spacing;
+        }
+
+        int col1Y = currentY1;
+
+        // ========== 右列：手风琴排版 Spectrum, 3-Band, Stereo + Spectrogram ==========
+        std::vector<MeterCardComponent*> col2Cards;
+        if (spectrumCard != nullptr) col2Cards.push_back(spectrumCard.get());
+        if (threeBandCard != nullptr) col2Cards.push_back(threeBandCard.get());
+        if (stereoImageCard != nullptr) col2Cards.push_back(stereoImageCard.get());
+        if (spectrogramCard != nullptr) col2Cards.push_back(spectrogramCard.get());
+
+        int col2ExpandedCount = 0;
+        for (auto* card : col2Cards)
+            if (card->getExpanded()) col2ExpandedCount++;
+
+        int col2TotalSpacing = spacing * (static_cast<int>(col2Cards.size()) - 1);
+        int col2FoldedTotal = (static_cast<int>(col2Cards.size()) - col2ExpandedCount) * headerHeight;
+        int col2AvailableForExpanded = availableHeight - col2TotalSpacing - col2FoldedTotal;
+        int col2ExpandedHeight = col2ExpandedCount > 0 ? (col2AvailableForExpanded / col2ExpandedCount) : 0;
+
+        int currentY2 = spacing;
+        for (auto* card : col2Cards)
+        {
+            int h = card->getExpanded() ? col2ExpandedHeight : headerHeight;
+            card->setBounds(col2X, currentY2, columnWidth, h);
+            currentY2 += h + spacing;
+        }
+
+        int col2Y = currentY2;
+
+        // Content height = max of both columns
+        int contentHeight = juce::jmax(col1Y, col2Y);
+        contentComponent->setSize(width, contentHeight);
+    }
+    // ========================================================================
+    // 单列模式 (width < 800)
+    // ========================================================================
+    else
+    {
+        int yPos = spacing;
 
         auto layoutCard = [&](MeterCardComponent* card) {
-            if (card != nullptr)
+            if (card != nullptr && card->isVisible())  // ✅ 必须检查可见性！
             {
                 // CRITICAL: Use actual current height, not getDesiredHeight()
                 // This preserves animation state during 60Hz timer callbacks
                 int cardHeight = card->getHeight();
 
                 // Only update X, Y, Width - preserve animated Height
-                card->setBounds(GoodMeterLookAndFeel::cardSpacing,
+                card->setBounds(spacing,
                               yPos,
-                              bounds.getWidth() - GoodMeterLookAndFeel::cardSpacing * 2,
+                              width - spacing * 2,
                               cardHeight);
-                yPos += cardHeight + GoodMeterLookAndFeel::cardSpacing;
+                yPos += cardHeight + spacing;
             }
         };
 
@@ -245,7 +392,7 @@ void GOODMETERAudioProcessorEditor::resized()
         layoutCard(spectrogramCard.get());
 
         // Set content component size
-        contentComponent->setSize(bounds.getWidth(), yPos);
+        contentComponent->setSize(width, yPos);
     }
 }
 

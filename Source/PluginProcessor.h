@@ -168,9 +168,20 @@ public:
     std::atomic<float> rmsLevelMid { -90.0f };
     std::atomic<float> rmsLevelSide { -90.0f };
 
+    // 3-Band Frequency RMS (LOW/MID/HIGH)
+    std::atomic<float> rmsLevelLow { -90.0f };   // 20-250Hz
+    std::atomic<float> rmsLevelMid3Band { -90.0f };  // 250-2kHz (renamed to avoid conflict)
+    std::atomic<float> rmsLevelHigh { -90.0f };  // 2k-20kHz
+
     // FFT Data (lock-free FIFO)
     LockFreeFIFO<float, 4> fftFifoL;
     LockFreeFIFO<float, 4> fftFifoR;
+
+    // Stereo Image Sample Buffer (for Goniometer/Lissajous)
+    // Stores recent raw (L, R) sample pairs for XY plotting
+    static constexpr int stereoSampleBufferSize = 1024;
+    LockFreeFIFO<float, 4> stereoSampleFifoL;  // Left channel samples
+    LockFreeFIFO<float, 4> stereoSampleFifoR;  // Right channel samples
 
     // FFT Engine
     static constexpr int fftOrder = 12; // 2^12 = 4096
@@ -184,6 +195,15 @@ private:
     // K-Weighting filters for LUFS
     KWeightingFilter kWeightingL;
     KWeightingFilter kWeightingR;
+
+    // 3-Band frequency filters (LOW/MID/HIGH)
+    // LOW: 20-250Hz, MID: 250-2kHz, HIGH: 2k-20kHz
+    juce::dsp::IIR::Filter<float> lowPassL_250Hz;
+    juce::dsp::IIR::Filter<float> lowPassR_250Hz;
+    juce::dsp::IIR::Filter<float> bandPassL_250_2k;
+    juce::dsp::IIR::Filter<float> bandPassR_250_2k;
+    juce::dsp::IIR::Filter<float> highPassL_2kHz;
+    juce::dsp::IIR::Filter<float> highPassR_2kHz;
 
     // LUFS circular buffer (400ms = 19200 samples at 48kHz)
     static constexpr int lufsBufferSize = 32768;
@@ -201,6 +221,11 @@ private:
     // FFT engine
     juce::dsp::FFT fft { fftOrder };
     juce::dsp::WindowingFunction<float> window { fftSize, juce::dsp::WindowingFunction<float>::hann };
+
+    // 🎯 Stereo sample accumulation buffers (batch push to FIFO)
+    std::array<float, 512> tempStereoBufL;
+    std::array<float, 512> tempStereoBufR;
+    int tempStereoIndex = 0;
 
     // Sample rate
     double currentSampleRate = 48000.0;

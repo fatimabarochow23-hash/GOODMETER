@@ -47,12 +47,16 @@ public:
         if (bounds.isEmpty())
             return;
 
-        // ✅ Draw peak bars section (增高到 110px，给两条横条 + 刻度足够空间)
-        auto barsBounds = bounds.removeFromTop(110);
+        // 🎯 动态高度映射：Peak bars 占 55%，LUFS info 占 40%（纵向拉大数据面板！）
+        const int totalHeight = bounds.getHeight();
+        const int barsHeight = static_cast<int>(totalHeight * 0.55f);
+        const int spacing = 10;
+
+        auto barsBounds = bounds.removeFromTop(barsHeight);
         drawPeakBars(g, barsBounds);
 
-        // ✅ Draw LUFS info section (缩减间距到 14px)
-        bounds.removeFromTop(14);
+        // Draw LUFS info section（拿走剩余的 45% 空间）
+        bounds.removeFromTop(spacing);
         auto infoBounds = bounds;
         drawLUFSInfo(g, infoBounds);
     }
@@ -72,11 +76,11 @@ public:
         currentPeakR = peakR_dB;
         currentLUFS = lufs_dB;
 
-        // 🎯 平滑插值策略：每帧追赶目标值（0.15f 平滑系数）
+        // 🎯 平滑插值策略：每帧追赶目标值（0.3f 平滑系数）
         // 营造数字快速但连续滚动的质感，避免跳跃突变
-        displayPeakL += (currentPeakL - displayPeakL) * 0.15f;
-        displayPeakR += (currentPeakR - displayPeakR) * 0.15f;
-        displayLUFS += (currentLUFS - displayLUFS) * 0.15f;
+        displayPeakL += (currentPeakL - displayPeakL) * 0.3f;
+        displayPeakR += (currentPeakR - displayPeakR) * 0.3f;
+        displayLUFS += (currentLUFS - displayLUFS) * 0.3f;
 
         // Update peak holds (logic from Levels.tsx lines 41-56)
         auto now = juce::Time::getMillisecondCounterHiRes();
@@ -126,7 +130,7 @@ private:
     float currentPeakR = -90.0f;
     float currentLUFS = -70.0f;
 
-    // 📊 平滑插值显示值（每帧追赶，0.15f 平滑系数）
+    // 📊 平滑插值显示值（每帧追赶，0.3f 平滑系数）
     // 营造数字快速但连续滚动的质感
     float displayPeakL = -90.0f;
     float displayPeakR = -90.0f;
@@ -241,16 +245,16 @@ private:
         // ✅ 单边裁剪：左右各 20px，顶部往下推 16px（不削减底部！）
         auto area = bounds.reduced(20, 0).withTrimmedTop(16);
 
-        // Draw L channel bar
+        // Draw L channel bar (✅ 使用平滑后的显示值)
         auto barL = area.removeFromTop(barHeight);
-        drawPeakBar(g, barL, currentPeakL, peakHoldL);
+        drawPeakBar(g, barL, displayPeakL, peakHoldL);
 
         // Gap
         area.removeFromTop(barGap);
 
-        // Draw R channel bar
+        // Draw R channel bar (✅ 使用平滑后的显示值)
         auto barR = area.removeFromTop(barHeight);
-        drawPeakBar(g, barR, currentPeakR, peakHoldR);
+        drawPeakBar(g, barR, displayPeakR, peakHoldR);
 
         // Draw scale ticks (Levels.tsx lines 154-161)
         g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
@@ -287,8 +291,9 @@ private:
     {
         // ✅ 响应式单位隐藏：提高阈值到 550px，确保绝对充足的物理空间
         bool showUnit = bounds.getWidth() > 550;
-        // ✅ 强化数值冲击力：大幅增加字体（28pt vs 22pt）
-        float valueFontSize = showUnit ? 28.0f : 22.0f;
+
+        // 🎯 舒适的大字体（绝对不准缩小或挤压变形！）
+        const float valueFontSize = 22.0f;  // 恢复舒适的 22pt 大字体
 
         // Background box (Levels.tsx line 166)
         g.setColour(juce::Colour(0xFFEAEAEA));
@@ -298,41 +303,54 @@ private:
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f, 2.0f);
 
-        // 3-column grid layout (Levels.tsx: grid-cols-3)
+        // 🎯 3-column grid layout with dynamic row heights
         auto gridBounds = bounds.reduced(16, 12);
         const int colWidth = gridBounds.getWidth() / 3;
+        const int rowHeight = gridBounds.getHeight() / 2;  // 2 rows, equal height
 
         auto drawMetric = [&](int col, int row, const juce::String& label, float value, const juce::String& unit, bool highlight = false)
         {
-            auto cellBounds = gridBounds.withX(gridBounds.getX() + col * colWidth)
-                                       .withY(gridBounds.getY() + row * 32)
-                                       .withWidth(colWidth)
-                                       .withHeight(28);
+            // 🎯 充分利用纵向空间！上下两行间距适中
+            auto colBounds = juce::Rectangle<int>(
+                gridBounds.getX() + col * colWidth,
+                gridBounds.getY(),
+                colWidth,
+                gridBounds.getHeight()
+            );
 
-            // ✅ Label 占 35% 宽度，给数值留更多空间（避免单位被裁）
-            auto labelArea = cellBounds.removeFromLeft(static_cast<int>(colWidth * 0.35f));
+            juce::Rectangle<int> cellBounds;
+            if (row == 0)
+            {
+                // 第一行：拿走上半截，并在底部砍掉 6px 作为间距
+                cellBounds = colBounds.removeFromTop(colBounds.getHeight() / 2).reduced(0, 6);
+            }
+            else
+            {
+                // 第二行：拿走下半截，并在顶部砍掉 6px 作为间距
+                cellBounds = colBounds.removeFromBottom(colBounds.getHeight() / 2).reduced(0, 6);
+            }
+
+            // 🎯 严格左右切分：40% 给标签，60% 给数值
+            auto labelArea = cellBounds.removeFromLeft(static_cast<int>(cellBounds.getWidth() * 0.4f));
+            auto valueArea = cellBounds;  // 剩下的 60% 全给数值
+
+            // ✅ 左侧画标签（左对齐，稍小字体）
             g.setColour(GoodMeterLookAndFeel::textMuted);
-            // ✅ 压小标签字体（11pt），拉开主次对比
-            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
             g.drawText(label.toLowerCase(),
                       labelArea,
                       juce::Justification::centredLeft, false);
 
-            // ✅ Value with conditional unit display
+            // ✅ 右侧画数值和单位（右对齐，超大字体）
             juce::String valueStr = (value <= -60.0f) ? juce::String(juce::CharPointer_UTF8(u8"-∞")) : juce::String(value, 1);
             if (showUnit)
                 valueStr += " " + unit;
 
-            // ✅ 高亮数值用纯色（无透明度），增强视觉冲击力
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
-            g.setFont(juce::Font(valueFontSize, juce::Font::bold));
-
-            // ✅ 使用 drawFittedText 防止字符截断（智能压缩到 75%，绝不裁剪）
-            g.drawFittedText(valueStr,
-                           cellBounds,  // 剩余 65% 空间给数值
-                           juce::Justification::centredRight,
-                           1,      // 最大行数
-                           0.75f); // 最小横向缩放比例（允许压缩到 75%）
+            g.setFont(juce::Font(22.0f, juce::Font::bold));
+            g.drawText(valueStr,
+                      valueArea,
+                      juce::Justification::centredRight, false);
         };
 
         // 📊 使用降帧后的显示值（每 10 帧更新，约 6Hz）
