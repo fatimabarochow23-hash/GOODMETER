@@ -124,6 +124,86 @@ public:
     }
 
     //==========================================================================
+    // ComboBox + PopupMenu Overrides (Industrial Minimal Skin)
+    //==========================================================================
+
+    void drawComboBox(juce::Graphics& g, int width, int height, bool /*isButtonDown*/,
+                      int /*buttonX*/, int /*buttonY*/, int /*buttonW*/, int /*buttonH*/,
+                      juce::ComboBox& box) override
+    {
+        // Invisible background — no border, no fill
+        // Text
+        g.setColour(textMain);
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        juce::Rectangle<int> textRect(0, 0, width - 14, height);
+        g.drawText(box.getText(), textRect, juce::Justification::centredRight, false);
+
+        // Mini triangle arrow
+        juce::Path arrow;
+        float ax = static_cast<float>(width) - 7.0f;
+        float ay = static_cast<float>(height) / 2.0f - 2.0f;
+        arrow.addTriangle(ax - 3.5f, ay, ax + 3.5f, ay, ax, ay + 4.0f);
+        g.setColour(textMuted);
+        g.fillPath(arrow);
+    }
+
+    void positionComboBoxText(juce::ComboBox& box, juce::Label& label) override
+    {
+        // Hide the default label — we draw text ourselves in drawComboBox
+        label.setBounds(0, 0, 0, 0);
+        label.setVisible(false);
+        juce::ignoreUnused(box);
+    }
+
+    void drawPopupMenuBackground(juce::Graphics& g, int width, int height) override
+    {
+        // Deep industrial dark panel
+        g.setColour(juce::Colour(0xFF2A2A35));
+        g.fillRoundedRectangle(0.0f, 0.0f, static_cast<float>(width),
+                               static_cast<float>(height), 6.0f);
+
+        // Subtle inner glow border
+        g.setColour(juce::Colour(0xFF3A3A45));
+        g.drawRoundedRectangle(0.5f, 0.5f, static_cast<float>(width) - 1.0f,
+                               static_cast<float>(height) - 1.0f, 6.0f, 1.0f);
+    }
+
+    void drawPopupMenuItem(juce::Graphics& g, const juce::Rectangle<int>& area,
+                           bool isSeparator, bool isActive, bool isHighlighted,
+                           bool isTicked, bool /*hasSubMenu*/, const juce::String& text,
+                           const juce::String& /*shortcutKeyText*/,
+                           const juce::Drawable* /*icon*/, const juce::Colour* /*textColour*/) override
+    {
+        if (isSeparator)
+        {
+            g.setColour(juce::Colour(0xFF3A3A45));
+            g.fillRect(area.withSizeKeepingCentre(area.getWidth() - 10, 1));
+            return;
+        }
+
+        // Hover highlight — soft dark tile with rounded feel
+        if (isHighlighted && isActive)
+        {
+            g.setColour(juce::Colour(0xFF3A3A45));
+            g.fillRoundedRectangle(area.reduced(3, 1).toFloat(), 4.0f);
+        }
+
+        // Text: highlighted = pink, normal = white
+        g.setColour(isHighlighted ? accentPink : juce::Colours::white.withAlpha(0.9f));
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText(text, area.reduced(20, 0), juce::Justification::centredLeft, true);
+
+        // Ticked indicator — pink dot (not the ugly checkmark)
+        if (isTicked)
+        {
+            g.setColour(accentPink);
+            g.fillEllipse(static_cast<float>(area.getX()) + 7.0f,
+                          static_cast<float>(area.getCentreY()) - 2.5f,
+                          5.0f, 5.0f);
+        }
+    }
+
+    //==========================================================================
     // Helper Methods for Custom Components
     //==========================================================================
 

@@ -15,6 +15,9 @@
 #include <JuceHeader.h>
 #include <atomic>
 #include <array>
+#include <vector>
+#include <algorithm>
+#include <mutex>
 
 //==============================================================================
 /**
@@ -161,6 +164,15 @@ public:
     // LUFS (Momentary, 400ms window)
     std::atomic<float> lufsLevel { -70.0f };
 
+    // LUFS Short-Term (3s window)
+    std::atomic<float> lufsShortTerm { -70.0f };
+
+    // LUFS Integrated (from start of playback)
+    std::atomic<float> lufsIntegrated { -70.0f };
+
+    // LU Range (EBU Tech 3342) — calculated on timer thread
+    std::atomic<float> luRange { 0.0f };
+
     // Phase Correlation (-1.0 to +1.0)
     std::atomic<float> phaseCorrelation { 0.0f };
 
@@ -173,9 +185,10 @@ public:
     std::atomic<float> rmsLevelMid3Band { -90.0f };  // 250-2kHz (renamed to avoid conflict)
     std::atomic<float> rmsLevelHigh { -90.0f };  // 2k-20kHz
 
-    // FFT Data (lock-free FIFO)
-    LockFreeFIFO<float, 4> fftFifoL;
-    LockFreeFIFO<float, 4> fftFifoR;
+    // FFT Data (lock-free FIFOs — separate channels for Spectrum and Spectrogram)
+    LockFreeFIFO<float, 16> fftFifoL;            // Spectrum analyzer
+    LockFreeFIFO<float, 16> fftFifoR;            // Spectrum analyzer
+    LockFreeFIFO<float, 16> fftFifoSpectrogramL; // Spectrogram (independent)
 
     // Stereo Image Sample Buffer (for Goniometer/Lissajous)
     // Stores recent raw (L, R) sample pairs for XY plotting
@@ -186,6 +199,18 @@ public:
     // FFT Engine
     static constexpr int fftOrder = 12; // 2^12 = 4096
     static constexpr int fftSize = 1 << fftOrder;
+
+    /**
+     * Calculate LRA in real-time (EBU Tech 3342)
+     * Call from GUI timer thread, NOT audio thread!
+     */
+    void calculateLRARealtime();
+
+    /**
+     * Push a Short-Term LUFS sample into the LRA history pool.
+     * Called from GUI timer every ~100ms.
+     */
+    void pushShortTermLUFSForLRA(float stLufs);
 
 private:
     //==============================================================================
@@ -211,12 +236,16 @@ private:
     std::array<float, lufsBufferSize> lufsBufferR;
     int lufsBufferIndex = 0;
 
-    // FFT accumulation buffers
-    // IMPORTANT: performFrequencyOnlyForwardTransform requires fftSize * 2 elements!
-    // First fftSize elements are input data, second fftSize elements are used as working memory
-    std::array<float, fftSize * 2> fftBufferL;
-    std::array<float, fftSize * 2> fftBufferR;
-    int fftBufferIndex = 0;
+    // FFT accumulation ring buffer (75% overlap for ~43Hz FFT frame rate)
+    // performFrequencyOnlyForwardTransform requires fftSize * 2 working space
+    std::array<float, fftSize> fftRingL;
+    std::array<float, fftSize> fftRingR;
+    int fftRingIndex = 0;
+    int fftSamplesSinceLastPush = 0;
+    static constexpr int fftHopSize = fftSize / 4;  // 75% overlap → hop = 1024
+
+    // Temporary FFT working buffer (in-place transform needs fftSize * 2)
+    std::array<float, fftSize * 2> fftWorkBuffer;
 
     // FFT engine
     juce::dsp::FFT fft { fftOrder };
@@ -229,6 +258,23 @@ private:
 
     // Sample rate
     double currentSampleRate = 48000.0;
+
+    // Short-Term LUFS circular buffer (3s window = ~144000 samples at 48kHz)
+    static constexpr int stLufsBufferSize = 196608;  // ~4s at 48kHz for safety
+    std::array<float, stLufsBufferSize> stLufsBufferL;
+    std::array<float, stLufsBufferSize> stLufsBufferR;
+    int stLufsBufferIndex = 0;
+
+    // Integrated LUFS gating (BS.1770-4 with absolute + relative gating)
+    std::vector<float> integratedBlockLufs;    // All 400ms block LUFS values
+    std::mutex integratedMutex;                // Protect from timer thread reads
+    int integratedBlockSampleCount = 0;        // Counter for 400ms blocks
+    static constexpr int integratedBlockSamples400ms = 19200; // at 48kHz
+
+    // LRA history pool (Short-Term LUFS samples, ~100ms intervals, up to 5 min)
+    std::vector<float> lraHistory;
+    std::mutex lraMutex;
+    static constexpr int lraMaxSamples = 3000; // 5 min at 100ms intervals
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GOODMETERAudioProcessor)

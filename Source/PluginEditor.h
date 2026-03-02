@@ -20,6 +20,8 @@
 #include "SpectrogramComponent.h"
 #include "StereoImageComponent.h"
 #include "Band3Component.h"
+#include "PsrMeterComponent.h"
+#include "HoloNonoComponent.h"
 
 //==============================================================================
 /**
@@ -53,8 +55,10 @@ private:
     SpectrogramComponent* spectrogramMeter = nullptr;
     StereoImageComponent* stereoImageMeter = nullptr;
     Band3Component* band3Meter = nullptr;
+    PsrMeterComponent* psrMeter = nullptr;
+    HoloNonoComponent* holoNono = nullptr;
 
-    // Meter card components (Phase 3 will add remaining meters)
+    // Meter card components
     std::unique_ptr<MeterCardComponent> levelsCard;
     std::unique_ptr<MeterCardComponent> vuMeterCard;
     std::unique_ptr<MeterCardComponent> threeBandCard;
@@ -62,6 +66,8 @@ private:
     std::unique_ptr<MeterCardComponent> phaseCard;
     std::unique_ptr<MeterCardComponent> stereoImageCard;
     std::unique_ptr<MeterCardComponent> spectrogramCard;
+    std::unique_ptr<MeterCardComponent> psrCard;
+    std::unique_ptr<MeterCardComponent> nonoCard;
 
     // Viewport for scrolling (if needed)
     std::unique_ptr<juce::Viewport> viewport;

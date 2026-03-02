@@ -1,10 +1,14 @@
 /*
   ==============================================================================
     PhaseCorrelationComponent.h
-    GOODMETER - Phase Correlation Meter (Condenser Tube)
+    GOODMETER - Phase Correlation Meter (Alchemy Condenser v2)
 
-    Translated from PhaseCorrelation.tsx
-    Features: Wavy tube condenser with colored liquid blob
+    Redesigned: Tight-wrap rounded glass jacket around spiral inner tube
+    Features:
+    - Outer jacket: rounded-rectangle hugging the sine wave amplitude + padding
+    - Inner spiral tube: wavy sine path with glass outline + white fill
+    - Liquid blob: cyan glow on the spiral path at correlation position
+    - Glass aesthetic: thin gray stroke, white highlight, cyan outer glow
   ==============================================================================
 */
 
@@ -14,11 +18,6 @@
 #include "GoodMeterLookAndFeel.h"
 
 //==============================================================================
-/**
- * Phase Correlation Meter Component
- * Displays correlation as a colored liquid moving through a wavy condenser tube
- * Range: -1.0 (out of phase, red) to +1.0 (in phase, green)
- */
 class PhaseCorrelationComponent : public juce::Component,
                                   public juce::Timer
 {
@@ -26,10 +25,7 @@ public:
     //==========================================================================
     PhaseCorrelationComponent()
     {
-        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
-        setSize(100, 180);  // 初始宽度会被父容器覆盖
-
-        // Start timer for smooth animation
+        setSize(100, 180);
         startTimer(16);  // ~60Hz
     }
 
@@ -42,38 +38,26 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
-
-        // Safety check
-        if (bounds.isEmpty())
+        if (bounds.isEmpty() || bounds.getHeight() < 30)
             return;
 
-        const float width = static_cast<float>(bounds.getWidth());
         const float height = static_cast<float>(bounds.getHeight());
-        const float cx = width / 2.0f;
 
-        // 🎯 死死钉在绝对物理中心！实时获取垂直中心点
-        const float cy = bounds.toFloat().getCentreY();
+        // Label area at bottom
+        const int labelH = juce::jlimit(18, 35, static_cast<int>(height * 0.15f));
+        auto labelBounds = bounds.removeFromBottom(labelH);
 
-        // Use full bounds for condenser drawing
-        drawCondenser(g, bounds.toFloat(), cx, cy);
-
-        // Draw labels at bottom (fixed height)
-        auto labelBounds = bounds.removeFromBottom(30);
+        // Condenser uses remaining area
+        auto condenserBounds = bounds.toFloat();
+        drawCondenser(g, condenserBounds);
         drawLabels(g, labelBounds);
     }
 
-    void resized() override
-    {
-        // No child components
-    }
+    void resized() override {}
 
     //==========================================================================
-    /**
-     * Update correlation value from processor
-     */
     void updateCorrelation(float correlation)
     {
-        // Smooth the phase value (PhaseCorrelation.tsx line 25)
         smoothedPhase += (correlation - smoothedPhase) * 0.1f;
         repaint();
     }
@@ -81,160 +65,190 @@ public:
 private:
     //==========================================================================
     float smoothedPhase = 0.0f;
+    float scaleFactor = 1.0f;
 
-    // Constants (from PhaseCorrelation.tsx)
-    static constexpr int loops = 8;  // Number of sine wave loops
+    static constexpr int loopsDefault = 8;   // Normal size: 8 loops
+    static constexpr int loopsSmall = 6;     // Small size: 6 loops
+    int currentLoops = loopsDefault;         // Adaptive per frame
 
     //==========================================================================
-    void timerCallback() override
-    {
-        // Smooth animation handled in updateCorrelation()
-    }
+    void timerCallback() override {}
 
     //==========================================================================
     /**
-     * Draw the condenser tube with wavy inner path
+     * Main condenser drawing — tight-wrap glass jacket around spiral tube
      */
-    void drawCondenser(juce::Graphics& g, const juce::Rectangle<float>& bounds, float cx, float cy)
+    void drawCondenser(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        const float condenserWidth = bounds.getWidth() * 0.7f;  // PhaseCorrelation.tsx line 40
-        const float condenserHeight = 80.0f;  // ✅ SLIMMED: 120 → 80 (更细长的玻璃管)
+        const float cx = bounds.getCentreX();
+        const float cy = bounds.getCentreY();
+
+        // Condenser dimensions proportional to bounds
+        const float condenserWidth = bounds.getWidth() * 0.80f;
+        const float condenserHeight = juce::jlimit(30.0f, 120.0f, bounds.getHeight() * 0.70f);
+
+        scaleFactor = condenserHeight / 80.0f;
+
+        // Adaptive loop count: 8 when big, 6 when small
+        currentLoops = (condenserWidth < 200.0f) ? loopsSmall : loopsDefault;
+
         const float startX = cx - condenserWidth / 2.0f;
         const float endX = cx + condenserWidth / 2.0f;
 
-        // Draw outer tube (PhaseCorrelation.tsx lines 45-83)
-        drawOuterTube(g, startX, endX, cy, condenserHeight);
+        // Spiral amplitude (how tall the wave is)
+        const float s = scaleFactor;
+        const float amplitude = condenserHeight / 2.0f - 18.0f * s;
 
-        // Draw inner wavy tube (PhaseCorrelation.tsx lines 85-110)
-        drawInnerTube(g, startX, endX, cy, condenserWidth, condenserHeight);
+        // === 1. Outer glass jacket (tight-wrap rounded rectangle) ===
+        // Hugs the spiral: height = amplitude * 2 + padding
+        const float jacketPadY = juce::jlimit(6.0f, 14.0f, 10.0f * s);
+        const float jacketPadX = juce::jlimit(4.0f, 10.0f, 6.0f * s);
+        const float jacketTop = cy - amplitude - jacketPadY;
+        const float jacketBottom = cy + amplitude + jacketPadY;
+        const float jacketLeft = startX - jacketPadX;
+        const float jacketRight = endX + jacketPadX;
+        const float jacketH = jacketBottom - jacketTop;
+        const float jacketW = jacketRight - jacketLeft;
+        const float jacketCornerR = juce::jlimit(6.0f, 16.0f, 10.0f * s);
 
-        // Draw colored liquid blob (PhaseCorrelation.tsx lines 112-124)
-        drawLiquidBlob(g, startX, condenserWidth, cy, condenserHeight, bounds);
+        // Inlet/outlet pipe dimensions
+        const float pipeW = juce::jlimit(8.0f, 20.0f, 14.0f * s);
+        const float pipeH = juce::jlimit(10.0f, 28.0f, 20.0f * s);
+        const float pipeOffsetX = condenserWidth * 0.22f;
 
-        // Draw center zero line (PhaseCorrelation.tsx lines 126-134)
+        // Inlet pipe position (top-left area)
+        const float inletCX = startX + pipeOffsetX;
+        const float inletL = inletCX - pipeW / 2.0f;
+        const float inletR = inletCX + pipeW / 2.0f;
+
+        // Outlet pipe position (bottom-right area)
+        const float outletCX = endX - pipeOffsetX;
+        const float outletL = outletCX - pipeW / 2.0f;
+        const float outletR = outletCX + pipeW / 2.0f;
+
+        // Draw outer jacket as a single closed rounded-rect path with pipe cutouts
+        drawOuterJacket(g, jacketLeft, jacketTop, jacketW, jacketH, jacketCornerR,
+                        inletL, inletR, outletL, outletR, pipeH);
+
+        // === 2. Inner spiral tube ===
+        drawInnerTube(g, startX, endX, cy, condenserWidth, amplitude);
+
+        // === 3. Liquid blob on spiral ===
+        drawLiquidBlob(g, startX, condenserWidth, cy, amplitude, bounds);
+
+        // === 4. Center reference line ===
         drawCenterLine(g, cx, cy, condenserHeight);
     }
 
     //==========================================================================
     /**
-     * Draw outer tube structure (PhaseCorrelation.tsx lines 45-83)
+     * Outer glass jacket: rounded rectangle with inlet/outlet pipe stubs
+     * Elegant thin stroke + white highlight + subtle cyan glow
      */
-    void drawOuterTube(juce::Graphics& g, float startX, float endX, float cy, float condenserHeight)
+    void drawOuterJacket(juce::Graphics& g,
+                         float jx, float jy, float jw, float jh, float cornerR,
+                         float inletL, float inletR, float outletL, float outletR,
+                         float pipeH)
     {
-        juce::Path outerTube;
+        auto jacketRect = juce::Rectangle<float>(jx, jy, jw, jh);
 
-        // Top edge
-        outerTube.startNewSubPath(startX, cy - condenserHeight/2.0f);
-        outerTube.lineTo(endX, cy - condenserHeight/2.0f);
+        // Cyan outer glow (subtle, always-on for condenser identity)
+        g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.08f));
+        g.drawRoundedRectangle(jacketRect.expanded(3.0f), cornerR + 2.0f, 4.0f);
 
-        // Bottom edge
-        outerTube.startNewSubPath(startX, cy + condenserHeight/2.0f);
-        outerTube.lineTo(endX, cy + condenserHeight/2.0f);
+        // Glass vessel outline
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
+        g.drawRoundedRectangle(jacketRect, cornerR, 1.5f);
 
-        // Left end caps
-        outerTube.startNewSubPath(startX, cy - condenserHeight/2.0f);
-        outerTube.lineTo(startX, cy - 16.0f);  // ✅ SLIMMED: 24 → 16
-        outerTube.startNewSubPath(startX, cy + 16.0f);  // ✅ SLIMMED: 24 → 16
-        outerTube.lineTo(startX, cy + condenserHeight/2.0f);
+        // Glass highlight
+        g.setColour(juce::Colours::white.withAlpha(0.15f));
+        g.drawRoundedRectangle(jacketRect.reduced(1.0f), cornerR - 0.5f, 0.8f);
 
-        // Right end caps
-        outerTube.startNewSubPath(endX, cy - condenserHeight/2.0f);
-        outerTube.lineTo(endX, cy - 16.0f);  // ✅ SLIMMED: 24 → 16
-        outerTube.startNewSubPath(endX, cy + 16.0f);  // ✅ SLIMMED: 24 → 16
-        outerTube.lineTo(endX, cy + condenserHeight/2.0f);
+        // Inlet pipe (top) — two vertical lines going up
+        const float inletTopY = jy - pipeH;
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
+        g.drawLine(inletL, jy, inletL, inletTopY, 1.5f);
+        g.drawLine(inletR, jy, inletR, inletTopY, 1.5f);
 
-        // Inlet (top left)
-        outerTube.startNewSubPath(startX + 60.0f, cy - condenserHeight/2.0f);
-        outerTube.lineTo(startX + 60.0f, cy - condenserHeight/2.0f - 30.0f);
-        outerTube.startNewSubPath(startX + 100.0f, cy - condenserHeight/2.0f);
-        outerTube.lineTo(startX + 100.0f, cy - condenserHeight/2.0f - 30.0f);
+        // Outlet pipe (bottom) — two vertical lines going down
+        const float outletBottomY = jy + jh + pipeH;
+        g.drawLine(outletL, jy + jh, outletL, outletBottomY, 1.5f);
+        g.drawLine(outletR, jy + jh, outletR, outletBottomY, 1.5f);
 
-        // Outlet (bottom right)
-        outerTube.startNewSubPath(endX - 100.0f, cy + condenserHeight/2.0f);
-        outerTube.lineTo(endX - 100.0f, cy + condenserHeight/2.0f + 30.0f);
-        outerTube.startNewSubPath(endX - 60.0f, cy + condenserHeight/2.0f);
-        outerTube.lineTo(endX - 60.0f, cy + condenserHeight/2.0f + 30.0f);
-
-        // Stroke outer tube (PhaseCorrelation.tsx lines 46-48)
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.strokePath(outerTube, juce::PathStrokeType(6.0f, juce::PathStrokeType::curved));
+        // Pipe cyan glow highlights
+        g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.06f));
+        g.drawLine(inletL + 1.0f, jy, inletL + 1.0f, inletTopY, 3.0f);
+        g.drawLine(outletR - 1.0f, jy + jh, outletR - 1.0f, outletBottomY, 3.0f);
     }
 
     //==========================================================================
     /**
-     * Create wavy inner tube path (PhaseCorrelation.tsx lines 87-98)
-     * 1:1 pixel-perfect replication of Web Canvas drawing
+     * Create wavy inner tube path (sine wave)
      */
-    juce::Path createInnerTubePath(float startX, float endX, float cy, float condenserWidth, float condenserHeight)
+    juce::Path createInnerTubePath(float startX, float endX, float cy,
+                                    float condenserWidth, float amplitude)
     {
-        juce::Path innerPath;
+        const float s = scaleFactor;
+        const float ext = juce::jlimit(12.0f, 40.0f, 30.0f * s);
 
-        // CRITICAL: ±80px extensions are intentional for smooth visual connection!
-        // PhaseCorrelation.tsx line 89-90
-        innerPath.startNewSubPath(startX - 80.0f, cy);
+        juce::Path innerPath;
+        innerPath.startNewSubPath(startX - ext, cy);
         innerPath.lineTo(startX, cy);
 
-        // Draw sinusoidal path (PhaseCorrelation.tsx lines 91-96)
-        // EXACT formula: x = startX + t * condenserWidth
-        //                y = cy + Math.sin(t * Math.PI * 2 * loops) * (condenserHeight/2 - 18)
-        const int steps = loops * 40;  // PhaseCorrelation.tsx line 91
+        const int steps = currentLoops * 40;
         for (int i = 0; i <= steps; ++i)
         {
             const float t = static_cast<float>(i) / static_cast<float>(steps);
             const float x = startX + t * condenserWidth;
-            const float y = cy + std::sin(t * juce::MathConstants<float>::pi * 2.0f * static_cast<float>(loops))
-                                * (condenserHeight / 2.0f - 18.0f);  // ✅ SLIMMED: 28 → 18 (适配更矮的管子)
+            const float y = cy + std::sin(t * juce::MathConstants<float>::pi * 2.0f
+                                          * static_cast<float>(currentLoops)) * amplitude;
             innerPath.lineTo(x, y);
         }
 
-        // PhaseCorrelation.tsx line 97
-        innerPath.lineTo(endX + 80.0f, cy);
-
+        innerPath.lineTo(endX + ext, cy);
         return innerPath;
     }
 
     //==========================================================================
     /**
-     * Draw inner tube with black outline and white fill (PhaseCorrelation.tsx lines 100-110)
+     * Draw inner tube: dark outline → white fill (glass tube look)
      */
-    void drawInnerTube(juce::Graphics& g, float startX, float endX, float cy, float condenserWidth, float condenserHeight)
+    void drawInnerTube(juce::Graphics& g, float startX, float endX, float cy,
+                       float condenserWidth, float amplitude)
     {
-        auto innerPath = createInnerTubePath(startX, endX, cy, condenserWidth, condenserHeight);
+        const float s = scaleFactor;
+        const float outerStroke = juce::jlimit(6.0f, 14.0f, 12.0f * s);
+        const float innerStroke = juce::jlimit(3.0f, 8.0f, 7.0f * s);
 
-        // 1. Inner tube outline (thick black) - PhaseCorrelation.tsx lines 101-104
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.strokePath(innerPath, juce::PathStrokeType(16.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 24 → 16
+        auto innerPath = createInnerTubePath(startX, endX, cy, condenserWidth, amplitude);
 
-        // 2. Inner tube inside (white) - PhaseCorrelation.tsx lines 107-110
+        // Dark outline
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.22f));
+        g.strokePath(innerPath, juce::PathStrokeType(outerStroke, juce::PathStrokeType::curved));
+
+        // White fill (glass interior)
         g.setColour(juce::Colours::white);
-        g.strokePath(innerPath, juce::PathStrokeType(10.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 16 → 10
+        g.strokePath(innerPath, juce::PathStrokeType(innerStroke, juce::PathStrokeType::curved));
+
+        // Subtle highlight on tube
+        g.setColour(juce::Colours::white.withAlpha(0.3f));
+        g.strokePath(innerPath, juce::PathStrokeType(innerStroke * 0.4f, juce::PathStrokeType::curved));
     }
 
     //==========================================================================
     /**
-     * Draw colored liquid blob with clipping and feathered gradient (enhanced version)
-     *
-     * IMPROVEMENTS:
-     * 1. Reduced blob width: 160px → 40px (concentrated liquid)
-     * 2. Feathered edges: horizontal gradient from transparent → opaque → transparent
-     *
-     * CLIP + GRADIENT TECHNIQUE:
-     * 1. Save graphics state
-     * 2. Create narrow rectangular clip region (40px wide)
-     * 3. Apply horizontal gradient (center opaque, edges transparent)
-     * 4. Draw FULL inner tube path with gradient stroke
-     * 5. Restore state (removes clip)
+     * Liquid blob: clipped cyan/pink glow on the spiral at correlation position
      */
-    void drawLiquidBlob(juce::Graphics& g, float startX, float condenserWidth, float cy, float condenserHeight, const juce::Rectangle<float>& bounds)
+    void drawLiquidBlob(juce::Graphics& g, float startX, float condenserWidth,
+                        float cy, float amplitude, const juce::Rectangle<float>& bounds)
     {
-        // Calculate blob position based on phase
-        const float blobWidth = 40.0f;  // ✅ FIXED: Reduced from 160px to 40px
+        const float s = scaleFactor;
+        const float blobWidth = juce::jlimit(20.0f, 60.0f, 40.0f * s);
+        const float innerStroke = juce::jlimit(3.0f, 8.0f, 7.0f * s);
         const float mappedX = startX + ((smoothedPhase + 1.0f) / 2.0f) * condenserWidth;
 
-        // 🔥 CLIP MAGIC: Save state and create clipping rectangle
         juce::Graphics::ScopedSaveState saveState(g);
 
-        // Create narrow clip region: vertical strip centered at liquid position
         g.reduceClipRegion(juce::Rectangle<int>(
             static_cast<int>(mappedX - blobWidth / 2.0f),
             0,
@@ -242,80 +256,95 @@ private:
             static_cast<int>(bounds.getHeight())
         ));
 
-        // ✨ FEATHERED GRADIENT: Center opaque → Edges transparent
         juce::Colour liquidColour = smoothedPhase > 0.0f
-            ? GoodMeterLookAndFeel::accentCyan   // Positive: cyan (#06D6A0)
-            : GoodMeterLookAndFeel::accentPink;  // Negative: pink (#E6335F)
+            ? GoodMeterLookAndFeel::accentCyan
+            : GoodMeterLookAndFeel::accentPink;
 
-        // Create horizontal gradient (left to right across blob width)
+        // Feathered gradient: transparent → opaque → transparent
         juce::ColourGradient gradient(
-            liquidColour.withAlpha(0.0f),  // Left edge: transparent
+            liquidColour.withAlpha(0.0f),
             mappedX - blobWidth / 2.0f, cy,
-            liquidColour.withAlpha(0.0f),  // Right edge: transparent
+            liquidColour.withAlpha(0.0f),
             mappedX + blobWidth / 2.0f, cy,
             false
         );
+        gradient.addColour(0.5, liquidColour);
 
-        // Add center stop: fully opaque at liquid center
-        gradient.addColour(0.5, liquidColour);  // Center: 100% opaque
-
-        // Apply gradient fill
         g.setGradientFill(gradient);
 
-        // Draw FULL inner tube path with gradient stroke
-        auto innerPath = createInnerTubePath(startX, startX + condenserWidth, cy, condenserWidth, condenserHeight);
-        g.strokePath(innerPath, juce::PathStrokeType(10.0f, juce::PathStrokeType::curved));  // ✅ SLIMMED: 16 → 10
+        auto innerPath = createInnerTubePath(startX, startX + condenserWidth,
+                                              cy, condenserWidth, amplitude);
+        // Glow layer (wider)
+        g.strokePath(innerPath, juce::PathStrokeType(innerStroke + 4.0f, juce::PathStrokeType::curved));
 
-        // saveState destructor automatically restores clip region
+        // Core liquid
+        juce::ColourGradient coreGrad(
+            liquidColour.brighter(0.3f).withAlpha(0.0f),
+            mappedX - blobWidth / 2.0f, cy,
+            liquidColour.brighter(0.3f).withAlpha(0.0f),
+            mappedX + blobWidth / 2.0f, cy,
+            false
+        );
+        coreGrad.addColour(0.5, liquidColour.brighter(0.3f));
+        g.setGradientFill(coreGrad);
+        g.strokePath(innerPath, juce::PathStrokeType(innerStroke, juce::PathStrokeType::curved));
     }
 
     //==========================================================================
     /**
-     * Draw center zero reference line (PhaseCorrelation.tsx lines 126-134)
+     * Center zero reference line (dashed)
      */
     void drawCenterLine(juce::Graphics& g, float cx, float cy, float condenserHeight)
     {
-        juce::Path centerLine;
-        centerLine.startNewSubPath(cx, cy - condenserHeight/2.0f - 20.0f);
-        centerLine.lineTo(cx, cy + condenserHeight/2.0f + 20.0f);
+        const float s = scaleFactor;
+        const float ext = juce::jlimit(8.0f, 20.0f, 18.0f * s);
+        const float dashLen = juce::jlimit(4.0f, 8.0f, 6.0f * s);
+        const float strokeW = juce::jlimit(1.5f, 3.0f, 2.5f * s);
 
-        // Dashed line (PhaseCorrelation.tsx lines 130-132)
-        float dashLengths[2] = { 8.0f, 8.0f };
-        juce::PathStrokeType strokeType(4.0f);
+        juce::Path centerLine;
+        centerLine.startNewSubPath(cx, cy - condenserHeight / 2.0f - ext);
+        centerLine.lineTo(cx, cy + condenserHeight / 2.0f + ext);
+
+        float dashLengths[2] = { dashLen, dashLen };
+        juce::PathStrokeType strokeType(strokeW);
         strokeType.createDashedStroke(centerLine, centerLine, dashLengths, 2);
 
-        g.setColour(GoodMeterLookAndFeel::border);
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.25f));
         g.strokePath(centerLine, strokeType);
     }
 
     //==========================================================================
     /**
-     * Draw labels at bottom (PhaseCorrelation.tsx lines 150-154)
+     * Labels: -1.0 (pink), value (center), +1.0 (cyan)
      */
     void drawLabels(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        auto labelBounds = bounds.reduced(40, 0).withHeight(30);
+        const float padX = juce::jlimit(10.0f, 40.0f, bounds.getWidth() * 0.08f);
+        auto labelBounds = bounds.reduced(static_cast<int>(padX), 0);
 
-        // -1.0 label (left, pink)
+        const float labelFont = juce::jlimit(9.0f, 14.0f, bounds.getHeight() * 0.5f);
+        const float valueFont = juce::jlimit(11.0f, 19.0f, bounds.getHeight() * 0.7f);
+        const int sideW = juce::jlimit(30, 80, static_cast<int>(labelBounds.getWidth() * 0.2f));
+
+        // -1.0 (pink)
         g.setColour(GoodMeterLookAndFeel::accentPink);
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.setFont(juce::Font(labelFont, juce::Font::bold));
         g.drawText("-1.0",
-                  labelBounds.removeFromLeft(80),
-                  juce::Justification::centredLeft, false);
+                   labelBounds.removeFromLeft(sideW),
+                   juce::Justification::centredLeft, false);
 
-        // +1.0 label (right, cyan)
+        // +1.0 (cyan)
         g.setColour(GoodMeterLookAndFeel::accentCyan);
         g.drawText("+1.0",
-                  labelBounds.removeFromRight(80),
-                  juce::Justification::centredRight, false);
+                   labelBounds.removeFromRight(sideW),
+                   juce::Justification::centredRight, false);
 
-        // Center value (middle, larger)
-        juce::String valueStr = juce::String(smoothedPhase, 2);
+        // Center value
         g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(19.2f, juce::Font::bold));
-        g.drawText(valueStr,
-                  labelBounds,
-                  juce::Justification::centred, false);
+        g.setFont(juce::Font(valueFont, juce::Font::bold));
+        g.drawText(juce::String(smoothedPhase, 2),
+                   labelBounds,
+                   juce::Justification::centred, false);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PhaseCorrelationComponent)

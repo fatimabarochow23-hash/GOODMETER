@@ -81,18 +81,55 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // 重新分配离屏缓冲区（宽高变化时）
         if (bounds.getWidth() > 0 && bounds.getHeight() > 0)
         {
-            spectrogramImage = juce::Image(juce::Image::ARGB,
-                                          bounds.getWidth(),
-                                          bounds.getHeight(),
-                                          true);  // Clear to transparent
+            juce::Image newImage(juce::Image::ARGB,
+                                 bounds.getWidth(),
+                                 bounds.getHeight(),
+                                 true);
+            newImage.clear(newImage.getBounds(), juce::Colours::white);
 
-            // ✅ 立即用纯白色填充，消除初始灰色块
-            spectrogramImage.clear(spectrogramImage.getBounds(), juce::Colours::white);
+            // Preserve existing waterfall data by rescaling old image
+            if (!spectrogramImage.isNull() &&
+                spectrogramImage.getWidth() > 0 &&
+                spectrogramImage.getHeight() > 0)
+            {
+                juce::Graphics gNew(newImage);
 
-            drawX = 0;  // 重置游标
+                const int oldW = spectrogramImage.getWidth();
+                const int newW = newImage.getWidth();
+                const int newH = newImage.getHeight();
+
+                // Reconstruct the logical order: old data left, new data right
+                // Part 1: pixels from drawX..oldW (older data) -> left side
+                int oldPartWidth = oldW - drawX;
+                if (oldPartWidth > 0)
+                {
+                    float destW = static_cast<float>(oldPartWidth * newW) / static_cast<float>(oldW);
+                    gNew.drawImage(spectrogramImage,
+                                   0, 0, static_cast<int>(destW), newH,
+                                   drawX, 0, oldPartWidth, spectrogramImage.getHeight());
+                }
+
+                // Part 2: pixels from 0..drawX (newer data) -> right side
+                if (drawX > 0)
+                {
+                    float destStart = static_cast<float>((oldW - drawX) * newW) / static_cast<float>(oldW);
+                    float destW = static_cast<float>(drawX * newW) / static_cast<float>(oldW);
+                    gNew.drawImage(spectrogramImage,
+                                   static_cast<int>(destStart), 0, static_cast<int>(destW), newH,
+                                   0, 0, drawX, spectrogramImage.getHeight());
+                }
+
+                // After rescale, the logical cursor is at the right edge
+                drawX = newW > 0 ? (newW - 1) : 0;
+            }
+            else
+            {
+                drawX = 0;
+            }
+
+            spectrogramImage = newImage;
         }
     }
 
@@ -123,26 +160,6 @@ private:
     //==========================================================================
     void timerCallback() override
     {
-        // 🎯 从 processor 拉取最新 FFT 数据
-        if (!audioProcessor.fftFifoL.pop(fftData.data(), numBins))
-            return;  // 没有新数据
-
-        // 🌫️ 时间平滑处理（核心云雾魔法）
-        // Web 版 smoothingTimeConstant = 0.85 → 0.85 旧数据 + 0.15 新数据
-        if (isFirstFrame)
-        {
-            // 首帧直接复制，避免从 0 开始的长尾巴
-            smoothedFftData = fftData;
-            isFirstFrame = false;
-        }
-        else
-        {
-            for (int i = 0; i < numBins; ++i)
-            {
-                smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
-            }
-        }
-
         if (spectrogramImage.isNull())
             return;
 
@@ -150,29 +167,56 @@ private:
         if (height <= 0)
             return;
 
-        // 🎨 像素级精准渲染：遍历屏幕 Y 坐标（而非 FFT 数组）
-        // 确保每个像素都有准确的频率对应，避免"横条纹"
+        // Drain ALL available FFT frames, draw one column per frame
+        bool drewAny = false;
+        while (audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
+        {
+            // Time-domain smoothing (cloud texture)
+            if (isFirstFrame)
+            {
+                smoothedFftData = fftData;
+                isFirstFrame = false;
+            }
+            else
+            {
+                for (int i = 0; i < numBins; ++i)
+                {
+                    smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
+                }
+            }
+
+            // Render one pixel column using BitmapData (zero-overhead direct memory write)
+            drawOneColumn(height);
+            drawX = (drawX + 1) % spectrogramImage.getWidth();
+            drewAny = true;
+        }
+
+        if (drewAny)
+            repaint();
+    }
+
+    //==========================================================================
+    /**
+     * Render a single pixel column at drawX using BitmapData for maximum speed
+     */
+    void drawOneColumn(int height)
+    {
         const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
-        const float frequencyRatio = maxFreq / minFreq;  // 20000 / 20 = 1000
+        const float frequencyRatio = maxFreq / minFreq;
+
+        juce::Image::BitmapData bitmapData(spectrogramImage, drawX, 0, 1, height,
+                                            juce::Image::BitmapData::writeOnly);
 
         for (int y = 0; y < height; ++y)
         {
-            // ✅ 严格的逆向对数映射：从像素 Y → 频率 Hz
-            // top (y=0) = 20kHz, bottom (y=height-1) = 30Hz
             const float normalizedY = 1.0f - (static_cast<float>(y) / static_cast<float>(height));
             const float currentFreq = minFreq * std::pow(frequencyRatio, normalizedY);
 
-            // ✅ 频率 → FFT bin（保留浮点精度用于插值！）
             const float binFloat = (currentFreq * static_cast<float>(GOODMETERAudioProcessor::fftSize)) / sampleRate;
-
-            // 🎨 FFT 频段线性插值（消灭马赛克的核心魔法！）
-            // 取出整数部分和小数部分
             const int binIndex = static_cast<int>(binFloat);
             const float fraction = binFloat - static_cast<float>(binIndex);
 
             float rawMagnitude = 0.0f;
-
-            // 在当前 bin 和下一个 bin 之间进行平滑过渡（抗锯齿插值）
             if (binIndex >= 0 && binIndex < numBins - 1)
             {
                 const float mag1 = smoothedFftData[binIndex];
@@ -181,28 +225,15 @@ private:
             }
             else
             {
-                // 越界保护
                 rawMagnitude = smoothedFftData[juce::jlimit(0, numBins - 1, binIndex)];
             }
 
-            // 🎯 FFT 能量缩放：除以 FFT 尺寸得到真实振幅
             const float scaledAmplitude = rawMagnitude / static_cast<float>(GOODMETERAudioProcessor::fftSize);
-
-            // 转换为 dB（使用 JUCE 的 Decibels 工具，-100dB 作为最小值）
             const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
-
-            // 映射为粉色云雾颜色
             const juce::Colour colour = getColourForDb(db);
 
-            // 🚀 极速写入：使用 setPixelAt 直接写入像素
-            spectrogramImage.setPixelAt(drawX, y, colour);
+            bitmapData.setPixelColour(0, y, colour);
         }
-
-        // 🔄 推进环形游标
-        drawX = (drawX + 1) % spectrogramImage.getWidth();
-
-        // 触发重绘
-        repaint();
     }
 
     //==========================================================================

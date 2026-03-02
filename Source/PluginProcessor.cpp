@@ -23,9 +23,18 @@ GOODMETERAudioProcessor::GOODMETERAudioProcessor()
     lufsBufferL.fill(0.0f);
     lufsBufferR.fill(0.0f);
 
-    // Initialize FFT buffer to zero
-    fftBufferL.fill(0.0f);
-    fftBufferR.fill(0.0f);
+    // Initialize Short-Term LUFS buffer
+    stLufsBufferL.fill(0.0f);
+    stLufsBufferR.fill(0.0f);
+
+    // Initialize FFT ring buffer to zero
+    fftRingL.fill(0.0f);
+    fftRingR.fill(0.0f);
+    fftWorkBuffer.fill(0.0f);
+
+    // Reserve LRA history
+    lraHistory.reserve(lraMaxSamples);
+    integratedBlockLufs.reserve(4096);
 }
 
 GOODMETERAudioProcessor::~GOODMETERAudioProcessor()
@@ -135,9 +144,27 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     lufsBufferR.fill(0.0f);
     lufsBufferIndex = 0;
 
-    fftBufferL.fill(0.0f);
-    fftBufferR.fill(0.0f);
-    fftBufferIndex = 0;
+    stLufsBufferL.fill(0.0f);
+    stLufsBufferR.fill(0.0f);
+    stLufsBufferIndex = 0;
+
+    // Reset integrated LUFS state
+    {
+        std::lock_guard<std::mutex> lock(integratedMutex);
+        integratedBlockLufs.clear();
+    }
+    integratedBlockSampleCount = 0;
+
+    // Reset LRA history
+    {
+        std::lock_guard<std::mutex> lock(lraMutex);
+        lraHistory.clear();
+    }
+
+    fftRingL.fill(0.0f);
+    fftRingR.fill(0.0f);
+    fftRingIndex = 0;
+    fftSamplesSinceLastPush = 0;
 }
 
 void GOODMETERAudioProcessor::releaseResources()
@@ -273,30 +300,40 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         lufsBufferIndex = (lufsBufferIndex + 1) % lufsBufferSize;
 
         //======================================================================
-        // 5. FFT Buffer Accumulation
+        // 5. FFT Ring Buffer with 50% Overlap (doubles FFT frame rate)
         //======================================================================
-        fftBufferL[fftBufferIndex] = sampleL;
-        fftBufferR[fftBufferIndex] = sampleR;
-        fftBufferIndex++;
+        fftRingL[fftRingIndex] = sampleL;
+        fftRingR[fftRingIndex] = sampleR;
+        fftRingIndex = (fftRingIndex + 1) % fftSize;
+        fftSamplesSinceLastPush++;
 
-        if (fftBufferIndex >= fftSize)
+        if (fftSamplesSinceLastPush >= fftHopSize)
         {
-            // Apply Hann window
-            window.multiplyWithWindowingTable(fftBufferL.data(), fftSize);
-            window.multiplyWithWindowingTable(fftBufferR.data(), fftSize);
+            // Copy ring buffer into working buffer (unwrap circular to linear)
+            for (int j = 0; j < fftSize; ++j)
+            {
+                fftWorkBuffer[j] = fftRingL[(fftRingIndex + j) % fftSize];
+            }
+            // Zero the second half (working memory for FFT)
+            std::fill(fftWorkBuffer.begin() + fftSize, fftWorkBuffer.end(), 0.0f);
 
-            // Perform FFT (in-place)
-            fft.performFrequencyOnlyForwardTransform(fftBufferL.data());
-            fft.performFrequencyOnlyForwardTransform(fftBufferR.data());
+            // Apply window + FFT for L channel
+            window.multiplyWithWindowingTable(fftWorkBuffer.data(), fftSize);
+            fft.performFrequencyOnlyForwardTransform(fftWorkBuffer.data());
+            fftFifoL.push(fftWorkBuffer.data(), fftSize / 2);
+            fftFifoSpectrogramL.push(fftWorkBuffer.data(), fftSize / 2);
 
-            // Push to FIFO for GUI thread
-            fftFifoL.push(fftBufferL.data(), fftSize / 2);
-            fftFifoR.push(fftBufferR.data(), fftSize / 2);
+            // Same for R channel
+            for (int j = 0; j < fftSize; ++j)
+            {
+                fftWorkBuffer[j] = fftRingR[(fftRingIndex + j) % fftSize];
+            }
+            std::fill(fftWorkBuffer.begin() + fftSize, fftWorkBuffer.end(), 0.0f);
+            window.multiplyWithWindowingTable(fftWorkBuffer.data(), fftSize);
+            fft.performFrequencyOnlyForwardTransform(fftWorkBuffer.data());
+            fftFifoR.push(fftWorkBuffer.data(), fftSize / 2);
 
-            // Reset FFT buffer
-            fftBufferIndex = 0;
-            fftBufferL.fill(0.0f);
-            fftBufferR.fill(0.0f);
+            fftSamplesSinceLastPush = 0;
         }
     }
 
@@ -373,6 +410,104 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
             lufs_dB = -0.691f + 10.0f * std::log10(sumMeanSquare);
         }
         lufsLevel.store(lufs_dB, std::memory_order_relaxed);
+    }
+
+    //==========================================================================
+    // Short-Term LUFS (3s window) — same K-weighted data, longer window
+    //==========================================================================
+    // Store K-weighted samples in short-term buffer too (reuse from lufs buffer)
+    // We already wrote K-weighted samples to lufsBuffer above. Copy them to stLufs buffer.
+    {
+        // Walk backwards from current lufsBufferIndex by numSamples
+        for (int i = 0; i < numSamples; ++i)
+        {
+            int srcIdx = (lufsBufferIndex - numSamples + i + lufsBufferSize) % lufsBufferSize;
+            stLufsBufferL[stLufsBufferIndex] = lufsBufferL[srcIdx];
+            stLufsBufferR[stLufsBufferIndex] = lufsBufferR[srcIdx];
+            stLufsBufferIndex = (stLufsBufferIndex + 1) % stLufsBufferSize;
+        }
+    }
+
+    // Calculate Short-Term LUFS (3s window)
+    {
+        const int stWindowSamples = juce::jmin(static_cast<int>(currentSampleRate * 3.0), stLufsBufferSize);
+        float stSumL = 0.0f, stSumR = 0.0f;
+        int stCount = 0;
+
+        for (int i = 0; i < stWindowSamples; ++i)
+        {
+            int idx = (stLufsBufferIndex - stWindowSamples + i + stLufsBufferSize) % stLufsBufferSize;
+            stSumL += stLufsBufferL[idx] * stLufsBufferL[idx];
+            stSumR += stLufsBufferR[idx] * stLufsBufferR[idx];
+            stCount++;
+        }
+
+        if (stCount > 0)
+        {
+            float stMeanSq = stSumL / stCount + stSumR / stCount;
+            float st_dB = (stMeanSq > 1e-10f) ? (-0.691f + 10.0f * std::log10(stMeanSq)) : -70.0f;
+            lufsShortTerm.store(st_dB, std::memory_order_relaxed);
+        }
+    }
+
+    //==========================================================================
+    // Integrated LUFS — accumulate 400ms blocks for gating (BS.1770-4)
+    //==========================================================================
+    integratedBlockSampleCount += numSamples;
+    if (integratedBlockSampleCount >= static_cast<int>(currentSampleRate * 0.4))
+    {
+        // We have one 400ms block worth — compute its loudness
+        float blockLufs = lufsLevel.load(std::memory_order_relaxed);
+
+        {
+            std::lock_guard<std::mutex> lock(integratedMutex);
+            integratedBlockLufs.push_back(blockLufs);
+        }
+
+        integratedBlockSampleCount = 0;
+
+        // Compute Integrated LUFS with absolute + relative gating
+        std::vector<float> localBlocks;
+        {
+            std::lock_guard<std::mutex> lock(integratedMutex);
+            localBlocks = integratedBlockLufs;
+        }
+
+        if (!localBlocks.empty())
+        {
+            // Step 1: Absolute gate — remove blocks <= -70 LUFS
+            std::vector<float> gated1;
+            for (float v : localBlocks)
+                if (v > -70.0f) gated1.push_back(v);
+
+            if (!gated1.empty())
+            {
+                // Step 2: Calculate average of gated blocks (in linear power)
+                double linSum = 0.0;
+                for (float v : gated1)
+                    linSum += std::pow(10.0, v / 10.0);
+                double avgLin = linSum / gated1.size();
+                float relativeGate = static_cast<float>(10.0 * std::log10(avgLin)) - 10.0f;
+
+                // Step 3: Relative gate — remove blocks below relativeGate
+                double finalSum = 0.0;
+                int finalCount = 0;
+                for (float v : gated1)
+                {
+                    if (v > relativeGate)
+                    {
+                        finalSum += std::pow(10.0, v / 10.0);
+                        finalCount++;
+                    }
+                }
+
+                if (finalCount > 0)
+                {
+                    float intLufs = static_cast<float>(10.0 * std::log10(finalSum / finalCount));
+                    lufsIntegrated.store(intLufs, std::memory_order_relaxed);
+                }
+            }
+        }
     }
 
     //==========================================================================
@@ -486,6 +621,76 @@ void GOODMETERAudioProcessor::setStateInformation(const void* data, int sizeInBy
 {
     juce::ignoreUnused(data, sizeInBytes);
     // TODO: Restore plugin state if needed
+}
+
+//==============================================================================
+void GOODMETERAudioProcessor::pushShortTermLUFSForLRA(float stLufs)
+{
+    std::lock_guard<std::mutex> lock(lraMutex);
+    if (static_cast<int>(lraHistory.size()) >= lraMaxSamples)
+        lraHistory.erase(lraHistory.begin()); // FIFO: drop oldest
+    lraHistory.push_back(stLufs);
+}
+
+//==============================================================================
+void GOODMETERAudioProcessor::calculateLRARealtime()
+{
+    // Copy history under lock
+    std::vector<float> data;
+    {
+        std::lock_guard<std::mutex> lock(lraMutex);
+        data = lraHistory;
+    }
+
+    if (data.size() < 2)
+    {
+        luRange.store(0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    // Step 1: Absolute gate — remove <= -70.0 LUFS
+    std::vector<float> gated1;
+    gated1.reserve(data.size());
+    for (float v : data)
+        if (v > -70.0f) gated1.push_back(v);
+
+    if (gated1.size() < 2)
+    {
+        luRange.store(0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    // Step 2: Calculate average (in linear power domain)
+    double linSum = 0.0;
+    for (float v : gated1)
+        linSum += std::pow(10.0, v / 10.0);
+    double avgLin = linSum / gated1.size();
+    float relativeGate = static_cast<float>(10.0 * std::log10(avgLin)) - 20.0f;
+
+    // Step 3: Relative gate — remove below relativeGate
+    std::vector<float> gated2;
+    gated2.reserve(gated1.size());
+    for (float v : gated1)
+        if (v > relativeGate) gated2.push_back(v);
+
+    if (gated2.size() < 2)
+    {
+        luRange.store(0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    // Step 4: Sort and get percentiles
+    std::sort(gated2.begin(), gated2.end());
+
+    size_t idx10 = static_cast<size_t>(gated2.size() * 0.10);
+    size_t idx95 = static_cast<size_t>(gated2.size() * 0.95);
+
+    // Clamp indices
+    if (idx10 >= gated2.size()) idx10 = 0;
+    if (idx95 >= gated2.size()) idx95 = gated2.size() - 1;
+
+    float lra = gated2[idx95] - gated2[idx10];
+    luRange.store(juce::jmax(0.0f, lra), std::memory_order_relaxed);
 }
 
 //==============================================================================

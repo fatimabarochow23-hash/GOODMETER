@@ -41,55 +41,78 @@ public:
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
-        // ✅ 1. 动态中心与半径（绝不写死）
         auto bounds = getLocalBounds().toFloat();
 
         // Safety check
-        if (bounds.isEmpty())
+        if (bounds.isEmpty() || bounds.getHeight() < 20.0f)
             return;
 
         // Background
         g.fillAll(juce::Colours::white);
 
-        // 底部留边距，圆心在下方，画半圆
+        // VU text space: shrinks when card is short, moves toward arc
+        const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
+        const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);
+        const float topPad = juce::jlimit(5.0f, 15.0f, bounds.getHeight() * 0.05f);
+        const float sidePad = 15.0f;
+
+        // Pivot point (arc center, near bottom)
         float cx = bounds.getCentreX();
-        float cy = bounds.getBottom() - 20.0f;  // 底部留点边距
+        float cy = bounds.getBottom() - bottomPad - vuTextH;
 
-        // 🔒 安全半径上限保护（防止削顶）
-        // 1. 按宽度计算的理想半径
-        float radiusByWidth = bounds.getWidth() * 0.4f;
+        // Available space for the arc
+        float topSpace = juce::jmax(10.0f, cy - bounds.getY() - topPad);
+        float sideSpace = juce::jmax(10.0f, bounds.getWidth() / 2.0f - sidePad);
 
-        // 2. 按高度计算的极限半径（顶部留出 10px 安全区防止削顶）
-        float radiusByHeight = cy - bounds.getY() - 10.0f;
+        // Radius: limited by VERTICAL space
+        // Arc top is at y = cy - radius (angle=0, 12 o'clock)
+        // So radius must be <= topSpace
+        float radiusV = topSpace * 0.90f;
 
-        // 3. 取两者的最小值！这样无论怎么拉伸，都不会冲出盒子！
-        float radius = juce::jmin(radiusByWidth, radiusByHeight);
+        // Half-angle: determined by horizontal space for this radius
+        // Arc horizontal extent = radius * sin(halfAngle) <= sideSpace
+        float sinVal = juce::jlimit(0.0f, 0.99f, sideSpace / juce::jmax(1.0f, radiusV));
+        float naturalHalfAngle = std::asin(sinVal);
+        float halfAngle = juce::jlimit(
+            juce::MathConstants<float>::pi / 3.5f,    // min ~51°
+            juce::MathConstants<float>::pi * 0.44f,    // max ~80°
+            naturalHalfAngle
+        );
 
-        // ✅ 2. 强制使用正确的弧度范围
-        // JUCE: 0° = 12点钟方向（正上方）
-        // VU 表从 -60° 到 +60° 摆动
-        float minAngle = -juce::MathConstants<float>::pi / 3.0f;  // -60°
-        float maxAngle = juce::MathConstants<float>::pi / 3.0f;   // +60°
+        // If halfAngle was clamped to minimum, also cap radius by horizontal space
+        float radiusH = sideSpace / std::sin(halfAngle);
+        float radius = juce::jmax(15.0f, juce::jmin(radiusV, radiusH));
 
-        // 计算 0 VU 的角度位置
+        float minAngle = -halfAngle;
+        float maxAngle =  halfAngle;
+
+        // 0 VU angle
         float zeroVuAngle = juce::jmap(0.0f, minVu, maxVu, minAngle, maxAngle);
 
+        // Proportional arc thickness
+        const float arcThickness = juce::jlimit(3.0f, 6.0f, radius * 0.04f);
+
         // Draw normal arc (-30 to 0)
-        drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, 6.0f);
+        drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, arcThickness);
 
         // Draw danger arc (0 to +3)
-        drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, 6.0f);
+        drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, arcThickness);
 
         // Draw ticks and labels
         drawTicksAndLabels(g, cx, cy, radius, minAngle, maxAngle);
 
-        // Draw "VU" text
+        // Draw "VU" text below pivot, approaching arc as card shrinks
+        const float vuFontSize = juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f);
         g.setColour(GoodMeterLookAndFeel::border);
-        g.setFont(juce::Font(32.0f, juce::Font::bold));
-        auto textBounds = bounds.removeFromBottom(50);
-        g.drawText("VU", textBounds, juce::Justification::centred, false);
+        g.setFont(juce::Font(vuFontSize, juce::Font::bold));
+        g.drawText("VU",
+                  static_cast<int>(bounds.getX()),
+                  static_cast<int>(cy + 2.0f),
+                  static_cast<int>(bounds.getWidth()),
+                  static_cast<int>(vuTextH),
+                  juce::Justification::centred, false);
 
-        // ✅ 3. 完美的指针旋转法 (AffineTransform)
+        // Draw needle
         drawNeedle(g, cx, cy, radius, minAngle, maxAngle);
     }
 
@@ -166,41 +189,105 @@ private:
                            float cx, float cy, float radius,
                            float minAngle, float maxAngle)
     {
-        // Tick positions
-        const int ticks[] = { -30, -20, -10, -5, -3, -1, 0, 1, 2, 3 };
+        // Proportional tick dimensions
+        const float majorTickLen = juce::jlimit(15.0f, 30.0f, radius * 0.2f);
+        const float mediumTickLen = juce::jlimit(8.0f, 15.0f, radius * 0.1f);
+        const float smallTickLen = juce::jlimit(5.0f, 10.0f, radius * 0.065f);
+        const float tinyTickLen = juce::jlimit(3.0f, 7.0f, radius * 0.04f);
+        const float majorTickWidth = juce::jlimit(2.5f, 4.0f, radius * 0.03f);
+        const float mediumTickWidth = juce::jlimit(2.0f, 4.0f, radius * 0.025f);
+        const float smallTickWidth = juce::jlimit(1.2f, 2.5f, radius * 0.015f);
+        const float tinyTickWidth = juce::jlimit(0.8f, 1.5f, radius * 0.01f);
+        const float labelFontSize = juce::jlimit(9.0f, 14.0f, radius * 0.1f);
 
-        for (int tickVu : ticks)
+        // === 1. Tiny ticks: every 1 dB from -30 to +3 (finest graduation) ===
+        for (int db = -30; db <= 3; ++db)
         {
-            // Map VU value to angle using juce::jmap
-            const float angle = juce::jmap(static_cast<float>(tickVu), minVu, maxVu, minAngle, maxAngle);
+            const float angle = juce::jmap(static_cast<float>(db), minVu, maxVu, minAngle, maxAngle);
+            const bool isDanger = (db > 0);
+            const float innerR = radius - tinyTickLen;
 
-            const bool isDanger = (tickVu > 0);
-            const bool isZero = (tickVu == 0);
-
-            // Tick dimensions
-            const float tickLength = isZero ? 30.0f : 15.0f;
-            const float innerRadius = radius - tickLength;
-
-            // Tick endpoints (从圆心向外辐射)
             const float x1 = cx + std::sin(angle) * radius;
             const float y1 = cy - std::cos(angle) * radius;
-            const float x2 = cx + std::sin(angle) * innerRadius;
-            const float y2 = cy - std::cos(angle) * innerRadius;
+            const float x2 = cx + std::sin(angle) * innerR;
+            const float y2 = cy - std::cos(angle) * innerR;
 
-            // Draw tick line
-            juce::Line<float> tickLine(x1, y1, x2, y2);
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border).withAlpha(0.25f));
+            g.drawLine(x1, y1, x2, y2, tinyTickWidth);
+        }
+
+        // === 2. Small ticks: every 5 dB from -25 to -15, plus -7 ===
+        const int smallTicks[] = { -25, -15, -7 };
+        for (int tickVu : smallTicks)
+        {
+            const float angle = juce::jmap(static_cast<float>(tickVu), minVu, maxVu, minAngle, maxAngle);
+            const bool isDanger = (tickVu > 0);
+            const float innerR = radius - smallTickLen;
+
+            const float x1 = cx + std::sin(angle) * radius;
+            const float y1 = cy - std::cos(angle) * radius;
+            const float x2 = cx + std::sin(angle) * innerR;
+            const float y2 = cy - std::cos(angle) * innerR;
+
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border).withAlpha(0.45f));
+            g.drawLine(x1, y1, x2, y2, smallTickWidth);
+        }
+
+        // === 3. Medium ticks (labeled): -5, -3, -1, +1, +2, +3 ===
+        const int mediumTicks[] = { -5, -3, -1, 1, 2, 3 };
+        for (int tickVu : mediumTicks)
+        {
+            const float angle = juce::jmap(static_cast<float>(tickVu), minVu, maxVu, minAngle, maxAngle);
+            const bool isDanger = (tickVu > 0);
+            const float innerR = radius - mediumTickLen;
+
+            const float x1 = cx + std::sin(angle) * radius;
+            const float y1 = cy - std::cos(angle) * radius;
+            const float x2 = cx + std::sin(angle) * innerR;
+            const float y2 = cy - std::cos(angle) * innerR;
+
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.drawLine(tickLine, isZero ? 4.0f : 3.0f);
+            g.drawLine(x1, y1, x2, y2, mediumTickWidth);
 
-            // Draw label
-            const float labelRadius = radius - tickLength - 10.0f;
-            const float lx = cx + std::sin(angle) * labelRadius;
-            const float ly = cy - std::cos(angle) * labelRadius;
-
+            // Label
+            const float labelR = radius - mediumTickLen - juce::jlimit(5.0f, 10.0f, radius * 0.07f);
+            const float lx = cx + std::sin(angle) * labelR;
+            const float ly = cy - std::cos(angle) * labelR;
             juce::String labelText = (tickVu > 0) ? ("+" + juce::String(tickVu)) : juce::String(tickVu);
 
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.setFont(juce::Font(14.0f, juce::Font::bold));
+            g.setFont(juce::Font(labelFontSize, juce::Font::bold));
+            g.drawText(labelText,
+                      static_cast<int>(lx - 15), static_cast<int>(ly - 8),
+                      30, 16,
+                      juce::Justification::centred, false);
+        }
+
+        // === 4. Major ticks (labeled): -30, -20, -10, 0 ===
+        const int majorTicks[] = { -30, -20, -10, 0 };
+        for (int tickVu : majorTicks)
+        {
+            const float angle = juce::jmap(static_cast<float>(tickVu), minVu, maxVu, minAngle, maxAngle);
+            const bool isZero = (tickVu == 0);
+            const float tLen = isZero ? majorTickLen * 1.1f : majorTickLen;
+            const float innerR = radius - tLen;
+
+            const float x1 = cx + std::sin(angle) * radius;
+            const float y1 = cy - std::cos(angle) * radius;
+            const float x2 = cx + std::sin(angle) * innerR;
+            const float y2 = cy - std::cos(angle) * innerR;
+
+            g.setColour(GoodMeterLookAndFeel::border);
+            g.drawLine(x1, y1, x2, y2, majorTickWidth);
+
+            // Label
+            const float labelR = radius - tLen - juce::jlimit(5.0f, 10.0f, radius * 0.07f);
+            const float lx = cx + std::sin(angle) * labelR;
+            const float ly = cy - std::cos(angle) * labelR;
+            juce::String labelText = juce::String(tickVu);
+
+            g.setColour(GoodMeterLookAndFeel::border);
+            g.setFont(juce::Font(labelFontSize, juce::Font::bold));
             g.drawText(labelText,
                       static_cast<int>(lx - 15), static_cast<int>(ly - 8),
                       30, 16,

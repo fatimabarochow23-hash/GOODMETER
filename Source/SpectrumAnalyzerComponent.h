@@ -3,8 +3,10 @@
     SpectrumAnalyzerComponent.h
     GOODMETER - FFT Spectrum Analyzer
 
-    Translated from SpectrumAnalyzer.tsx
-    Features: Logarithmic frequency mapping, smooth polygon fill, dB scale
+    Commercial-Grade 75% Overlap + Independent GUI Lerp Architecture:
+    - Backend: 75% overlap (hop=1024) → ~43Hz FFT frame rate
+    - FIFO: 16-slot lock-free ring buffer, zero contention with Spectrogram
+    - Frontend: targetData / smoothedData separation, 60Hz independent lerp
   ==============================================================================
 */
 
@@ -15,11 +17,6 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/**
- * FFT Spectrum Analyzer Component
- * Displays frequency spectrum from 20Hz to 20kHz with logarithmic X-axis
- * Y-axis shows magnitude in dB (0 dB to -80 dB)
- */
 class SpectrumAnalyzerComponent : public juce::Component,
                                    public juce::Timer
 {
@@ -28,13 +25,11 @@ public:
     SpectrumAnalyzerComponent(GOODMETERAudioProcessor& processor)
         : audioProcessor(processor)
     {
-        // Initialize smoothed data to zero
+        targetData.fill(0.0f);
         smoothedData.fill(0.0f);
+        tempBuffer.fill(0.0f);
 
-        // ✅ 只设置高度，宽度由父容器（MeterCard）控制
-        setSize(100, 200);  // 初始宽度会被父容器覆盖
-
-        // Start timer for FFT data updates (60Hz 满帧刷新)
+        setSize(100, 200);
         startTimerHz(60);
     }
 
@@ -46,42 +41,31 @@ public:
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
-        // 🔒 JUCE 全局渲染纪律 1: 动态边界，绝不写死坐标
         auto bounds = getLocalBounds().toFloat();
 
-        // 🔒 JUCE 全局渲染纪律 2: 安全边界判定
         if (bounds.isEmpty() || bounds.getWidth() <= 0 || bounds.getHeight() <= 0)
             return;
 
-        // Background
         g.fillAll(juce::Colours::white);
 
-        // Border
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRect(bounds, 2.0f);
 
-        // Draw spectrum polygon if we have valid FFT data
         if (hasValidData)
-        {
             drawSpectrum(g, bounds);
-        }
 
-        // Draw frequency grid lines and labels
         drawFrequencyGrid(g, bounds);
     }
 
     void resized() override
     {
-        // 🎯 预先计算 X 坐标缓存池（只在窗口改变时执行一次！）
         auto bounds = getLocalBounds().toFloat();
 
-        // Safety check
         if (bounds.isEmpty() || bounds.getWidth() <= 0)
             return;
 
         const float width = bounds.getWidth();
 
-        // 为所有 FFT bin 预计算 X 坐标（将昂贵的 log10 运算转移到这里）
         cachedXCoords.resize(numBins);
         for (int bin = 0; bin < numBins; ++bin)
         {
@@ -94,133 +78,101 @@ private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
 
-    // FFT data storage (half of fftSize due to Nyquist)
     static constexpr int numBins = GOODMETERAudioProcessor::fftSize / 2;
-    std::array<float, numBins> fftData;
-    std::array<float, numBins> smoothedData;  // 平滑缓存
+
+    // Three-tier data architecture:
+    // tempBuffer  → raw FIFO drain buffer (transient, overwritten each pop)
+    // targetData  → latest FFT snapshot (the "truth" the display chases)
+    // smoothedData → what actually gets rendered (lerps toward targetData every frame)
+    std::array<float, numBins> tempBuffer;
+    std::array<float, numBins> targetData;
+    std::array<float, numBins> smoothedData;
     bool hasValidData = false;
 
-    // 🎯 X 坐标缓存池 (空间换时间策略 - Lookup Table)
-    // 频率到 X 轴的对数映射极其昂贵，窗口不变时它就是常数！
+    // X coordinate lookup table (recomputed only on resize)
     std::vector<float> cachedXCoords;
 
     // Frequency range
-    static constexpr float minFreq = 20.0f;    // 20 Hz
-    static constexpr float maxFreq = 20000.0f; // 20 kHz
+    static constexpr float minFreq = 20.0f;
+    static constexpr float maxFreq = 20000.0f;
 
-    // 🎨 Y 轴动态范围（舒适比例：增加动态范围 + 视觉天花板）
-    static constexpr float minDb = -100.0f;  // 能量地板
-    static constexpr float maxDb = 6.0f;     // 视觉天花板（提高此值会向下压）
+    // Y axis dynamic range
+    static constexpr float minDb = -100.0f;
+    static constexpr float maxDb = 6.0f;
 
     //==========================================================================
     void timerCallback() override
     {
-        // 🎯 接通 FFT 数据总线：从 processor 的 FIFO 中 pop 最新数据
-        // Try to get latest FFT data from left channel
-        if (audioProcessor.fftFifoL.pop(fftData.data(), numBins))
+        // === 1. Drain FIFO: consume all queued frames, keep only the latest ===
+        bool gotNewData = false;
+        while (audioProcessor.fftFifoL.pop(tempBuffer.data(), numBins))
         {
-            // 🎨 时间平滑处理：让频谱像流体一样波动（丝滑海浪效果）
-            for (int i = 0; i < numBins; ++i)
-            {
-                // 平滑系数 0.35f（35% 追赶速度 = 极速响应 + 丝滑）
-                smoothedData[i] += (fftData[i] - smoothedData[i]) * 0.35f;
-            }
-
-            hasValidData = true;
-            repaint();
+            std::copy(tempBuffer.begin(), tempBuffer.end(), targetData.begin());
+            gotNewData = true;
         }
+
+        if (gotNewData)
+            hasValidData = true;
+
+        // === 2. Independent GUI lerp: ALWAYS runs, even without new FFT data ===
+        // smoothedData chases targetData at 35% per frame → silky 60Hz animation
+        const float smoothing = 0.35f;
+        for (int i = 0; i < numBins; ++i)
+        {
+            smoothedData[i] += (targetData[i] - smoothedData[i]) * smoothing;
+        }
+
+        // === 3. Unconditional repaint: full 60Hz visual refresh ===
+        repaint();
     }
 
     //==========================================================================
-    /**
-     * Convert frequency (Hz) to X pixel coordinate (logarithmic scale)
-     */
     float frequencyToX(float freq, float width) const
     {
-        // Logarithmic interpolation: x = (log(freq) - log(minFreq)) / (log(maxFreq) - log(minFreq))
         const float logMin = std::log10(minFreq);
         const float logMax = std::log10(maxFreq);
         const float logFreq = std::log10(freq);
 
-        const float normalized = (logFreq - logMin) / (logMax - logMin);
-        return normalized * width;
+        return ((logFreq - logMin) / (logMax - logMin)) * width;
     }
 
-    /**
-     * Convert FFT bin index to frequency (Hz)
-     */
     float binToFrequency(int bin) const
     {
         const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
         return (bin * sampleRate) / static_cast<float>(GOODMETERAudioProcessor::fftSize);
     }
 
-    /**
-     * Convert magnitude to dB
-     */
-    float magnitudeToDb(float magnitude) const
-    {
-        return 20.0f * std::log10(magnitude + 1e-8f);
-    }
-
-    /**
-     * Convert dB to Y pixel coordinate (0 dB at top, -100 dB at bottom)
-     * 🎨 给顶部留出 20% 空白区，营造呼吸感
-     */
     float dbToY(float db, float height, float topY) const
     {
-        // 顶部留出 20% 的空白区（舒适比例）
         const float topPadding = height * 0.2f;
-
-        // 使用 jmap 从 minDb(-100) 映射到 maxDb(6.0)
-        // 注意：jmap(value, sourceMin, sourceMax, targetMin, targetMax)
         return juce::jmap(db, minDb, maxDb, topY + height, topY + topPadding);
     }
 
     //==========================================================================
-    /**
-     * Draw smooth spectrum polygon with gradient fill
-     * 🎨 粉色海浪质感（0.2-0.3 透明度）
-     * ⚡ 性能优化：降采样绘制 + X 坐标查表法（零 log10 运算）
-     */
     void drawSpectrum(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        const float width = bounds.getWidth();
         const float height = bounds.getHeight();
         const float topY = bounds.getY();
 
-        // Safety check: 确保缓存已初始化
         if (cachedXCoords.empty())
             return;
 
-        // 🎨 创建平滑的多边形路径
         juce::Path spectrumPath;
-
-        // Start at bottom-left corner
         spectrumPath.startNewSubPath(bounds.getX(), bounds.getBottom());
 
-        // ⚡ 降采样步长：强制最多只抽样 250 个关键频点进行连线
-        // 屏幕宽度根本没有 2048 个像素！
         const int maxPoints = 250;
         const int step = juce::jmax(1, numBins / maxPoints);
 
-        // 🎯 极速纯粹的绘制循环 (The Fast Loop - Zero Math!)
         for (int bin = 1; bin < numBins; bin += step)
         {
-            // 安全边界检查
             if (bin >= static_cast<int>(cachedXCoords.size()))
                 break;
 
             const float freq = binToFrequency(bin);
-
-            // Only draw frequencies in visible range (20Hz - 20kHz)
             if (freq < minFreq || freq > maxFreq)
                 continue;
 
-            // 1️⃣ 极速查表：O(1) 复杂度，零数学运算！
             const float x = cachedXCoords[bin];
-
-            // 2️⃣ 将振幅转为 dB (这里只算 250 次，可接受)
             const float rawMagnitude = smoothedData[bin];
             const float scaledAmplitude = rawMagnitude / static_cast<float>(GOODMETERAudioProcessor::fftSize);
             const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
@@ -229,35 +181,30 @@ private:
             spectrumPath.lineTo(x, y);
         }
 
-        // Close path at bottom-right corner
         spectrumPath.lineTo(bounds.getRight(), bounds.getBottom());
         spectrumPath.closeSubPath();
 
-        // 🎨 纵向渐变填充：顶部不透明 → 底部透明（流体海浪质感）
+        // Gradient fill
         juce::ColourGradient gradient(
-            GoodMeterLookAndFeel::accentPink.withAlpha(0.4f),  // 顶部：40% 不透明
+            GoodMeterLookAndFeel::accentPink.withAlpha(0.4f),
             bounds.getCentreX(), bounds.getY(),
-            GoodMeterLookAndFeel::accentPink.withAlpha(0.0f),  // 底部：完全透明
+            GoodMeterLookAndFeel::accentPink.withAlpha(0.0f),
             bounds.getCentreX(), bounds.getBottom(),
             false
         );
         g.setGradientFill(gradient);
         g.fillPath(spectrumPath);
 
-        // 🎨 粉色实线描边
+        // Stroke
         g.setColour(GoodMeterLookAndFeel::accentPink);
         g.strokePath(spectrumPath, juce::PathStrokeType(2.0f));
     }
 
     //==========================================================================
-    /**
-     * Draw frequency grid lines and labels
-     */
     void drawFrequencyGrid(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
         const float width = bounds.getWidth();
 
-        // Major frequency markers (logarithmically spaced)
         const float frequencies[] = { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
                                      1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
@@ -268,10 +215,8 @@ private:
         {
             const float x = bounds.getX() + frequencyToX(freq, width);
 
-            // Vertical grid line
             g.drawVerticalLine(static_cast<int>(x), bounds.getY(), bounds.getBottom());
 
-            // Frequency label
             juce::String label;
             if (freq >= 1000.0f)
                 label = juce::String(freq / 1000.0f, 1) + "k";

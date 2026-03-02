@@ -36,9 +36,12 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     );
 
     // Create Levels Meter and transfer ownership to card
-    levelsMeter = new LevelsMeterComponent();
-    levelsMeter->setStandard("EBU R128");  // Default standard
+    levelsMeter = new LevelsMeterComponent(audioProcessor);
+    levelsMeter->setupTargetMenu();
     levelsCard->setContentComponent(std::unique_ptr<juce::Component>(levelsMeter));
+
+    // Embed the target ComboBox into the Levels card header
+    levelsCard->setHeaderWidget(&levelsMeter->getTargetMenu());
 
     vuMeterCard = std::make_unique<MeterCardComponent>(
         "VU METER",
@@ -100,19 +103,50 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     spectrogramMeter = new SpectrogramComponent(audioProcessor);
     spectrogramCard->setContentComponent(std::unique_ptr<juce::Component>(spectrogramMeter));
 
+    psrCard = std::make_unique<MeterCardComponent>(
+        "PSR",
+        juce::Colour(0xFF20C997),  // Electro-cyan
+        true  // Expanded by default
+    );
+
+    // Create PSR Meter and transfer ownership to card
+    psrMeter = new PsrMeterComponent(audioProcessor);
+    psrCard->setContentComponent(std::unique_ptr<juce::Component>(psrMeter));
+
+    nonoCard = std::make_unique<MeterCardComponent>(
+        "NONO",
+        juce::Colour(0xFF00E5FF),  // Holo-cyan
+        true  // Expanded by default
+    );
+
+    // Create HoloNono companion robot and transfer ownership to card
+    holoNono = new HoloNonoComponent(audioProcessor);
+    nonoCard->setContentComponent(std::unique_ptr<juce::Component>(holoNono));
+
     // Bind height change callbacks to all cards
-    // This allows cards to notify the editor to relayout when they expand/collapse
-    auto cardStateChangedCallback = [this]() {
-        this->resized();
+    // Each callback: relayout + notify NONO of fold/unfold event
+    auto makeCardCallback = [this](MeterCardComponent* card, const juce::String& name) {
+        return [this, card, name]() {
+            this->resized();
+            if (holoNono != nullptr)
+            {
+                if (card->getExpanded())
+                    holoNono->onCardUnfolded(name);
+                else
+                    holoNono->onCardFolded(name);
+            }
+        };
     };
 
-    levelsCard->onHeightChanged = cardStateChangedCallback;
-    vuMeterCard->onHeightChanged = cardStateChangedCallback;
-    threeBandCard->onHeightChanged = cardStateChangedCallback;
-    spectrumCard->onHeightChanged = cardStateChangedCallback;
-    phaseCard->onHeightChanged = cardStateChangedCallback;
-    stereoImageCard->onHeightChanged = cardStateChangedCallback;
-    spectrogramCard->onHeightChanged = cardStateChangedCallback;
+    levelsCard->onHeightChanged = makeCardCallback(levelsCard.get(), "LEVELS");
+    vuMeterCard->onHeightChanged = makeCardCallback(vuMeterCard.get(), "VU METER");
+    threeBandCard->onHeightChanged = makeCardCallback(threeBandCard.get(), "3-BAND");
+    spectrumCard->onHeightChanged = makeCardCallback(spectrumCard.get(), "SPECTRUM");
+    phaseCard->onHeightChanged = makeCardCallback(phaseCard.get(), "PHASE");
+    stereoImageCard->onHeightChanged = makeCardCallback(stereoImageCard.get(), "STEREO");
+    spectrogramCard->onHeightChanged = makeCardCallback(spectrogramCard.get(), "SPECTROGRAM");
+    psrCard->onHeightChanged = makeCardCallback(psrCard.get(), "PSR");
+    nonoCard->onHeightChanged = [this]() { this->resized(); };
 
     // Add cards to content component
     contentComponent->addAndMakeVisible(levelsCard.get());
@@ -122,6 +156,8 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     contentComponent->addAndMakeVisible(phaseCard.get());
     contentComponent->addAndMakeVisible(stereoImageCard.get());
     contentComponent->addAndMakeVisible(spectrogramCard.get());
+    contentComponent->addAndMakeVisible(psrCard.get());
+    contentComponent->addAndMakeVisible(nonoCard.get());
 
     // Set initial size (matches typical plugin dimensions)
     setSize(500, 700);
@@ -158,22 +194,11 @@ void GOODMETERAudioProcessorEditor::resized()
     const int width = bounds.getWidth();
     const int spacing = GoodMeterLookAndFeel::cardSpacing;
 
-    // 🎯 动态更新窗口极限尺寸（响应当前列模式）
+    // Physical minimum height constants
+    const int expandedMinHeight = 130;
+    const int headerHeight = 48;
     const int minCardWidth = 380;
-    const int minHeight = 500;
     const int dualColumnThreshold = 800;
-
-    if (width < dualColumnThreshold)
-    {
-        // 单列模式：允许缩小到 380px
-        setResizeLimits(minCardWidth, minHeight, 2400, 1600);
-    }
-    else
-    {
-        // 双列/三列模式：根据实际列数动态计算
-        int minWidth = width >= 1200 ? (minCardWidth * 3 + spacing * 4) : (minCardWidth * 2 + spacing * 3);
-        setResizeLimits(minWidth, minHeight, 2400, 1600);
-    }
 
     // ========================================================================
     // 🎯 智能三列触发逻辑：根据第二列卡片展开状态决定是否启用第三列
@@ -218,23 +243,25 @@ void GOODMETERAudioProcessorEditor::resized()
             const int col3X = col2X + columnWidth + spacing;
 
             // 🎯 手风琴弹性排版（Accordion Flex Layout）
-            const int headerHeight = 48;  // 折叠后标题栏高度
             const int availableHeight = bounds.getHeight() - spacing * 2;
 
-            // ========== 第一列：手风琴排版 Levels, VU, Phase ==========
+            // ========== 第一列：手风琴排版 Levels, VU, Phase, PSR ==========
             std::vector<MeterCardComponent*> col1Cards;
             if (levelsCard != nullptr) col1Cards.push_back(levelsCard.get());
             if (vuMeterCard != nullptr) col1Cards.push_back(vuMeterCard.get());
             if (phaseCard != nullptr) col1Cards.push_back(phaseCard.get());
+            if (psrCard != nullptr) col1Cards.push_back(psrCard.get());
 
             int col1ExpandedCount = 0;
             for (auto* card : col1Cards)
                 if (card->getExpanded()) col1ExpandedCount++;
 
+            int col1FoldedCount = static_cast<int>(col1Cards.size()) - col1ExpandedCount;
             int col1TotalSpacing = spacing * (static_cast<int>(col1Cards.size()) - 1);
-            int col1FoldedTotal = (static_cast<int>(col1Cards.size()) - col1ExpandedCount) * headerHeight;
+            int col1FoldedTotal = col1FoldedCount * headerHeight;
             int col1AvailableForExpanded = availableHeight - col1TotalSpacing - col1FoldedTotal;
-            int col1ExpandedHeight = col1ExpandedCount > 0 ? (col1AvailableForExpanded / col1ExpandedCount) : 0;
+            int col1ExpandedHeight = col1ExpandedCount > 0
+                ? juce::jmax(expandedMinHeight, col1AvailableForExpanded / col1ExpandedCount) : 0;
 
             int currentY1 = spacing;
             for (auto* card : col1Cards)
@@ -246,6 +273,10 @@ void GOODMETERAudioProcessorEditor::resized()
 
             int col1Y = currentY1;
 
+            // Column 1 physical min height
+            int minCol1Height = (col1ExpandedCount * expandedMinHeight)
+                + (col1FoldedCount * headerHeight) + col1TotalSpacing + spacing * 2;
+
             // ========== 第二列：手风琴排版 Spectrum, 3-Band, Stereo ==========
             std::vector<MeterCardComponent*> col2Cards;
             if (spectrumCard != nullptr) col2Cards.push_back(spectrumCard.get());
@@ -256,10 +287,12 @@ void GOODMETERAudioProcessorEditor::resized()
             for (auto* card : col2Cards)
                 if (card->getExpanded()) col2ExpandedCount++;
 
+            int col2FoldedCount = static_cast<int>(col2Cards.size()) - col2ExpandedCount;
             int col2TotalSpacing = spacing * (static_cast<int>(col2Cards.size()) - 1);
-            int col2FoldedTotal = (static_cast<int>(col2Cards.size()) - col2ExpandedCount) * headerHeight;
+            int col2FoldedTotal = col2FoldedCount * headerHeight;
             int col2AvailableForExpanded = availableHeight - col2TotalSpacing - col2FoldedTotal;
-            int col2ExpandedHeight = col2ExpandedCount > 0 ? (col2AvailableForExpanded / col2ExpandedCount) : 0;
+            int col2ExpandedHeight = col2ExpandedCount > 0
+                ? juce::jmax(expandedMinHeight, col2AvailableForExpanded / col2ExpandedCount) : 0;
 
             int currentY2 = spacing;
             for (auto* card : col2Cards)
@@ -271,15 +304,33 @@ void GOODMETERAudioProcessorEditor::resized()
 
             int col2Y = currentY2;
 
-            // ========== 第三列：Spectrogram '做自己'（舒适固定高度）==========
+            // Column 2 physical min height
+            int minCol2Height = (col2ExpandedCount * expandedMinHeight)
+                + (col2FoldedCount * headerHeight) + col2TotalSpacing + spacing * 2;
+
+            // ========== 第三列：Spectrogram + NONO ==========
             int col3Y = spacing;
             if (spectrogramCard != nullptr && spectrogramCard->isVisible())
             {
-                // 🎯 舒适的固定比例高度：可用高度的一半
                 const int spectrogramHeight = availableHeight / 2;
                 spectrogramCard->setBounds(col3X, col3Y, columnWidth, spectrogramHeight);
                 col3Y += spectrogramHeight + spacing;
             }
+
+            // NONO companion in remaining Col3 space
+            if (nonoCard != nullptr && nonoCard->isVisible())
+            {
+                int nonoH = nonoCard->getExpanded()
+                    ? juce::jmax(expandedMinHeight, availableHeight - (col3Y - spacing))
+                    : headerHeight;
+                nonoCard->setBounds(col3X, col3Y, columnWidth, nonoH);
+                col3Y += nonoH + spacing;
+            }
+
+            // Dynamic resize limits (三列模式)
+            int minCol3Height = spectrogramExpanded ? (expandedMinHeight + spacing * 2) : (headerHeight + spacing * 2);
+            int dynamicMinHeight = juce::jmax(minCol1Height, juce::jmax(minCol2Height, minCol3Height));
+            setResizeLimits(requiredWidth, dynamicMinHeight, 2400, 1600);
 
             // Content height = max of three columns
             int contentHeight = juce::jmax(col1Y, juce::jmax(col2Y, col3Y));
@@ -302,23 +353,25 @@ void GOODMETERAudioProcessorEditor::resized()
         const int col2X = col1X + columnWidth + spacing;
 
         // 🎯 手风琴弹性排版
-        const int headerHeight = 48;
         const int availableHeight = bounds.getHeight() - spacing * 2;
 
-        // ========== 左列：手风琴排版 Levels, VU, Phase ==========
+        // ========== 左列：手风琴排版 Levels, VU, Phase, PSR ==========
         std::vector<MeterCardComponent*> col1Cards;
         if (levelsCard != nullptr) col1Cards.push_back(levelsCard.get());
         if (vuMeterCard != nullptr) col1Cards.push_back(vuMeterCard.get());
         if (phaseCard != nullptr) col1Cards.push_back(phaseCard.get());
+        if (psrCard != nullptr) col1Cards.push_back(psrCard.get());
 
         int col1ExpandedCount = 0;
         for (auto* card : col1Cards)
             if (card->getExpanded()) col1ExpandedCount++;
 
+        int col1FoldedCount = static_cast<int>(col1Cards.size()) - col1ExpandedCount;
         int col1TotalSpacing = spacing * (static_cast<int>(col1Cards.size()) - 1);
-        int col1FoldedTotal = (static_cast<int>(col1Cards.size()) - col1ExpandedCount) * headerHeight;
+        int col1FoldedTotal = col1FoldedCount * headerHeight;
         int col1AvailableForExpanded = availableHeight - col1TotalSpacing - col1FoldedTotal;
-        int col1ExpandedHeight = col1ExpandedCount > 0 ? (col1AvailableForExpanded / col1ExpandedCount) : 0;
+        int col1ExpandedHeight = col1ExpandedCount > 0
+            ? juce::jmax(expandedMinHeight, col1AvailableForExpanded / col1ExpandedCount) : 0;
 
         int currentY1 = spacing;
         for (auto* card : col1Cards)
@@ -329,6 +382,9 @@ void GOODMETERAudioProcessorEditor::resized()
         }
 
         int col1Y = currentY1;
+
+        int minCol1Height = (col1ExpandedCount * expandedMinHeight)
+            + (col1FoldedCount * headerHeight) + col1TotalSpacing + spacing * 2;
 
         // ========== 右列：手风琴排版 Spectrum, 3-Band, Stereo + Spectrogram ==========
         std::vector<MeterCardComponent*> col2Cards;
@@ -341,10 +397,12 @@ void GOODMETERAudioProcessorEditor::resized()
         for (auto* card : col2Cards)
             if (card->getExpanded()) col2ExpandedCount++;
 
+        int col2FoldedCount = static_cast<int>(col2Cards.size()) - col2ExpandedCount;
         int col2TotalSpacing = spacing * (static_cast<int>(col2Cards.size()) - 1);
-        int col2FoldedTotal = (static_cast<int>(col2Cards.size()) - col2ExpandedCount) * headerHeight;
+        int col2FoldedTotal = col2FoldedCount * headerHeight;
         int col2AvailableForExpanded = availableHeight - col2TotalSpacing - col2FoldedTotal;
-        int col2ExpandedHeight = col2ExpandedCount > 0 ? (col2AvailableForExpanded / col2ExpandedCount) : 0;
+        int col2ExpandedHeight = col2ExpandedCount > 0
+            ? juce::jmax(expandedMinHeight, col2AvailableForExpanded / col2ExpandedCount) : 0;
 
         int currentY2 = spacing;
         for (auto* card : col2Cards)
@@ -356,6 +414,14 @@ void GOODMETERAudioProcessorEditor::resized()
 
         int col2Y = currentY2;
 
+        int minCol2Height = (col2ExpandedCount * expandedMinHeight)
+            + (col2FoldedCount * headerHeight) + col2TotalSpacing + spacing * 2;
+
+        // Dynamic resize limits (双列模式)
+        int minWidth = minCardWidth * 2 + spacing * 3;
+        int dynamicMinHeight = juce::jmax(minCol1Height, minCol2Height);
+        setResizeLimits(minWidth, dynamicMinHeight, 2400, 1600);
+
         // Content height = max of both columns
         int contentHeight = juce::jmax(col1Y, col2Y);
         contentComponent->setSize(width, contentHeight);
@@ -365,6 +431,9 @@ void GOODMETERAudioProcessorEditor::resized()
     // ========================================================================
     else
     {
+        // Single column resize limits
+        setResizeLimits(minCardWidth, 500, 2400, 1600);
+
         int yPos = spacing;
 
         auto layoutCard = [&](MeterCardComponent* card) {
@@ -390,6 +459,7 @@ void GOODMETERAudioProcessorEditor::resized()
         layoutCard(phaseCard.get());
         layoutCard(stereoImageCard.get());
         layoutCard(spectrogramCard.get());
+        layoutCard(psrCard.get());
 
         // Set content component size
         contentComponent->setSize(width, yPos);
@@ -404,13 +474,27 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
     float rmsL = audioProcessor.rmsLevelL.load(std::memory_order_relaxed);
     float rmsR = audioProcessor.rmsLevelR.load(std::memory_order_relaxed);
-    float lufs = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
+    float momentary = audioProcessor.lufsLevel.load(std::memory_order_relaxed);
+    float shortTerm = audioProcessor.lufsShortTerm.load(std::memory_order_relaxed);
+    float integrated = audioProcessor.lufsIntegrated.load(std::memory_order_relaxed);
     float phase = audioProcessor.phaseCorrelation.load(std::memory_order_relaxed);
+
+    // Push Short-Term LUFS to LRA history (~60Hz = every ~16ms)
+    // We want ~100ms intervals, so push every 6th frame
+    static int lraFrameCounter = 0;
+    if (++lraFrameCounter >= 6)
+    {
+        audioProcessor.pushShortTermLUFSForLRA(shortTerm);
+        audioProcessor.calculateLRARealtime();
+        lraFrameCounter = 0;
+    }
+
+    float luRangeVal = audioProcessor.luRange.load(std::memory_order_relaxed);
 
     // Update Levels Meter
     if (levelsMeter != nullptr)
     {
-        levelsMeter->updateMetrics(peakL, peakR, lufs);
+        levelsMeter->updateMetrics(peakL, peakR, momentary, shortTerm, integrated, luRangeVal);
     }
 
     // Update VU Meter
@@ -424,8 +508,4 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     {
         phaseMeter->updateCorrelation(phase);
     }
-
-    // Phase 3: Update other meter components here
-    // vuMeter->updateValue(...);
-    // etc.
 }

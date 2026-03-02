@@ -101,6 +101,19 @@ public:
                   arrowBounds,
                   juce::Justification::centred,
                   false);
+
+        // Position header widget (ComboBox) between title and arrow
+        if (headerWidget != nullptr)
+        {
+            const int widgetW = juce::jlimit(80, 140, static_cast<int>(headerBounds.getWidth() * 0.3f));
+            const int widgetH = 26;
+            headerWidget->setBounds(
+                headerBounds.getRight() - widgetW,
+                (headerHeight - widgetH) / 2,
+                widgetW,
+                widgetH
+            );
+        }
     }
 
     void resized() override
@@ -110,17 +123,16 @@ public:
         // Skip header area
         bounds.removeFromTop(headerHeight);
 
-        // 🔒 CRITICAL: Web overflow: hidden 思想
-        // 父容器（卡片）变小时，子容器尺寸不变，只做裁剪！
-        // 绝对不要改变 contentComponent 的高度，否则内部组件坐标系崩溃
+        // Give content the ACTUAL available height so it can scale proportionally
         if (contentComponent != nullptr)
         {
-            // 保持 content 自身初始化时的高度，只调整 X 和 Width
+            const int padding = static_cast<int>(GoodMeterLookAndFeel::cardPadding);
+            const int availableHeight = juce::jmax(0, getHeight() - headerHeight - padding * 2);
             contentComponent->setBounds(
-                GoodMeterLookAndFeel::cardPadding,
+                padding,
                 headerHeight,
-                getWidth() - GoodMeterLookAndFeel::cardPadding * 2,
-                contentComponent->getHeight()  // ✅ 保持原始高度！
+                getWidth() - padding * 2,
+                availableHeight
             );
             contentComponent->setVisible(isExpanded || isAnimating);
         }
@@ -128,13 +140,34 @@ public:
 
     //==========================================================================
     /**
+     * Set an optional widget to display in the header (e.g. ComboBox for Levels)
+     * The card positions it in the header area, to the right of the title.
+     * Clicks on this widget do NOT trigger expand/collapse.
+     */
+    void setHeaderWidget(juce::Component* widget)
+    {
+        headerWidget = widget;
+        if (headerWidget != nullptr)
+            addAndMakeVisible(headerWidget);
+    }
+
+    //==========================================================================
+    /**
      * Mouse handling for header clicks (replaces juce::TextButton)
+     * Skip toggle if click is on the header widget (ComboBox)
      */
     void mouseDown(const juce::MouseEvent& event) override
     {
         // Check if click is within header area
         if (event.y <= headerHeight)
         {
+            // Don't toggle if clicking on the header widget
+            if (headerWidget != nullptr)
+            {
+                auto widgetBounds = headerWidget->getBounds();
+                if (widgetBounds.contains(event.x, event.y))
+                    return;  // Let the ComboBox handle it
+            }
             setExpanded(!isExpanded, true);
         }
     }
@@ -313,6 +346,9 @@ private:
     bool isHeaderHovered = false;
 
     std::unique_ptr<juce::Component> contentComponent;
+
+    // Optional header widget (e.g. ComboBox for Levels card)
+    juce::Component* headerWidget = nullptr;  // Non-owning pointer
 
     // Animation state
     float currentHeight = 0.0f;

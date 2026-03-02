@@ -1,12 +1,12 @@
 /*
   ==============================================================================
     Band3Component.h
-    GOODMETER - 3-Band Frequency Analyzer (Alchemy Mode)
+    GOODMETER - 3-Band Frequency Analyzer (Alchemy Mode v3)
 
-    🧪 Chemical Laboratory Design:
-    - LOW (20-250Hz)  = Beaker (矮胖烧杯)
-    - MID (250-2kHz)  = Cylinder (细长量筒)
-    - HIGH (2k-20kHz) = Erlenmeyer Flask (尖顶三角瓶)
+    Chemical Laboratory Design (Pixel-Perfect Paths):
+    - LOW (20-250Hz)  = Beaker (矮胖烧杯 + 倒流口)
+    - MID (250-2kHz)  = Graduated Cylinder (细长量筒 + 水平刻度线)
+    - HIGH (2k-20kHz) = Erlenmeyer Flask (三角锥瓶 — 底宽顶窄)
   ==============================================================================
 */
 
@@ -17,10 +17,6 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/**
- * 3-Band Frequency Analyzer Component
- * Displays LOW/MID/HIGH band energy as chemical vessels with liquid fill
- */
 class Band3Component : public juce::Component,
                        public juce::Timer
 {
@@ -29,10 +25,7 @@ public:
     Band3Component(GOODMETERAudioProcessor& processor)
         : audioProcessor(processor)
     {
-        // Set initial size (width will be controlled by parent MeterCard)
         setSize(100, 280);
-
-        // Start 60Hz timer for smooth liquid animation
         startTimerHz(60);
     }
 
@@ -45,299 +38,344 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
-
-        // Safety check
         if (bounds.isEmpty())
             return;
 
-        // Background
         g.fillAll(juce::Colours::white);
-
-        // Border
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.drawRect(bounds.toFloat(), 2.0f);
-
-        // Draw the three alchemical vessels
         drawBand3Vessels(g, bounds);
     }
 
-    void resized() override
-    {
-        // No child components
-    }
+    void resized() override {}
 
 private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
 
-    // Current RMS levels (raw from processor atomics)
     float currentLow = -90.0f;
     float currentMid = -90.0f;
     float currentHigh = -90.0f;
 
-    // 🎯 平滑插值显示值 (Lerp smoothing for silky liquid animation)
-    float displayLow = 0.0f;   // Normalized 0.0 ~ 1.2+ (allows overflow)
+    // Smoothed normalized display values (0.0 ~ 1.0)
+    float displayLow = 0.0f;
     float displayMid = 0.0f;
     float displayHigh = 0.0f;
 
-    // dB range for level mapping
     static constexpr float minDb = -60.0f;
     static constexpr float maxDb = 0.0f;
 
     //==========================================================================
     void timerCallback() override
     {
-        // Update band RMS levels from processor
         currentLow = audioProcessor.rmsLevelLow.load(std::memory_order_relaxed);
         currentMid = audioProcessor.rmsLevelMid3Band.load(std::memory_order_relaxed);
         currentHigh = audioProcessor.rmsLevelHigh.load(std::memory_order_relaxed);
 
-        // Convert dB to normalized 0.0 ~ 1.2+ (allows overflow > 1.0)
-        float targetLow = juce::jmap(currentLow, minDb, maxDb, 0.0f, 1.0f);
-        float targetMid = juce::jmap(currentMid, minDb, maxDb, 0.0f, 1.0f);
-        float targetHigh = juce::jmap(currentHigh, minDb, maxDb, 0.0f, 1.0f);
+        float targetLow = juce::jlimit(0.0f, 1.0f, juce::jmap(currentLow, minDb, maxDb, 0.0f, 1.0f));
+        float targetMid = juce::jlimit(0.0f, 1.0f, juce::jmap(currentMid, minDb, maxDb, 0.0f, 1.0f));
+        float targetHigh = juce::jlimit(0.0f, 1.0f, juce::jmap(currentHigh, minDb, maxDb, 0.0f, 1.0f));
 
-        // 🎯 Lerp 平滑插值 (silky smooth liquid animation, 0.3f damping)
-        const float smoothing = 0.3f;
+        // Damped smoothing (silky 0.25 lerp)
+        const float smoothing = 0.25f;
         displayLow += (targetLow - displayLow) * smoothing;
         displayMid += (targetMid - displayMid) * smoothing;
         displayHigh += (targetHigh - displayHigh) * smoothing;
+
+        // Noise floor: clamp near-zero to zero
+        if (displayLow < 0.005f) displayLow = 0.0f;
+        if (displayMid < 0.005f) displayMid = 0.0f;
+        if (displayHigh < 0.005f) displayHigh = 0.0f;
 
         repaint();
     }
 
     //==========================================================================
-    /**
-     * 🧪 Draw the three alchemical vessels (Beaker, Cylinder, Flask)
-     */
     void drawBand3Vessels(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // 1️⃣ 严密的 3 列 Grid 领地切分 (equal width, leave space for labels)
-        auto area = bounds.toFloat().reduced(20.0f, 30.0f);
+        const float padX = juce::jmin(20.0f, bounds.getWidth() * 0.06f);
+        const float padY = juce::jmin(25.0f, bounds.getHeight() * 0.06f);
+        auto area = bounds.toFloat().reduced(padX, padY);
 
-        const float vesselWidth = area.getWidth() / 3.0f;
-        const float vesselHeight = area.getHeight() - 30.0f;  // Reserve 30px for bottom labels
+        if (area.getHeight() < 30.0f || area.getWidth() < 60.0f)
+            return;
 
-        // Define three vessel areas
-        auto beakerArea = juce::Rectangle<float>(
-            area.getX(),
-            area.getY(),
-            vesselWidth,
-            vesselHeight
-        ).reduced(10.0f, 0.0f);
+        // Label space at bottom
+        const float labelSpace = juce::jlimit(16.0f, 28.0f, area.getHeight() * 0.12f);
+        const float vesselHeight = area.getHeight() - labelSpace;
 
-        auto cylinderArea = juce::Rectangle<float>(
-            area.getX() + vesselWidth,
-            area.getY(),
-            vesselWidth,
-            vesselHeight
-        ).reduced(10.0f, 0.0f);
+        // Three equal columns with gaps
+        const float gap = juce::jlimit(8.0f, 20.0f, area.getWidth() * 0.04f);
+        const float colWidth = (area.getWidth() - gap * 2.0f) / 3.0f;
 
-        auto flaskArea = juce::Rectangle<float>(
-            area.getX() + vesselWidth * 2.0f,
-            area.getY(),
-            vesselWidth,
-            vesselHeight
-        ).reduced(10.0f, 0.0f);
+        // Vessel areas — each vessel gets its own column
+        auto beakerCol = juce::Rectangle<float>(area.getX(), area.getY(), colWidth, vesselHeight);
+        auto cylinderCol = juce::Rectangle<float>(area.getX() + colWidth + gap, area.getY(), colWidth, vesselHeight);
+        auto flaskCol = juce::Rectangle<float>(area.getX() + (colWidth + gap) * 2.0f, area.getY(), colWidth, vesselHeight);
 
-        // 2️⃣ Draw each vessel with its unique shape
-        drawBeaker(g, beakerArea, displayLow, GoodMeterLookAndFeel::accentPink, "LOW");
-        drawCylinder(g, cylinderArea, displayMid, GoodMeterLookAndFeel::accentYellow, "MID");
-        drawFlask(g, flaskArea, displayHigh, GoodMeterLookAndFeel::accentGreen, "HIGH");
+        drawBeaker(g, beakerCol, displayLow, GoodMeterLookAndFeel::accentPink, "LOW");
+        drawCylinder(g, cylinderCol, displayMid, GoodMeterLookAndFeel::accentYellow, "MID");
+        drawFlask(g, flaskCol, displayHigh, GoodMeterLookAndFeel::accentGreen, "HIGH");
     }
 
     //==========================================================================
-    /**
-     * 🧪 Draw LOW frequency vessel - Beaker (矮胖烧杯)
-     * Wide and short, stable base
-     */
-    void drawBeaker(juce::Graphics& g, const juce::Rectangle<float>& area,
+    // LOW = Bulbous Potion Bottle (球形魔药瓶)
+    // Spherical bulb body + smooth shoulder + narrow neck + flared rim
+    // All drawn as ONE continuous closed Path — no gaps, no floating geometry
+    void drawBeaker(juce::Graphics& g, const juce::Rectangle<float>& col,
                     float level, const juce::Colour& color, const juce::String& label)
     {
-        // Beaker shape: Wide rounded rectangle with slight taper at top
-        juce::Path beakerPath;
+        // === Proportional dimensions ===
+        const float totalH = col.getHeight() * 0.90f;
+        const float totalW = col.getWidth() * 0.80f;
 
-        const float w = area.getWidth();
-        const float h = area.getHeight();
-        const float x = area.getX();
-        const float y = area.getY();
+        // Bulb: bottom spherical body (~60% of total height)
+        const float bulbH = totalH * 0.58f;
+        const float bulbW = totalW;
+        const float bulbRx = bulbW / 2.0f;   // Horizontal radius
+        const float bulbRy = bulbH / 2.0f;   // Vertical radius (slightly squashed)
 
-        // Create beaker outline (slightly tapered)
-        const float topWidth = w * 0.85f;
-        const float bottomWidth = w;
-        const float offset = (bottomWidth - topWidth) / 2.0f;
+        // Neck: narrow cylinder (~28% of total height, 30% of bulb width)
+        const float neckH = totalH * 0.28f;
+        const float neckW = bulbW * 0.28f;
 
-        beakerPath.startNewSubPath(x + offset, y);
-        beakerPath.lineTo(x + offset + topWidth, y);
-        beakerPath.lineTo(x + bottomWidth, y + h);
-        beakerPath.lineTo(x, y + h);
-        beakerPath.closeSubPath();
+        // Rim: flared opening at top (~14% of total height)
+        const float rimH = totalH * 0.06f;
+        const float rimW = neckW * 1.4f;
 
-        // Draw glass vessel and liquid
-        drawVesselWithLiquid(g, beakerPath, area, level, color);
+        // Shoulder: smooth cubic bezier transition zone
+        const float shoulderH = totalH * 0.08f;
 
-        // Draw bottom label
-        drawLabel(g, area, label);
+        // === Positioning (centered, sitting at bottom of column) ===
+        const float cx = col.getCentreX();
+        const float bottom = col.getBottom();
+        const float bulbCY = bottom - bulbRy;                // Bulb center Y
+        const float shoulderTopY = bottom - bulbH;           // Where shoulder starts (top of bulb)
+        const float neckBottomY = shoulderTopY - shoulderH;  // Bottom of straight neck
+        const float neckTopY = neckBottomY - neckH;          // Top of straight neck
+        const float rimTopY = neckTopY - rimH;               // Top of flared rim
+
+        // === Build ONE continuous closed path ===
+        juce::Path vesselPath;
+
+        // Start: top-left of rim (flared)
+        vesselPath.startNewSubPath(cx - rimW / 2.0f, rimTopY);
+
+        // Across rim top
+        vesselPath.lineTo(cx + rimW / 2.0f, rimTopY);
+
+        // Right rim → neck transition (slight inward taper)
+        vesselPath.lineTo(cx + neckW / 2.0f, neckTopY);
+
+        // Down right side of neck (straight)
+        vesselPath.lineTo(cx + neckW / 2.0f, neckBottomY);
+
+        // Right shoulder: smooth cubic from neck to bulb equator
+        // Control points flare outward to create the classic flask shoulder
+        vesselPath.cubicTo(
+            cx + neckW / 2.0f + bulbRx * 0.1f, neckBottomY + shoulderH * 0.3f,  // CP1: slight outward
+            cx + bulbRx,                         shoulderTopY + bulbRy * 0.15f,   // CP2: at bulb edge
+            cx + bulbRx,                         bulbCY                           // End: bulb equator (right)
+        );
+
+        // Right half of bulb bottom arc (equator → bottom center)
+        vesselPath.cubicTo(
+            cx + bulbRx,       bulbCY + bulbRy * 0.55f,   // CP1
+            cx + bulbRx * 0.55f, bottom,                    // CP2
+            cx,                  bottom                     // End: bottom center
+        );
+
+        // Left half of bulb bottom arc (bottom center → equator)
+        vesselPath.cubicTo(
+            cx - bulbRx * 0.55f, bottom,                    // CP1
+            cx - bulbRx,         bulbCY + bulbRy * 0.55f,   // CP2
+            cx - bulbRx,         bulbCY                      // End: bulb equator (left)
+        );
+
+        // Left shoulder: smooth cubic from bulb equator to neck
+        vesselPath.cubicTo(
+            cx - bulbRx,                         shoulderTopY + bulbRy * 0.15f,   // CP1: at bulb edge
+            cx - neckW / 2.0f - bulbRx * 0.1f,  neckBottomY + shoulderH * 0.3f,  // CP2: slight outward
+            cx - neckW / 2.0f,                   neckBottomY                      // End: neck bottom left
+        );
+
+        // Up left side of neck (straight)
+        vesselPath.lineTo(cx - neckW / 2.0f, neckTopY);
+
+        // Left neck → rim transition
+        vesselPath.lineTo(cx - rimW / 2.0f, rimTopY);
+
+        vesselPath.closeSubPath();
+
+        // Vessel bounds (full extent for liquid fill)
+        auto vesselBounds = juce::Rectangle<float>(
+            cx - bulbRx, rimTopY, bulbW, bottom - rimTopY
+        );
+        drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
+        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
-    /**
-     * 🧪 Draw MID frequency vessel - Cylinder (细长量筒)
-     * Tall and narrow, uniform width
-     */
-    void drawCylinder(juce::Graphics& g, const juce::Rectangle<float>& area,
+    // MID = Graduated Cylinder (细长量筒 + 迷你水平刻度线)
+    // Tall, narrow rectangle with tiny graduation marks
+    void drawCylinder(juce::Graphics& g, const juce::Rectangle<float>& col,
                       float level, const juce::Colour& color, const juce::String& label)
     {
-        // Cylinder shape: Tall rounded rectangle with uniform width
-        juce::Path cylinderPath;
+        // Cylinder: tall and narrow — 38% of column width, 90% of column height
+        const float cw = col.getWidth() * 0.38f;
+        const float ch = col.getHeight() * 0.90f;
+        const float cx = col.getCentreX() - cw / 2.0f;
+        const float cy = col.getBottom() - ch;
+        const float cornerR = juce::jmin(3.0f, cw * 0.08f);
 
-        const float w = area.getWidth() * 0.6f;  // Narrow cylinder
-        const float h = area.getHeight();
-        const float x = area.getCentreX() - w / 2.0f;
-        const float y = area.getY();
+        // Slight lip at top (wider opening)
+        const float lipExtra = cw * 0.08f;
 
-        cylinderPath.addRoundedRectangle(x, y, w, h, w / 2.0f);
+        juce::Path vesselPath;
+        // Top-left lip
+        vesselPath.startNewSubPath(cx - lipExtra, cy);
+        // Across top with lip
+        vesselPath.lineTo(cx + cw + lipExtra, cy);
+        // Lip step down on right
+        vesselPath.lineTo(cx + cw, cy + cw * 0.15f);
+        // Down right side
+        vesselPath.lineTo(cx + cw, cy + ch - cornerR);
+        // Bottom-right corner
+        vesselPath.quadraticTo(cx + cw, cy + ch, cx + cw - cornerR, cy + ch);
+        // Across bottom
+        vesselPath.lineTo(cx + cornerR, cy + ch);
+        // Bottom-left corner
+        vesselPath.quadraticTo(cx, cy + ch, cx, cy + ch - cornerR);
+        // Up left side
+        vesselPath.lineTo(cx, cy + cw * 0.15f);
+        // Lip step on left
+        vesselPath.closeSubPath();
 
-        // Draw glass vessel and liquid
-        auto cylinderArea = juce::Rectangle<float>(x, y, w, h);
-        drawVesselWithLiquid(g, cylinderPath, cylinderArea, level, color);
+        auto vesselBounds = juce::Rectangle<float>(cx, cy, cw, ch);
+        drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
 
-        // Draw bottom label
-        drawLabel(g, area, label);
+        // Mini graduation marks (right side of cylinder body)
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.12f));
+        const int numTicks = 10;
+        for (int t = 1; t < numTicks; ++t)
+        {
+            float tickY = cy + ch * (1.0f - static_cast<float>(t) / static_cast<float>(numTicks));
+            float tickLen = (t % 5 == 0) ? cw * 0.45f : cw * 0.25f;
+            float tickStroke = (t % 5 == 0) ? 1.0f : 0.6f;
+            g.drawLine(cx + cw - tickLen, tickY, cx + cw, tickY, tickStroke);
+        }
+
+        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
-    /**
-     * 🧪 Draw HIGH frequency vessel - Erlenmeyer Flask (尖顶三角瓶)
-     * Narrow neck at top, wide base at bottom
-     */
-    void drawFlask(juce::Graphics& g, const juce::Rectangle<float>& area,
+    // HIGH = Erlenmeyer Flask (三角锥瓶 — 底宽顶窄, 平滑肩部曲线)
+    void drawFlask(juce::Graphics& g, const juce::Rectangle<float>& col,
                    float level, const juce::Colour& color, const juce::String& label)
     {
-        // Flask shape: Narrow top transitioning to wide bottom
-        juce::Path flaskPath;
+        const float fw = col.getWidth();
+        const float fh = col.getHeight() * 0.88f;
+        const float fx = col.getX();
+        const float fy = col.getBottom() - fh;
 
-        const float w = area.getWidth();
-        const float h = area.getHeight();
-        const float x = area.getX();
-        const float y = area.getY();
+        // Neck: narrow top
+        const float neckW = fw * 0.22f;
+        const float neckH = fh * 0.30f;
+        const float neckX = col.getCentreX() - neckW / 2.0f;
 
-        // Neck width (narrow top)
-        const float neckWidth = w * 0.3f;
-        const float neckHeight = h * 0.25f;
-        const float neckX = x + (w - neckWidth) / 2.0f;
+        // Body: wide bottom
+        const float bodyW = fw * 0.88f;
+        const float bodyX = col.getCentreX() - bodyW / 2.0f;
+        const float cornerR = juce::jmin(4.0f, bodyW * 0.05f);
 
-        // Flask body (wide bottom)
-        const float bodyWidth = w * 0.9f;
-        const float bodyHeight = h - neckHeight;
-        const float bodyX = x + (w - bodyWidth) / 2.0f;
+        // Shoulder transition Y
+        const float shoulderY = fy + neckH;
 
-        // Create flask outline
-        flaskPath.startNewSubPath(neckX, y);  // Top left of neck
-        flaskPath.lineTo(neckX + neckWidth, y);  // Top right of neck
-        flaskPath.lineTo(neckX + neckWidth, y + neckHeight);  // Bottom right of neck
-        flaskPath.lineTo(bodyX + bodyWidth, y + h);  // Bottom right of body
-        flaskPath.lineTo(bodyX, y + h);  // Bottom left of body
-        flaskPath.lineTo(neckX, y + neckHeight);  // Bottom left of neck
-        flaskPath.closeSubPath();
+        juce::Path vesselPath;
+        // Start top-left of neck
+        vesselPath.startNewSubPath(neckX, fy);
+        // Across top of neck
+        vesselPath.lineTo(neckX + neckW, fy);
+        // Right shoulder: smooth curve from neck to body
+        vesselPath.quadraticTo(neckX + neckW + 2.0f, shoulderY,
+                               bodyX + bodyW, fy + fh - cornerR);
+        // Bottom-right corner
+        vesselPath.quadraticTo(bodyX + bodyW, fy + fh,
+                               bodyX + bodyW - cornerR, fy + fh);
+        // Across bottom
+        vesselPath.lineTo(bodyX + cornerR, fy + fh);
+        // Bottom-left corner
+        vesselPath.quadraticTo(bodyX, fy + fh,
+                               bodyX, fy + fh - cornerR);
+        // Left shoulder: smooth curve from body to neck
+        vesselPath.quadraticTo(neckX - 2.0f, shoulderY,
+                               neckX, fy);
+        vesselPath.closeSubPath();
 
-        // Draw glass vessel and liquid
-        drawVesselWithLiquid(g, flaskPath, area, level, color);
-
-        // Draw bottom label
-        drawLabel(g, area, label);
+        auto vesselBounds = juce::Rectangle<float>(bodyX, fy, bodyW, fh);
+        drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
+        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
-    /**
-     * 🎨 Core drawing logic: Glass vessel + Liquid fill + Overflow detection
-     */
+    // Core: Clip-based liquid fill + glass vessel outline + outer glow
     void drawVesselWithLiquid(juce::Graphics& g, const juce::Path& vesselPath,
                               const juce::Rectangle<float>& vesselArea,
-                              float levelNorm, const juce::Colour& color)
+                              float levelNorm, const juce::Colour& liquidColor)
     {
-        // 3️⃣ Liquid fill with clip-based rendering (ZERO OVERFLOW!)
+        // === 1. Zero-overflow clipped liquid fill ===
+        if (levelNorm > 0.0f)
         {
             juce::Graphics::ScopedSaveState state(g);
-
-            // Calculate liquid fill height (allows > 1.0 for overflow)
-            float fillHeight = vesselArea.getHeight() * juce::jlimit(0.0f, 1.0f, levelNorm);
-
-            // 🔒 Zero-overflow clipping: Clip to vessel path
             g.reduceClipRegion(vesselPath);
 
-            // Fill liquid from bottom up
-            g.setColour(color.withAlpha(0.7f));
-            g.fillRect(
-                vesselArea.getX(),
-                vesselArea.getBottom() - fillHeight,
-                vesselArea.getWidth(),
-                fillHeight
-            );
+            float fillHeight = vesselArea.getHeight() * juce::jlimit(0.0f, 1.0f, levelNorm);
+            float fillY = vesselArea.getBottom() - fillHeight;
 
-        }  // Restore clip region
+            // Liquid body fill
+            g.setColour(liquidColor.withAlpha(0.65f));
+            g.fillRect(vesselArea.getX() - 2.0f, fillY,
+                       vesselArea.getWidth() + 4.0f, fillHeight + 1.0f);
 
-        // 4️⃣ Overflow detection: Draw spilling liquid if level > 1.0
-        if (levelNorm > 1.0f)
-        {
-            drawOverflow(g, vesselArea, color);
+            // Meniscus highlight (bright line at liquid surface)
+            if (fillHeight > 3.0f)
+            {
+                g.setColour(liquidColor.brighter(0.6f).withAlpha(0.5f));
+                g.fillRect(vesselArea.getX() - 2.0f, fillY, vesselArea.getWidth() + 4.0f, 2.0f);
+            }
         }
 
-        // Draw glass vessel outline (微弱浅灰描边)
-        g.setColour(juce::Colours::grey.withAlpha(0.2f));
-        g.strokePath(vesselPath, juce::PathStrokeType(2.0f));
+        // === 2. Subtle outer glow (neon halo) ===
+        if (levelNorm > 0.05f)
+        {
+            float glowAlpha = juce::jlimit(0.0f, 0.12f, levelNorm * 0.12f);
+            g.setColour(liquidColor.withAlpha(glowAlpha));
+            g.strokePath(vesselPath, juce::PathStrokeType(5.0f));
+        }
+
+        // === 3. Glass vessel outline (elegant thin stroke) ===
+        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
+        g.strokePath(vesselPath, juce::PathStrokeType(1.5f));
+
+        // === 4. Glass highlight (subtle white reflection on left edge) ===
+        g.setColour(juce::Colours::white.withAlpha(0.20f));
+        g.strokePath(vesselPath, juce::PathStrokeType(0.8f));
     }
 
     //==========================================================================
-    /**
-     * 💥 Draw overflow effect when liquid exceeds vessel capacity
-     */
-    void drawOverflow(juce::Graphics& g, const juce::Rectangle<float>& vesselArea,
-                      const juce::Colour& color)
+    // Label below vessel — bold, centered under the column
+    void drawVesselLabel(juce::Graphics& g, const juce::Rectangle<float>& col, const juce::String& label)
     {
-        // Draw spilling liquid from top of vessel
-        const float spillY = vesselArea.getY();
-        const float spillHeight = 15.0f;
-
-        juce::Path spillPath;
-        spillPath.startNewSubPath(vesselArea.getCentreX() - 10.0f, spillY);
-        spillPath.lineTo(vesselArea.getCentreX() + 10.0f, spillY);
-        spillPath.lineTo(vesselArea.getCentreX() + 15.0f, spillY - spillHeight);
-        spillPath.lineTo(vesselArea.getCentreX() - 15.0f, spillY - spillHeight);
-        spillPath.closeSubPath();
-
-        g.setColour(color.withAlpha(0.6f));
-        g.fillPath(spillPath);
-
-        // Draw vapor/steam effect (small circles)
-        g.setColour(color.withAlpha(0.3f));
-        for (int i = 0; i < 3; ++i)
-        {
-            float vaporX = vesselArea.getCentreX() + (i - 1) * 10.0f;
-            float vaporY = spillY - spillHeight - 5.0f - i * 5.0f;
-            g.fillEllipse(vaporX - 3.0f, vaporY - 3.0f, 6.0f, 6.0f);
-        }
-    }
-
-    //==========================================================================
-    /**
-     * 📝 Draw bottom label (LOW, MID, HIGH)
-     */
-    void drawLabel(juce::Graphics& g, const juce::Rectangle<float>& area, const juce::String& label)
-    {
-        const float labelY = area.getBottom() + 5.0f;
+        const float fontSize = juce::jlimit(10.0f, 15.0f, col.getHeight() * 0.07f);
+        const float labelY = col.getBottom() + 2.0f;
+        const int labelH = static_cast<int>(fontSize * 1.6f);
 
         g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(
-            label,
-            static_cast<int>(area.getX()),
-            static_cast<int>(labelY),
-            static_cast<int>(area.getWidth()),
-            20,
-            juce::Justification::centred,
-            false
-        );
+        g.setFont(juce::Font(fontSize, juce::Font::bold));
+        g.drawText(label,
+                   static_cast<int>(col.getX()),
+                   static_cast<int>(labelY),
+                   static_cast<int>(col.getWidth()),
+                   labelH,
+                   juce::Justification::centred, false);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Band3Component)
