@@ -212,20 +212,33 @@ public:
      */
     static void drawCard(juce::Graphics& g,
                         const juce::Rectangle<int>& bounds,
+                        float hoverOffset = 4.0f,
                         const juce::Colour& backgroundColor = bgPanel,
-                        const juce::Colour& borderColour = border)
+                        const juce::Colour& borderColour = juce::Colour(0xFF1A1A24))
     {
         auto b = bounds.toFloat();
+        const float cr = cornerRadius;
+        const float maxShadow = 8.0f;
 
-        // Fill background
-        g.setColour(backgroundColor);
-        g.fillRoundedRectangle(b, cornerRadius);
+        // Card body shifts upper-left as hoverOffset grows
+        float cardX = b.getX() + (maxShadow - hoverOffset);
+        float cardY = b.getY() + (maxShadow - hoverOffset);
+        float cardW = b.getWidth() - maxShadow;
+        float cardH = b.getHeight() - maxShadow;
+        juce::Rectangle<float> cardRect(cardX, cardY, cardW, cardH);
 
-        // Draw thick border
+        // 1. Hard drop shadow (offset, no blur, pure dark)
+        auto shadowRect = cardRect.translated(hoverOffset, hoverOffset);
         g.setColour(borderColour);
-        g.drawRoundedRectangle(b.reduced(borderThickness * 0.5f),
-                               cornerRadius,
-                               borderThickness);
+        g.fillRoundedRectangle(shadowRect, cr);
+
+        // 2. Card body (clinical white)
+        g.setColour(backgroundColor);
+        g.fillRoundedRectangle(cardRect, cr);
+
+        // 3. Thick brutalist border
+        g.setColour(borderColour);
+        g.drawRoundedRectangle(cardRect, cr, 2.0f);
     }
 
     /**

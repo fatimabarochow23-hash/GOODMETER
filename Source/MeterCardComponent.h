@@ -56,60 +56,63 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // Draw card background with thick border
-        GoodMeterLookAndFeel::drawCard(g, bounds);
+        // Draw Neo-Brutalist card (hard shadow + offset body)
+        GoodMeterLookAndFeel::drawCard(g, bounds, currentHoverOffset);
 
-        // Draw header background
-        auto headerBounds = bounds.removeFromTop(headerHeight);
+        // All header elements drawn relative to the card body (not full bounds)
+        auto cardRect = getCardRect();
+        auto headerBounds = cardRect.removeFromTop(headerHeight);
 
-        // Header hover effect (manual hover tracking)
+        // Header hover highlight
         if (isHeaderHovered)
         {
-            g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
-            g.fillRect(headerBounds);
+            g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.08f));
+            g.fillRect(headerBounds.toFloat());
         }
 
         if (isExpanded)
         {
-            // Draw bottom border of header
-            g.setColour(GoodMeterLookAndFeel::border);
-            g.fillRect(headerBounds.getX(),
-                      headerBounds.getBottom() - 2,
-                      headerBounds.getWidth(),
+            // Bottom border of header
+            g.setColour(juce::Colour(0xFF1A1A24));
+            g.fillRect(static_cast<int>(headerBounds.getX()),
+                      static_cast<int>(headerBounds.getBottom()) - 2,
+                      static_cast<int>(headerBounds.getWidth()),
                       2);
         }
 
-        // Draw status indicator dot
-        auto dotX = static_cast<float>(headerBounds.getX() + GoodMeterLookAndFeel::cardPadding);
-        auto dotY = static_cast<float>(headerBounds.getCentreY()) - dotDiameter * 0.5f;
+        // Status indicator dot
+        auto dotX = headerBounds.getX() + GoodMeterLookAndFeel::cardPadding;
+        auto dotY = headerBounds.getCentreY() - dotDiameter * 0.5f;
         GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dotDiameter, statusColour);
 
-        // Draw title text
-        auto textBounds = headerBounds.withTrimmedLeft(GoodMeterLookAndFeel::cardPadding +
-                                                       static_cast<int>(dotDiameter) + 12);
+        // Title text
+        auto textBounds = headerBounds.withTrimmedLeft(
+            static_cast<int>(GoodMeterLookAndFeel::cardPadding + dotDiameter + 12.0f));
         g.setColour(GoodMeterLookAndFeel::textMain);
         g.setFont(juce::Font(15.0f, juce::Font::bold));
         g.drawText(cardTitle.toUpperCase(),
-                  textBounds,
+                  textBounds.toNearestInt(),
                   juce::Justification::centredLeft,
                   false);
 
-        // Draw expand/collapse arrow
-        auto arrowBounds = headerBounds.removeFromRight(40);
+        // Expand/collapse arrow
+        auto arrowBounds = headerBounds.removeFromRight(40.0f);
         g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"▼")) : juce::String(juce::CharPointer_UTF8(u8"▶")),
-                  arrowBounds,
+        g.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
+                              : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
+                  arrowBounds.toNearestInt(),
                   juce::Justification::centred,
                   false);
 
-        // Position header widget (ComboBox) between title and arrow
+        // Position header widget inside card body
         if (headerWidget != nullptr)
         {
-            const int widgetW = juce::jlimit(80, 140, static_cast<int>(headerBounds.getWidth() * 0.3f));
+            auto cr = getCardRect();
+            const int widgetW = juce::jlimit(80, 140, static_cast<int>(cr.getWidth() * 0.3f));
             const int widgetH = 26;
             headerWidget->setBounds(
-                headerBounds.getRight() - widgetW,
-                (headerHeight - widgetH) / 2,
+                static_cast<int>(cr.getRight()) - widgetW - 40,
+                static_cast<int>(cr.getY()) + (headerHeight - widgetH) / 2,
                 widgetW,
                 widgetH
             );
@@ -118,20 +121,16 @@ public:
 
     void resized() override
     {
-        auto bounds = getLocalBounds();
-
-        // Skip header area
-        bounds.removeFromTop(headerHeight);
-
-        // Give content the ACTUAL available height so it can scale proportionally
+        // Content positioned inside the card body (accounting for shadow offset)
         if (contentComponent != nullptr)
         {
+            auto cr = getCardRect();
             const int padding = static_cast<int>(GoodMeterLookAndFeel::cardPadding);
-            const int availableHeight = juce::jmax(0, getHeight() - headerHeight - padding * 2);
+            const int availableHeight = juce::jmax(0, static_cast<int>(cr.getHeight()) - headerHeight - padding * 2);
             contentComponent->setBounds(
-                padding,
-                headerHeight,
-                getWidth() - padding * 2,
+                static_cast<int>(cr.getX()) + padding,
+                static_cast<int>(cr.getY()) + headerHeight,
+                static_cast<int>(cr.getWidth()) - padding * 2,
                 availableHeight
             );
             contentComponent->setVisible(isExpanded || isAnimating);
@@ -158,15 +157,17 @@ public:
      */
     void mouseDown(const juce::MouseEvent& event) override
     {
-        // Check if click is within header area
-        if (event.y <= headerHeight)
+        // Check if click is within card body's header area
+        auto cr = getCardRect();
+        float localY = static_cast<float>(event.y) - cr.getY();
+        if (localY >= 0 && localY <= static_cast<float>(headerHeight))
         {
             // Don't toggle if clicking on the header widget
             if (headerWidget != nullptr)
             {
                 auto widgetBounds = headerWidget->getBounds();
                 if (widgetBounds.contains(event.x, event.y))
-                    return;  // Let the ComboBox handle it
+                    return;
             }
             setExpanded(!isExpanded, true);
         }
@@ -175,19 +176,27 @@ public:
     void mouseMove(const juce::MouseEvent& event) override
     {
         bool wasHovered = isHeaderHovered;
-        isHeaderHovered = (event.y <= headerHeight);
+        auto cr = getCardRect();
+        float localY = static_cast<float>(event.y) - cr.getY();
+        isHeaderHovered = (localY >= 0 && localY <= static_cast<float>(headerHeight)
+                          && cr.contains(static_cast<float>(event.x), static_cast<float>(event.y)));
 
         if (wasHovered != isHeaderHovered)
             repaint();
     }
 
+    void mouseEnter(const juce::MouseEvent&) override
+    {
+        isCardHovered = true;
+        ensureTimerRunning();
+    }
+
     void mouseExit(const juce::MouseEvent&) override
     {
-        if (isHeaderHovered)
-        {
-            isHeaderHovered = false;
-            repaint();
-        }
+        isCardHovered = false;
+        isHeaderHovered = false;
+        ensureTimerRunning();
+        repaint();
     }
 
     //==========================================================================
@@ -246,7 +255,7 @@ public:
         {
             // Start hand-rolled 60Hz animation
             isAnimating = true;
-            startTimerHz(60);
+            ensureTimerRunning();
 
             // Show content immediately for expand, hide after animation for collapse
             if (contentComponent != nullptr && shouldExpand)
@@ -302,40 +311,52 @@ public:
      */
     void timerCallback() override
     {
-        // Eased interpolation (ease-out cubic)
-        const float delta = targetHeight - currentHeight;
-        const float smoothingFactor = 0.2f;  // Higher = faster animation
+        bool needsMoreFrames = false;
 
-        currentHeight += delta * smoothingFactor;
-
-        // Update component size
-        setSize(getWidth(), static_cast<int>(std::round(currentHeight)));
-
-        // 🔥 CRITICAL: Notify PluginEditor to relayout ALL cards every frame
-        // This creates the smooth "push-down" effect for cards below
-        if (onHeightChanged)
-            onHeightChanged();
-
-        // Stop animation when close enough (< 1px difference)
-        if (std::abs(delta) < 1.0f)
+        // --- Collapse/expand height animation ---
+        const float heightDelta = targetHeight - currentHeight;
+        if (std::abs(heightDelta) >= 1.0f)
         {
-            // Snap to target and stop
-            currentHeight = targetHeight;
-            setSize(getWidth(), static_cast<int>(currentHeight));
+            currentHeight += heightDelta * 0.2f;
+            setSize(getWidth(), static_cast<int>(std::round(currentHeight)));
 
-            stopTimer();
-            isAnimating = false;
-
-            // Hide content after collapse animation finishes
-            if (contentComponent != nullptr && !isExpanded)
-                contentComponent->setVisible(false);
-
-            // Final notification
             if (onHeightChanged)
                 onHeightChanged();
 
-            repaint();
+            needsMoreFrames = true;
         }
+        else if (isAnimating)
+        {
+            // Snap to target
+            currentHeight = targetHeight;
+            setSize(getWidth(), static_cast<int>(currentHeight));
+            isAnimating = false;
+
+            if (contentComponent != nullptr && !isExpanded)
+                contentComponent->setVisible(false);
+
+            if (onHeightChanged)
+                onHeightChanged();
+        }
+
+        // --- Hover offset animation (Neo-Brutalism shadow depth) ---
+        float targetOffset = isCardHovered ? 8.0f : 4.0f;
+        float hoverDelta = targetOffset - currentHoverOffset;
+        if (std::abs(hoverDelta) > 0.1f)
+        {
+            currentHoverOffset += hoverDelta * 0.3f;
+            needsMoreFrames = true;
+        }
+        else
+        {
+            currentHoverOffset = targetOffset;
+        }
+
+        repaint();
+
+        // Stop timer when all animations are done
+        if (!needsMoreFrames && !isAnimating)
+            stopTimer();
     }
 
 private:
@@ -344,6 +365,7 @@ private:
     bool isExpanded;
     bool isAnimating = false;
     bool isHeaderHovered = false;
+    bool isCardHovered = false;
 
     std::unique_ptr<juce::Component> contentComponent;
 
@@ -354,10 +376,33 @@ private:
     float currentHeight = 0.0f;
     float targetHeight = 0.0f;
 
+    // Neo-Brutalism hover offset (4.0 = resting, 8.0 = hovered/lifted)
+    float currentHoverOffset = 4.0f;
+
     // Constants
     static constexpr int headerHeight = 48;
     static constexpr float dotDiameter = 14.0f;
-    static constexpr int defaultContentHeight = 150;  // Fallback when content has no size
+    static constexpr int defaultContentHeight = 150;
+    static constexpr float maxShadowOffset = 8.0f;
+
+    //==========================================================================
+    /** Compute the card body rectangle (excludes shadow area) */
+    juce::Rectangle<float> getCardRect() const
+    {
+        auto b = getLocalBounds().toFloat();
+        float cardX = b.getX() + (maxShadowOffset - currentHoverOffset);
+        float cardY = b.getY() + (maxShadowOffset - currentHoverOffset);
+        float cardW = b.getWidth() - maxShadowOffset;
+        float cardH = b.getHeight() - maxShadowOffset;
+        return { cardX, cardY, cardW, cardH };
+    }
+
+    /** Start the 60Hz timer if not already running */
+    void ensureTimerRunning()
+    {
+        if (!isTimerRunning())
+            startTimerHz(60);
+    }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MeterCardComponent)
 };

@@ -320,18 +320,17 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        // ✅ 单边裁剪：左右各 20px，顶部往下推 16px（不削减底部！）
         auto area = bounds.reduced(20, 0).withTrimmedTop(16);
 
-        // Draw L channel bar (✅ 使用平滑后的显示值)
-        auto barL = area.removeFromTop(barHeight);
+        // 确保两根柱子等高: 总高减去间隙后平分
+        int bh = juce::jmin(barHeight, (area.getHeight() - barGap) / 2);
+
+        auto barL = area.removeFromTop(bh);
         drawPeakBar(g, barL, displayPeakL, peakHoldL);
 
-        // Gap
         area.removeFromTop(barGap);
 
-        // Draw R channel bar (✅ 使用平滑后的显示值)
-        auto barR = area.removeFromTop(barHeight);
+        auto barR = area.removeFromTop(bh);
         drawPeakBar(g, barR, displayPeakR, peakHoldR);
 
         // Draw scale ticks (Levels.tsx lines 154-161)
@@ -552,7 +551,7 @@ private:
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(valueFontSize, juce::Font::bold));
             g.drawText(valueStr, valueArea,
-                      juce::Justification::centredRight, false);
+                      juce::Justification::centredLeft, false);
         };
 
         drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
