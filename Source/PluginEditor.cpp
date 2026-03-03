@@ -246,10 +246,11 @@ void GOODMETERAudioProcessorEditor::resized()
     }
     else if (numColumns == 2)
     {
+        // 2列: 4 vs 5 平衡划分 (Spectrum 归入左列)
         tryAdd(columns[0], levelsCard.get());
         tryAdd(columns[0], vuMeterCard.get());
         tryAdd(columns[0], phaseCard.get());
-        tryAdd(columns[1], spectrumCard.get());
+        tryAdd(columns[0], spectrumCard.get());
         tryAdd(columns[1], threeBandCard.get());
         tryAdd(columns[1], stereoImageCard.get());
         tryAdd(columns[1], spectrogramCard.get());
@@ -262,14 +263,49 @@ void GOODMETERAudioProcessorEditor::resized()
     }
 
     // ==========================================================
-    // 统一排版: 每列追踪累计高度, 超出 Viewport 自动滚动
+    // 弹性空间分配 (Flex-Grow): 每列独立计算展开高度
     // ==========================================================
     setResizeLimits(380, 400, 2400, 1600);
+
+    const int minExpandedHeight = 280;
+    const int collapsedHeight = 48;
 
     const int columnWidth = (numColumns == 1)
         ? (width - spacing * 2)
         : (width - spacing * (numColumns + 1)) / numColumns;
 
+    // ===== 第一步: 统计每列展开/折叠面板数 =====
+    std::vector<int> expandedCounts(numColumns, 0);
+
+    for (int col = 0; col < numColumns; ++col)
+        for (auto* card : columns[col])
+            if (card->getExpanded()) expandedCounts[col]++;
+
+    // ===== 第二步: 按列计算弹性展开高度 =====
+    const int availableViewportHeight = bounds.getHeight();
+    std::vector<int> flexExpandedHeight(numColumns, minExpandedHeight);
+
+    for (int col = 0; col < numColumns; ++col)
+    {
+        if (expandedCounts[col] > 0)
+        {
+            // 折叠面板用实际动画高度 (保留收起动画平滑过渡)
+            int collapsedTotal = 0;
+            for (auto* card : columns[col])
+                if (!card->getExpanded())
+                    collapsedTotal += card->getHeight();
+
+            int totalCards = static_cast<int>(columns[col].size());
+            int totalMargins = spacing * (totalCards + 1);
+            int deadSpace = collapsedTotal + totalMargins;
+            int spaceLeft = availableViewportHeight - deadSpace;
+            int calculated = spaceLeft / expandedCounts[col];
+
+            flexExpandedHeight[col] = juce::jmax(minExpandedHeight, calculated);
+        }
+    }
+
+    // ===== 第三步: 应用弹性高度排版 =====
     std::vector<int> columnHeights(numColumns, spacing);
 
     for (int col = 0; col < numColumns; ++col)
@@ -280,13 +316,13 @@ void GOODMETERAudioProcessorEditor::resized()
 
         for (auto* card : columns[col])
         {
-            int h = card->getHeight();
+            int h = card->getExpanded() ? flexExpandedHeight[col] : card->getHeight();
             card->setBounds(colX, columnHeights[col], columnWidth, h);
             columnHeights[col] += h + spacing;
         }
     }
 
-    // 找出最长列, 强制 contentComponent 高度 >= viewport 高度以激活滚轮
+    // 最长列高度 → contentComponent 高度 → 超出 Viewport 激活滚轮
     int maxContentHeight = 0;
     for (int h : columnHeights)
         maxContentHeight = juce::jmax(maxContentHeight, h);
