@@ -41,6 +41,13 @@ public:
     //==========================================================================
     void timerCallback() override;
 
+    //==========================================================================
+    // Mouse handlers for jiggle drag-drop reorder
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseDoubleClick(const juce::MouseEvent&) override;
+
 private:
     GOODMETERAudioProcessor& audioProcessor;
 
@@ -72,6 +79,39 @@ private:
     // Viewport for scrolling (if needed)
     std::unique_ptr<juce::Viewport> viewport;
     std::unique_ptr<juce::Component> contentComponent;
+
+    //==========================================================================
+    // Mini Mode (compact layout with aggressive space squeezing)
+    //==========================================================================
+    bool isMiniMode = false;
+    void toggleMiniMode();
+
+    //==========================================================================
+    // Jiggle / Edit mode + 1v1 Swap Drag Engine
+    //==========================================================================
+    bool isJiggleMode = false;
+    std::vector<int> panelOrder = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+    juce::ComponentAnimator animator;
+    float jigglePhases[9] = {};
+
+    // Drag state
+    int draggedPanelSlot = -1;          // slot index in panelOrder being dragged (-1 = none)
+    juce::Point<int> dragOffset;        // mouse offset from card origin
+    bool dragActivated = false;         // true only after real drag motion detected
+    juce::Rectangle<int> dragOriginSlotBounds;  // dragged card's slot bounds BEFORE pickup
+    std::vector<juce::Rectangle<int>> slotTargetBounds;  // computed slot positions
+
+    // Hover-to-swap state
+    int currentHoverTarget = -1;        // panelOrder slot being hovered over
+    juce::uint32 hoverStartTime = 0;    // when hovering began
+    static constexpr juce::uint32 swapHoverMs = 1000;  // 1 second hover to swap
+    juce::uint32 jiggleEnteredTime = 0;  // timestamp when jiggle mode was entered
+    bool readyToSwap = false;           // true when hover confirmed, swap on mouseUp
+
+    void enterJiggleMode();
+    void exitJiggleMode();
+    MeterCardComponent* getCardByIndex(int idx);
+    int findPanelSlotAt(juce::Point<int> posInContent);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GOODMETERAudioProcessorEditor)
 };

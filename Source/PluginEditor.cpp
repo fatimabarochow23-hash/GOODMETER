@@ -123,6 +123,22 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     holoNono = new HoloNonoComponent(audioProcessor);
     nonoCard->setContentComponent(std::unique_ptr<juce::Component>(holoNono));
 
+    // Wire NONO test tube double-click → enter jiggle mode
+    holoNono->onTestTubeDoubleClicked = [this]() { enterJiggleMode(); };
+
+    // Wire NONO body double-click (while in edit mode) → exit jiggle mode
+    holoNono->onExitJiggleMode = [this]() { exitJiggleMode(); };
+
+    // Wire NONO right-double-click → toggle Mini Mode
+    holoNono->onRightDoubleClick = [this]() { toggleMiniMode(); };
+
+    // Initialize jiggle phases with random offsets
+    {
+        auto& rng = juce::Random::getSystemRandom();
+        for (int i = 0; i < 9; ++i)
+            jigglePhases[i] = rng.nextFloat() * juce::MathConstants<float>::twoPi;
+    }
+
     // Bind height change callbacks to all cards
     // Each callback: relayout + notify NONO of fold/unfold event
     auto makeCardCallback = [this](MeterCardComponent* card, const juce::String& name) {
@@ -167,6 +183,9 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     setResizeLimits(760, 600,    // 🧱 Brick Wall: 最小宽度 760px, 最小高度 600px（保护 VU 表不被裁切）
                     2400, 1600); // 最大宽度 2400px（支持三列布局）, 最大高度 1600px
 
+    // Register mouse listener on contentComponent to receive drag events from cards
+    contentComponent->addMouseListener(this, true);
+
     // Start 60Hz timer for UI updates
     startTimerHz(60);
 }
@@ -174,6 +193,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
 GOODMETERAudioProcessorEditor::~GOODMETERAudioProcessorEditor()
 {
     stopTimer();
+    contentComponent->removeMouseListener(this);
     setLookAndFeel(nullptr);
 }
 
@@ -189,73 +209,60 @@ void GOODMETERAudioProcessorEditor::resized()
     auto bounds = getLocalBounds();
     viewport->setBounds(bounds);
 
+    // 【防跳顶】缓存当前滚动位置
+    auto prevScrollPos = viewport->getViewPosition();
+
     const int width = bounds.getWidth();
-    const int spacing = static_cast<int>(GoodMeterLookAndFeel::cardSpacing);
+    const int spacing = isMiniMode ? 2 : static_cast<int>(GoodMeterLookAndFeel::cardSpacing);
 
-    // ===== 收集活跃面板 =====
-    auto tryAdd = [](std::vector<MeterCardComponent*>& vec, MeterCardComponent* c) {
-        if (c != nullptr) vec.push_back(c);
-    };
-
+    // ===== panelOrder 驱动的面板收集 =====
     std::vector<MeterCardComponent*> allCards;
-    tryAdd(allCards, levelsCard.get());
-    tryAdd(allCards, vuMeterCard.get());
-    tryAdd(allCards, phaseCard.get());
-    tryAdd(allCards, spectrumCard.get());
-    tryAdd(allCards, threeBandCard.get());
-    tryAdd(allCards, stereoImageCard.get());
-    tryAdd(allCards, spectrogramCard.get());
-    tryAdd(allCards, psrCard.get());
-    tryAdd(allCards, nonoCard.get());
+    for (int idx : panelOrder)
+    {
+        auto* card = getCardByIndex(idx);
+        if (card != nullptr)
+            allCards.push_back(card);
+    }
 
     const int activePanels = static_cast<int>(allCards.size());
     if (activePanels == 0) return;
 
     // ==========================================================
-    // 精确物理断点 (800 / 1200)
+    // 双套响应式断点 (Mini Mode vs Normal Mode)
     // ==========================================================
     int numColumns;
-    if (width >= 1000)
-        numColumns = 3;
-    else if (width >= 650)
-        numColumns = 2;
+    if (isMiniMode)
+    {
+        numColumns = (width >= 600) ? 3 : ((width >= 400) ? 2 : 1);
+    }
     else
-        numColumns = 1;
+    {
+        numColumns = (width >= 1000) ? 3 : ((width >= 650) ? 2 : 1);
+    }
 
     numColumns = juce::jmin(numColumns, activePanels);
 
     // ==========================================================
-    // 按列分配卡片 (固定3组分法)
-    //   A: Levels, VU, Phase
-    //   B: Spectrum, 3-Band, Stereo
-    //   C: Spectrogram, PSR, NONO
+    // 按列分配卡片 (panelOrder 序列 → 顺序填入各列)
     // ==========================================================
     std::vector<std::vector<MeterCardComponent*>> columns(numColumns);
 
     if (numColumns >= 3)
     {
-        tryAdd(columns[0], levelsCard.get());
-        tryAdd(columns[0], vuMeterCard.get());
-        tryAdd(columns[0], phaseCard.get());
-        tryAdd(columns[1], spectrumCard.get());
-        tryAdd(columns[1], threeBandCard.get());
-        tryAdd(columns[1], stereoImageCard.get());
-        tryAdd(columns[2], spectrogramCard.get());
-        tryAdd(columns[2], psrCard.get());
-        tryAdd(columns[2], nonoCard.get());
+        // 3列: 每3张一组分到 A/B/C
+        for (int i = 0; i < activePanels; ++i)
+            columns[i % 3].push_back(allCards[static_cast<size_t>(i)]);
     }
     else if (numColumns == 2)
     {
-        // 2列: 4 vs 5 平衡划分 (Spectrum 归入左列)
-        tryAdd(columns[0], levelsCard.get());
-        tryAdd(columns[0], vuMeterCard.get());
-        tryAdd(columns[0], phaseCard.get());
-        tryAdd(columns[0], spectrumCard.get());
-        tryAdd(columns[1], threeBandCard.get());
-        tryAdd(columns[1], stereoImageCard.get());
-        tryAdd(columns[1], spectrogramCard.get());
-        tryAdd(columns[1], psrCard.get());
-        tryAdd(columns[1], nonoCard.get());
+        // 2列: 前4张左列, 后面右列 (4 vs 5 平衡)
+        for (int i = 0; i < activePanels; ++i)
+        {
+            if (i < 4)
+                columns[0].push_back(allCards[static_cast<size_t>(i)]);
+            else
+                columns[1].push_back(allCards[static_cast<size_t>(i)]);
+        }
     }
     else
     {
@@ -265,10 +272,15 @@ void GOODMETERAudioProcessorEditor::resized()
     // ==========================================================
     // 弹性空间分配 (Flex-Grow): 每列独立计算展开高度
     // ==========================================================
-    setResizeLimits(380, 400, 2400, 1600);
+    if (isMiniMode)
+        setResizeLimits(300, 300, 2400, 1600);
+    else
+        setResizeLimits(380, 400, 2400, 1600);
 
-    const int minExpandedHeight = 280;
-    const int collapsedHeight = 48;
+    const int minExpandedHeight = isMiniMode ? 150 : 280;
+
+    // 折叠高度绝对锁死：headerHeight + maxShadowOffset（与 MeterCardComponent 一致）
+    const int strictCollapsedHeight = isMiniMode ? (24 + 8) : (48 + 8);
 
     const int columnWidth = (numColumns == 1)
         ? (width - spacing * 2)
@@ -289,11 +301,10 @@ void GOODMETERAudioProcessorEditor::resized()
     {
         if (expandedCounts[col] > 0)
         {
-            // 折叠面板用实际动画高度 (保留收起动画平滑过渡)
             int collapsedTotal = 0;
             for (auto* card : columns[col])
                 if (!card->getExpanded())
-                    collapsedTotal += card->getHeight();
+                    collapsedTotal += strictCollapsedHeight;
 
             int totalCards = static_cast<int>(columns[col].size());
             int totalMargins = spacing * (totalCards + 1);
@@ -305,7 +316,9 @@ void GOODMETERAudioProcessorEditor::resized()
         }
     }
 
-    // ===== 第三步: 应用弹性高度排版 =====
+    // ===== 第三步: 应用弹性高度排版 + 记录 slotTargetBounds =====
+    slotTargetBounds.clear();
+    slotTargetBounds.resize(static_cast<size_t>(activePanels));
     std::vector<int> columnHeights(numColumns, spacing);
 
     for (int col = 0; col < numColumns; ++col)
@@ -316,8 +329,23 @@ void GOODMETERAudioProcessorEditor::resized()
 
         for (auto* card : columns[col])
         {
-            int h = card->getExpanded() ? flexExpandedHeight[col] : card->getHeight();
-            card->setBounds(colX, columnHeights[col], columnWidth, h);
+            int h = card->getExpanded() ? flexExpandedHeight[col] : strictCollapsedHeight;
+            auto cardBounds = juce::Rectangle<int>(colX, columnHeights[col], columnWidth, h);
+
+            // Don't move the card being dragged
+            if (draggedPanelSlot < 0 || card != getCardByIndex(panelOrder[static_cast<size_t>(draggedPanelSlot)]))
+                card->setBounds(cardBounds);
+
+            // 身份反查：找到此 card 在 allCards 中的原始下标，精确写入 slotTargetBounds
+            for (int i = 0; i < activePanels; ++i)
+            {
+                if (allCards[static_cast<size_t>(i)] == card)
+                {
+                    slotTargetBounds[static_cast<size_t>(i)] = cardBounds;
+                    break;
+                }
+            }
+
             columnHeights[col] += h + spacing;
         }
     }
@@ -329,6 +357,9 @@ void GOODMETERAudioProcessorEditor::resized()
 
     int finalHeight = juce::jmax(bounds.getHeight() + 1, maxContentHeight);
     contentComponent->setBounds(0, 0, width, finalHeight);
+
+    // 【防跳顶】恢复滚动位置（Viewport 自动钳制越界）
+    viewport->setViewPosition(prevScrollPos);
 }
 
 //==============================================================================
@@ -373,4 +404,279 @@ void GOODMETERAudioProcessorEditor::timerCallback()
     {
         phaseMeter->updateCorrelation(phase);
     }
+
+    // Jiggle animation: apply micro-rotation transforms to all cards
+    if (isJiggleMode)
+    {
+        float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+        for (int i = 0; i < 9; ++i)
+        {
+            auto* card = getCardByIndex(panelOrder[static_cast<size_t>(i)]);
+            if (card == nullptr) continue;
+
+            // Skip the card being dragged (it follows the mouse directly)
+            if (i == draggedPanelSlot) continue;
+
+            float angle = std::sin(ms * 0.006f + jigglePhases[i]) * 0.012f;
+            auto cardCentre = card->getBounds().getCentre().toFloat();
+            card->setTransform(juce::AffineTransform::rotation(
+                angle, cardCentre.x, cardCentre.y));
+        }
+
+        // Hover-to-swap: only SET readyToSwap flag + NONO wink, NO swap here
+        if (draggedPanelSlot >= 0 && dragActivated && currentHoverTarget >= 0
+            && currentHoverTarget != draggedPanelSlot)
+        {
+            auto now = juce::Time::getMillisecondCounter();
+            if (now - hoverStartTime >= swapHoverMs)
+            {
+                if (!readyToSwap)
+                {
+                    readyToSwap = true;
+                    if (holoNono != nullptr) holoNono->setWinking(true);
+                }
+            }
+        }
+        else
+        {
+            // Target lost or changed — cancel readyToSwap
+            if (readyToSwap)
+            {
+                readyToSwap = false;
+                if (holoNono != nullptr) holoNono->setWinking(false);
+            }
+        }
+    }
+}
+
+//==============================================================================
+// Jiggle / 1v1 Swap Drag Engine
+//==============================================================================
+
+MeterCardComponent* GOODMETERAudioProcessorEditor::getCardByIndex(int idx)
+{
+    switch (idx)
+    {
+        case 0: return levelsCard.get();
+        case 1: return vuMeterCard.get();
+        case 2: return phaseCard.get();
+        case 3: return spectrumCard.get();
+        case 4: return threeBandCard.get();
+        case 5: return stereoImageCard.get();
+        case 6: return spectrogramCard.get();
+        case 7: return psrCard.get();
+        case 8: return nonoCard.get();
+        default: return nullptr;
+    }
+}
+
+void GOODMETERAudioProcessorEditor::enterJiggleMode()
+{
+    if (isJiggleMode) return;
+    isJiggleMode = true;
+    jiggleEnteredTime = juce::Time::getMillisecondCounter();
+
+    if (holoNono != nullptr)
+        holoNono->isEditMode = true;
+
+    for (int i = 0; i < 9; ++i)
+    {
+        auto* card = getCardByIndex(i);
+        if (card != nullptr)
+        {
+            card->inJiggleMode = true;
+            card->setInterceptsMouseClicks(false, false);
+        }
+    }
+}
+
+void GOODMETERAudioProcessorEditor::exitJiggleMode()
+{
+    if (!isJiggleMode) return;
+    isJiggleMode = false;
+
+    if (holoNono != nullptr)
+    {
+        holoNono->isEditMode = false;
+        holoNono->setWinking(false);
+    }
+
+    draggedPanelSlot = -1;
+    currentHoverTarget = -1;
+    readyToSwap = false;
+    dragActivated = false;
+
+    for (int i = 0; i < 9; ++i)
+    {
+        auto* card = getCardByIndex(i);
+        if (card != nullptr)
+        {
+            card->inJiggleMode = false;
+            card->setInterceptsMouseClicks(true, true);
+            card->setTransform(juce::AffineTransform());
+            card->setAlpha(1.0f);
+        }
+    }
+
+    resized();
+}
+
+void GOODMETERAudioProcessorEditor::toggleMiniMode()
+{
+    isMiniMode = !isMiniMode;
+
+    // Propagate to all cards
+    for (int i = 0; i < 9; ++i)
+    {
+        auto* card = getCardByIndex(i);
+        if (card != nullptr)
+            card->isMiniMode = isMiniMode;
+    }
+
+    resized();
+    repaint();
+}
+
+int GOODMETERAudioProcessorEditor::findPanelSlotAt(juce::Point<int> posInContent)
+{
+    for (int i = 0; i < static_cast<int>(panelOrder.size()); ++i)
+    {
+        if (i == draggedPanelSlot) continue;
+
+        if (i < static_cast<int>(slotTargetBounds.size()) &&
+            slotTargetBounds[static_cast<size_t>(i)].contains(posInContent))
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+//==============================================================================
+// Mouse handlers: 1v1 swap drag
+//==============================================================================
+
+void GOODMETERAudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
+{
+    if (!isJiggleMode) return;
+
+    auto posInContent = event.getEventRelativeTo(contentComponent.get()).position.toInt();
+
+    for (int i = static_cast<int>(panelOrder.size()) - 1; i >= 0; --i)
+    {
+        auto* card = getCardByIndex(panelOrder[static_cast<size_t>(i)]);
+        if (card == nullptr) continue;
+
+        if (card->getBounds().contains(posInContent))
+        {
+            draggedPanelSlot = i;
+            dragOffset = posInContent - card->getBounds().getPosition();
+            dragActivated = false;
+            currentHoverTarget = -1;
+            hoverStartTime = 0;
+            readyToSwap = false;
+
+            if (i < static_cast<int>(slotTargetBounds.size()))
+                dragOriginSlotBounds = slotTargetBounds[static_cast<size_t>(i)];
+            else
+                dragOriginSlotBounds = card->getBounds();
+
+            break;
+        }
+    }
+}
+
+void GOODMETERAudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
+{
+    if (!isJiggleMode || draggedPanelSlot < 0) return;
+    if (!event.mouseWasDraggedSinceMouseDown()) return;
+
+    auto* dragCard = getCardByIndex(panelOrder[static_cast<size_t>(draggedPanelSlot)]);
+    if (dragCard == nullptr) return;
+
+    if (!dragActivated)
+    {
+        dragActivated = true;
+        dragCard->toFront(false);
+        dragCard->setAlpha(0.6f);
+        dragCard->setTransform(juce::AffineTransform());
+    }
+
+    auto posInContent = event.getEventRelativeTo(contentComponent.get()).position.toInt();
+    dragCard->setTopLeftPosition(posInContent - dragOffset);
+
+    int newTarget = findPanelSlotAt(posInContent);
+
+    if (newTarget != currentHoverTarget)
+    {
+        currentHoverTarget = newTarget;
+        hoverStartTime = juce::Time::getMillisecondCounter();
+        // Cancel readyToSwap when target changes
+        if (readyToSwap)
+        {
+            readyToSwap = false;
+            if (holoNono != nullptr) holoNono->setWinking(false);
+        }
+    }
+}
+
+void GOODMETERAudioProcessorEditor::mouseUp(const juce::MouseEvent&)
+{
+    if (!isJiggleMode || draggedPanelSlot < 0) return;
+
+    int mySlot = draggedPanelSlot;
+    int targetSlot = currentHoverTarget;
+    bool wasDragging = dragActivated;
+    bool doSwap = readyToSwap && targetSlot >= 0 && targetSlot != mySlot;
+
+    // Get the dragged card
+    auto* dragCard = getCardByIndex(panelOrder[static_cast<size_t>(mySlot)]);
+
+    if (doSwap)
+    {
+        // Get bounds BEFORE swap
+        auto dragSlotBounds = dragOriginSlotBounds;
+        auto targetSlotBounds = (targetSlot < static_cast<int>(slotTargetBounds.size()))
+            ? slotTargetBounds[static_cast<size_t>(targetSlot)]
+            : juce::Rectangle<int>();
+
+        auto* targetCard = getCardByIndex(panelOrder[static_cast<size_t>(targetSlot)]);
+
+        // Safe 1v1 swap in panelOrder
+        std::swap(panelOrder[static_cast<size_t>(mySlot)],
+                  panelOrder[static_cast<size_t>(targetSlot)]);
+
+        // Animate target card to the dragged card's old slot
+        if (targetCard != nullptr && !dragSlotBounds.isEmpty())
+            animator.animateComponent(targetCard, dragSlotBounds, 1.0f, 250, false, 1.0, 1.0);
+
+        // Animate dragged card to target's old slot
+        if (dragCard != nullptr && !targetSlotBounds.isEmpty())
+        {
+            dragCard->setAlpha(1.0f);
+            animator.animateComponent(dragCard, targetSlotBounds, 1.0f, 200, false, 1.0, 1.0);
+        }
+
+    }
+    else if (wasDragging && dragCard != nullptr)
+    {
+        // No swap — snap dragged card back to its original slot
+        dragCard->setAlpha(1.0f);
+        animator.animateComponent(dragCard, dragOriginSlotBounds, 1.0f, 200, false, 0.8, 0.0);
+    }
+
+    // Full state reset
+    draggedPanelSlot = -1;
+    currentHoverTarget = -1;
+    hoverStartTime = 0;
+    dragActivated = false;
+    readyToSwap = false;
+    if (holoNono != nullptr) holoNono->setWinking(false);
+}
+
+void GOODMETERAudioProcessorEditor::mouseDoubleClick(const juce::MouseEvent&)
+{
+    if (!isJiggleMode) return;
+    if (juce::Time::getMillisecondCounter() - jiggleEnteredTime < 500) return;
+    exitJiggleMode();
 }

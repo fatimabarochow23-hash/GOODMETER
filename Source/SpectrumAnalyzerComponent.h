@@ -46,8 +46,6 @@ public:
         if (bounds.isEmpty() || bounds.getWidth() <= 0 || bounds.getHeight() <= 0)
             return;
 
-        g.fillAll(juce::Colours::white);
-
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRect(bounds, 2.0f);
 

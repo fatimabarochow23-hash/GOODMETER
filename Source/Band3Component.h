@@ -41,7 +41,6 @@ public:
         if (bounds.isEmpty())
             return;
 
-        g.fillAll(juce::Colours::white);
         drawBand3Vessels(g, bounds);
     }
 
@@ -267,50 +266,53 @@ private:
     }
 
     //==========================================================================
-    // HIGH = Erlenmeyer Flask (三角锥瓶 — 底宽顶窄, 平滑肩部曲线)
+    // HIGH = Erlenmeyer Flask (三角锥瓶 — 长直颈 + 斜肩 + 宽底)
     void drawFlask(juce::Graphics& g, const juce::Rectangle<float>& col,
                    float level, const juce::Colour& color, const juce::String& label)
     {
         const float fw = col.getWidth();
         const float fh = col.getHeight() * 0.88f;
-        const float fx = col.getX();
-        const float fy = col.getBottom() - fh;
+        const float cx = col.getCentreX();
+        const float bottomY = col.getBottom();
+        const float topY = bottomY - fh;
 
-        // Neck: narrow top
-        const float neckW = fw * 0.22f;
-        const float neckH = fh * 0.30f;
-        const float neckX = col.getCentreX() - neckW / 2.0f;
+        // Geometry: long neck (35%) + body (65%)
+        const float neckHalfW = fw * 0.12f;
+        const float baseHalfW = fw * 0.45f;
+        const float neckH = fh * 0.35f;
+        const float cornerR = juce::jmin(5.0f, baseHalfW * 0.08f);
 
-        // Body: wide bottom
-        const float bodyW = fw * 0.88f;
-        const float bodyX = col.getCentreX() - bodyW / 2.0f;
-        const float cornerR = juce::jmin(4.0f, bodyW * 0.05f);
-
-        // Shoulder transition Y
-        const float shoulderY = fy + neckH;
+        // Key Y coordinates
+        const float neckBottomY = topY + neckH;  // 颈部→肩部转折点
 
         juce::Path vesselPath;
-        // Start top-left of neck
-        vesselPath.startNewSubPath(neckX, fy);
-        // Across top of neck
-        vesselPath.lineTo(neckX + neckW, fy);
-        // Right shoulder: smooth curve from neck to body
-        vesselPath.quadraticTo(neckX + neckW + 2.0f, shoulderY,
-                               bodyX + bodyW, fy + fh - cornerR);
-        // Bottom-right corner
-        vesselPath.quadraticTo(bodyX + bodyW, fy + fh,
-                               bodyX + bodyW - cornerR, fy + fh);
-        // Across bottom
-        vesselPath.lineTo(bodyX + cornerR, fy + fh);
-        // Bottom-left corner
-        vesselPath.quadraticTo(bodyX, fy + fh,
-                               bodyX, fy + fh - cornerR);
-        // Left shoulder: smooth curve from body to neck
-        vesselPath.quadraticTo(neckX - 2.0f, shoulderY,
-                               neckX, fy);
+        // 左上角开口
+        vesselPath.startNewSubPath(cx - neckHalfW, topY);
+        // 横跨顶部
+        vesselPath.lineTo(cx + neckHalfW, topY);
+        // 右侧颈部垂直向下！
+        vesselPath.lineTo(cx + neckHalfW, neckBottomY);
+        // 右肩斜线展开 → 底部右侧 (带圆角预留)
+        vesselPath.quadraticTo(cx + neckHalfW + (baseHalfW - neckHalfW) * 0.15f,
+                               neckBottomY + (bottomY - neckBottomY) * 0.25f,
+                               cx + baseHalfW, bottomY - cornerR);
+        // 底部右圆角
+        vesselPath.quadraticTo(cx + baseHalfW, bottomY,
+                               cx + baseHalfW - cornerR, bottomY);
+        // 底边
+        vesselPath.lineTo(cx - baseHalfW + cornerR, bottomY);
+        // 底部左圆角
+        vesselPath.quadraticTo(cx - baseHalfW, bottomY,
+                               cx - baseHalfW, bottomY - cornerR);
+        // 左肩斜线收回 → 颈部左侧
+        vesselPath.quadraticTo(cx - neckHalfW - (baseHalfW - neckHalfW) * 0.15f,
+                               neckBottomY + (bottomY - neckBottomY) * 0.25f,
+                               cx - neckHalfW, neckBottomY);
+        // 左侧颈部垂直向上！
+        vesselPath.lineTo(cx - neckHalfW, topY);
         vesselPath.closeSubPath();
 
-        auto vesselBounds = juce::Rectangle<float>(bodyX, fy, bodyW, fh);
+        auto vesselBounds = juce::Rectangle<float>(cx - baseHalfW, topY, baseHalfW * 2.0f, fh);
         drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
         drawVesselLabel(g, col, label);
     }

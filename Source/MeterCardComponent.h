@@ -28,6 +28,12 @@ public:
     // Callback for height changes (to notify PluginEditor)
     std::function<void()> onHeightChanged;
 
+    // Jiggle mode: suppress expand/collapse clicks during drag-sort
+    bool inJiggleMode = false;
+
+    // Mini mode: compact layout with aggressive space squeezing
+    bool isMiniMode = false;
+
     //==========================================================================
     MeterCardComponent(const juce::String& title,
                       const juce::Colour& indicatorColour = GoodMeterLookAndFeel::accentPink,
@@ -39,11 +45,11 @@ public:
         // Initialize animation state
         // Note: getDesiredHeight() will be called again in setContentComponent()
         // after content is set, so this is just the header-only initial state
-        currentHeight = static_cast<float>(headerHeight);
+        currentHeight = static_cast<float>(getActiveHeaderHeight());
         targetHeight = currentHeight;
 
         // Set initial size (header-only at construction)
-        setSize(500, headerHeight);
+        setSize(500, getActiveHeaderHeight());
     }
 
     ~MeterCardComponent() override
@@ -55,13 +61,15 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
+        const int hh = getActiveHeaderHeight();
 
         // Draw Neo-Brutalist card (hard shadow + offset body)
-        GoodMeterLookAndFeel::drawCard(g, bounds, currentHoverOffset);
+        float shadowOff = isMiniMode ? juce::jmin(currentHoverOffset, 2.0f) : currentHoverOffset;
+        GoodMeterLookAndFeel::drawCard(g, bounds, shadowOff);
 
         // All header elements drawn relative to the card body (not full bounds)
         auto cardRect = getCardRect();
-        auto headerBounds = cardRect.removeFromTop(headerHeight);
+        auto headerBounds = cardRect.removeFromTop(hh);
 
         // Header hover highlight
         if (isHeaderHovered)
@@ -72,32 +80,38 @@ public:
 
         if (isExpanded)
         {
-            // Bottom border of header
+            // Bottom border of header — fillRect 画在 header 底边上方，防止被 content 遮盖
             g.setColour(juce::Colour(0xFF1A1A24));
+            int borderH = isMiniMode ? 1 : 2;
             g.fillRect(static_cast<int>(headerBounds.getX()),
-                      static_cast<int>(headerBounds.getBottom()) - 2,
+                      static_cast<int>(headerBounds.getBottom()) - borderH - 1,
                       static_cast<int>(headerBounds.getWidth()),
-                      2);
+                      borderH);
         }
 
         // Status indicator dot
-        auto dotX = headerBounds.getX() + GoodMeterLookAndFeel::cardPadding;
-        auto dotY = headerBounds.getCentreY() - dotDiameter * 0.5f;
-        GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dotDiameter, statusColour);
+        float dd = isMiniMode ? 8.0f : dotDiameter;
+        float pad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
+        auto dotX = headerBounds.getX() + pad;
+        auto dotY = headerBounds.getCentreY() - dd * 0.5f;
+        GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dd, statusColour);
 
         // Title text
         auto textBounds = headerBounds.withTrimmedLeft(
-            static_cast<int>(GoodMeterLookAndFeel::cardPadding + dotDiameter + 12.0f));
+            static_cast<int>(pad + dd + (isMiniMode ? 4.0f : 12.0f)));
         g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(15.0f, juce::Font::bold));
+        float titleFont = isMiniMode ? 10.0f : 15.0f;
+        g.setFont(juce::Font(titleFont, juce::Font::bold));
         g.drawText(cardTitle.toUpperCase(),
                   textBounds.toNearestInt(),
                   juce::Justification::centredLeft,
                   false);
 
         // Expand/collapse arrow
-        auto arrowBounds = headerBounds.removeFromRight(40.0f);
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        float arrowW = isMiniMode ? 20.0f : 40.0f;
+        auto arrowBounds = headerBounds.removeFromRight(arrowW);
+        float arrowFont = isMiniMode ? 9.0f : 14.0f;
+        g.setFont(juce::Font(arrowFont, juce::Font::bold));
         g.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
                               : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
                   arrowBounds.toNearestInt(),
@@ -108,11 +122,11 @@ public:
         if (headerWidget != nullptr)
         {
             auto cr = getCardRect();
-            const int widgetW = juce::jlimit(80, 140, static_cast<int>(cr.getWidth() * 0.3f));
-            const int widgetH = 26;
+            const int widgetW = juce::jlimit(60, 140, static_cast<int>(cr.getWidth() * 0.3f));
+            const int widgetH = isMiniMode ? 18 : 26;
             headerWidget->setBounds(
-                static_cast<int>(cr.getRight()) - widgetW - 40,
-                static_cast<int>(cr.getY()) + (headerHeight - widgetH) / 2,
+                static_cast<int>(cr.getRight()) - widgetW - static_cast<int>(arrowW),
+                static_cast<int>(cr.getY()) + (hh - widgetH) / 2,
                 widgetW,
                 widgetH
             );
@@ -125,11 +139,12 @@ public:
         if (contentComponent != nullptr)
         {
             auto cr = getCardRect();
-            const int padding = static_cast<int>(GoodMeterLookAndFeel::cardPadding);
-            const int availableHeight = juce::jmax(0, static_cast<int>(cr.getHeight()) - headerHeight - padding * 2);
+            const int hh = getActiveHeaderHeight();
+            const int padding = isMiniMode ? 2 : static_cast<int>(GoodMeterLookAndFeel::cardPadding);
+            const int availableHeight = juce::jmax(0, static_cast<int>(cr.getHeight()) - hh - padding * 2);
             contentComponent->setBounds(
                 static_cast<int>(cr.getX()) + padding,
-                static_cast<int>(cr.getY()) + headerHeight,
+                static_cast<int>(cr.getY()) + hh,
                 static_cast<int>(cr.getWidth()) - padding * 2,
                 availableHeight
             );
@@ -157,10 +172,13 @@ public:
      */
     void mouseDown(const juce::MouseEvent& event) override
     {
+        if (inJiggleMode) return;
+
         // Check if click is within card body's header area
         auto cr = getCardRect();
+        const int hh = getActiveHeaderHeight();
         float localY = static_cast<float>(event.y) - cr.getY();
-        if (localY >= 0 && localY <= static_cast<float>(headerHeight))
+        if (localY >= 0 && localY <= static_cast<float>(hh))
         {
             // Don't toggle if clicking on the header widget
             if (headerWidget != nullptr)
@@ -177,8 +195,9 @@ public:
     {
         bool wasHovered = isHeaderHovered;
         auto cr = getCardRect();
+        const int hh = getActiveHeaderHeight();
         float localY = static_cast<float>(event.y) - cr.getY();
-        isHeaderHovered = (localY >= 0 && localY <= static_cast<float>(headerHeight)
+        isHeaderHovered = (localY >= 0 && localY <= static_cast<float>(hh)
                           && cr.contains(static_cast<float>(event.x), static_cast<float>(event.y)));
 
         if (wasHovered != isHeaderHovered)
@@ -286,8 +305,9 @@ public:
      */
     int getDesiredHeight() const
     {
+        const int hh = getActiveHeaderHeight();
         if (!isExpanded)
-            return headerHeight;
+            return hh;
 
         int contentHeight = 0;
         if (contentComponent != nullptr)
@@ -298,10 +318,11 @@ public:
             if (contentHeight <= 0)
                 contentHeight = defaultContentHeight;
 
-            contentHeight += GoodMeterLookAndFeel::cardPadding * 2;
+            int pad = isMiniMode ? 2 : static_cast<int>(GoodMeterLookAndFeel::cardPadding);
+            contentHeight += pad * 2;
         }
 
-        return headerHeight + contentHeight;
+        return hh + contentHeight;
     }
 
     //==========================================================================
@@ -380,10 +401,13 @@ private:
     float currentHoverOffset = 4.0f;
 
     // Constants
-    static constexpr int headerHeight = 48;
+    static constexpr int normalHeaderHeight = 48;
+    static constexpr int miniHeaderHeight = 24;
     static constexpr float dotDiameter = 14.0f;
     static constexpr int defaultContentHeight = 150;
     static constexpr float maxShadowOffset = 8.0f;
+
+    int getActiveHeaderHeight() const { return isMiniMode ? miniHeaderHeight : normalHeaderHeight; }
 
     //==========================================================================
     /** Compute the card body rectangle (excludes shadow area) */

@@ -47,9 +47,6 @@ public:
         if (bounds.isEmpty() || bounds.getHeight() < 20.0f)
             return;
 
-        // Background
-        g.fillAll(juce::Colours::white);
-
         // VU text space: shrinks when card is short, moves toward arc
         const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
         const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);

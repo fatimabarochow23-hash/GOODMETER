@@ -38,6 +38,15 @@ public:
     {
         setSize(100, 200);
         startTimerHz(60);
+
+        auto& rng = juce::Random::getSystemRandom();
+        for (auto& b : tubeBubbles)
+        {
+            b.xOff = rng.nextFloat() * 0.6f - 0.3f;
+            b.phase = rng.nextFloat();
+            b.sz = 1.5f + rng.nextFloat() * 2.5f;
+            b.spd = 0.008f + rng.nextFloat() * 0.012f;
+        }
     }
 
     ~HoloNonoComponent() override
@@ -53,6 +62,23 @@ public:
     //==========================================================================
     // Card fold/unfold callbacks (only active in Front state)
     //==========================================================================
+
+    // Callback: double-click test tube → enter jiggle/edit mode
+    std::function<void()> onTestTubeDoubleClicked;
+
+    // Callback: double-click NONO body while in edit mode → exit jiggle mode
+    std::function<void()> onExitJiggleMode;
+
+    // Callback: right-double-click → toggle Mini Mode
+    std::function<void()> onRightDoubleClick;
+
+    // Edit mode flag (set by PluginEditor)
+    bool isEditMode = false;
+
+    // Wink state (set by PluginEditor when swap is ready)
+    bool isWinking = false;
+    void setWinking(bool w) { isWinking = w; repaint(); }
+
     void onCardFolded(const juce::String& cardName)
     {
         if (nonoState != NonoState::Front) return;
@@ -76,10 +102,41 @@ public:
     }
 
     //==========================================================================
-    // Mouse: double-click to flip, click "+" to import
+    // Mouse: double-click body = flip/clear, double-click tube = edit mode
     //==========================================================================
-    void mouseDoubleClick(const juce::MouseEvent&) override
+    void mouseDoubleClick(const juce::MouseEvent& e) override
     {
+        // Right-double-click → toggle Mini Mode
+        if (e.mods.isRightButtonDown())
+        {
+            if (onRightDoubleClick != nullptr)
+                onRightDoubleClick();
+            return;
+        }
+
+        auto pos = e.position;
+
+        // Test tube region → enter edit mode (only when NOT in edit mode)
+        if (tubeHitRect.contains(pos))
+        {
+            if (!isEditMode && onTestTubeDoubleClicked)
+                onTestTubeDoubleClicked();
+            return;
+        }
+
+        // Body region
+        if (!bodyHitRect.contains(pos))
+            return;
+
+        // If in edit mode, body double-click = EXIT edit mode
+        if (isEditMode)
+        {
+            if (onExitJiggleMode)
+                onExitJiggleMode();
+            return;
+        }
+
+        // Normal mode: flip/clear logic
         switch (nonoState)
         {
             case NonoState::Front:
@@ -95,7 +152,6 @@ public:
                 break;
 
             case NonoState::ShowingResults:
-                // Enter pouring/clearing animation
                 nonoState = NonoState::ClearingData;
                 targetPourAngle = juce::degreesToRadians(120.0f);
                 bubbleFadeAlpha = 1.0f;
@@ -105,9 +161,9 @@ public:
         }
     }
 
-    void mouseDown(const juce::MouseEvent&) override
+    void mouseDown(const juce::MouseEvent& e) override
     {
-        if (nonoState == NonoState::Back)
+        if (nonoState == NonoState::Back && bodyHitRect.contains(e.position))
             openFileChooser();
     }
 
@@ -189,6 +245,12 @@ public:
 
         const float cx = nonoDrawArea.getCentreX() - radius * 0.6f + idleOffsetX + collisionOffsetX;
         const float cy = nonoDrawArea.getCentreY() - radius * 0.3f + idleOffsetY + collisionOffsetY;
+
+        // Update hit test regions
+        bodyHitRect = { cx - radius, cy - radius, radius * 2.0f, radius * 2.0f };
+        float htX = cx + radius * 1.7f;
+        float htY = cy - radius * 0.1f;
+        tubeHitRect = { htX - radius * 0.3f, htY - radius * 0.6f, radius * 0.6f, radius * 1.2f };
 
         // Compute flip visual scale
         float hScale = 1.0f;
@@ -548,6 +610,30 @@ private:
     float neonBreathPhase = 0.0f;    // back-face neon breathing
     float earBobOffset = 0.0f;       // ear floating Y offset
 
+    // Auto-refill state machine (3s cooldown → smooth fill)
+    juce::uint32 emptyTimestamp = 0;
+    bool isWaitingToRefill = false;
+    bool isRefilling = false;
+
+    // Overload explosion state (peak >= 0 dBFS)
+    bool isExploded = false;
+    float explosionProgress = 0.0f;   // 0→1 animation progress
+    struct ExpShard {
+        float x, y;          // offset from tube center
+        float angle;         // rotation
+        float vx, vy;        // velocity
+        float spin;          // angular velocity
+        float sz;            // size
+    };
+    ExpShard shards[6];
+    struct ExpDrop {
+        float x, y;
+        float vx, vy;
+        float sz;
+        float gravity;
+    };
+    ExpDrop drops[10];
+
     // Collision
     float collisionOffsetX = 0.0f;
     float collisionOffsetY = 0.0f;
@@ -569,11 +655,29 @@ private:
     juce::File pendingAnalysisFile;
     std::unique_ptr<juce::FileChooser> fileChooser;
 
+    // Hit test regions (computed in paint, used in mouse handlers)
+    juce::Rectangle<float> bodyHitRect;
+    juce::Rectangle<float> tubeHitRect;
+
+    // Edit mode transition (0=normal, 1=editMode → color/bubble change)
+    float editModeTransition = 0.0f;
+
+    // Test tube bubbles
+    struct TubeBubble
+    {
+        float xOff = 0.0f;   // horizontal offset within tube (-0.3..0.3)
+        float phase = 0.0f;  // vertical phase (0..1, wraps)
+        float sz = 2.0f;     // bubble radius
+        float spd = 0.01f;   // rise speed per frame
+    };
+    TubeBubble tubeBubbles[8];
+
     // Colors
     static inline const juce::Colour electricBlue = juce::Colour(0xFF00AAFF);
     static inline const juce::Colour bodyEdge     = juce::Colour(0xFFD0D0D8);
     static inline const juce::Colour screenDark   = juce::Colour(0xFF0E0E1E);
     static inline const juce::Colour magicPink    = juce::Colour(0xFFFF2A7F);
+    static inline const juce::Colour neonGreen    = juce::Colour(0xFF39FF14);
 
     //==========================================================================
     // Timer
@@ -656,6 +760,25 @@ private:
         // Ear independent bobbing (low-freq sine)
         earBobOffset = std::sin(ms * 0.003f) * 3.0f;
 
+        // Edit mode transition (smooth 0→1 / 1→0)
+        {
+            float editTarget = isEditMode ? 1.0f : 0.0f;
+            editModeTransition += (editTarget - editModeTransition) * 0.08f;
+            if (std::abs(editModeTransition - editTarget) < 0.005f)
+                editModeTransition = editTarget;
+        }
+
+        // Bubble phase cycling (always tick, visible when editModeTransition > 0)
+        if (editModeTransition > 0.01f)
+        {
+            for (auto& b : tubeBubbles)
+            {
+                b.phase += b.spd * (0.5f + editModeTransition * 0.5f);
+                if (b.phase > 1.0f)
+                    b.phase -= 1.0f;
+            }
+        }
+
         // ClearingData animation: fade bubble → pour tube → drain liquid → restore → Front
         if (nonoState == NonoState::ClearingData)
         {
@@ -683,7 +806,55 @@ private:
                     nonoState = NonoState::Front;
                     flipProgress = 0.0f;
                     flipTarget = 0.0f;
+
+                    // Trigger 3-second refill cooldown
+                    emptyTimestamp = juce::Time::getMillisecondCounter();
+                    isWaitingToRefill = true;
+                    isRefilling = false;
                 }
+            }
+        }
+
+        // Auto-refill state machine: 3s cooldown → smooth fill
+        if (isWaitingToRefill)
+        {
+            if (juce::Time::getMillisecondCounter() - emptyTimestamp >= 3000)
+            {
+                isWaitingToRefill = false;
+                isExploded = false;     // 碎玻璃瞬间复原！
+                isRefilling = true;
+                liquidHeight = 0.0f;    // 确保从空开始注水
+            }
+        }
+
+        if (isRefilling)
+        {
+            liquidHeight += 0.04f;
+            if (liquidHeight >= 1.0f)
+            {
+                liquidHeight = 1.0f;
+                isRefilling = false;
+            }
+        }
+
+        // Explosion physics: animate shards + drops
+        if (isExploded && explosionProgress < 1.0f)
+        {
+            explosionProgress += 0.012f; // ~1.2s to full fade at 60Hz
+            for (auto& s : shards)
+            {
+                s.x += s.vx;
+                s.y += s.vy;
+                s.vy += 0.18f; // gravity
+                s.vx *= 0.985f; // air drag
+                s.angle += s.spin;
+            }
+            for (auto& d : drops)
+            {
+                d.x += d.vx;
+                d.y += d.vy;
+                d.vy += d.gravity; // per-drop gravity
+                d.vx *= 0.98f;
             }
         }
 
@@ -817,6 +988,41 @@ private:
     {
         analysisResult = result;
         hasResults = true;
+
+        // Overload detection: peak >= 0 dBFS → EXPLODE!
+        if (result.peakDBFS >= 0.0f)
+        {
+            isExploded = true;
+            explosionProgress = 0.0f;
+            liquidHeight = 0.0f;
+
+            // Initialize shards with random velocities
+            auto& rng = juce::Random::getSystemRandom();
+            for (auto& s : shards)
+            {
+                s.x = 0.0f;
+                s.y = 0.0f;
+                s.angle = rng.nextFloat() * juce::MathConstants<float>::twoPi;
+                s.vx = (rng.nextFloat() - 0.5f) * 8.0f;
+                s.vy = -rng.nextFloat() * 6.0f - 2.0f;
+                s.spin = (rng.nextFloat() - 0.5f) * 0.4f;
+                s.sz = 4.0f + rng.nextFloat() * 8.0f;
+            }
+            for (auto& d : drops)
+            {
+                d.x = 0.0f;
+                d.y = 0.0f;
+                d.vx = (rng.nextFloat() - 0.5f) * 10.0f;
+                d.vy = -rng.nextFloat() * 8.0f - 3.0f;
+                d.sz = 2.0f + rng.nextFloat() * 6.0f;
+                d.gravity = 0.25f + rng.nextFloat() * 0.15f;
+            }
+
+            // 3-second cooldown → auto-restore
+            emptyTimestamp = juce::Time::getMillisecondCounter();
+            isWaitingToRefill = true;
+            isRefilling = false;
+        }
 
         // Flip back to front, show results
         flipTarget = 0.0f;
@@ -993,7 +1199,6 @@ private:
     {
         if (hScale < 0.3f) return;
 
-        // 正脸对称: 左右眼等大等距
         float vcy = cy - r * 0.1f;
         float spacing = r * 0.30f * hScale;
         float ew = r * 0.13f * hScale;
@@ -1007,8 +1212,74 @@ private:
             { cx + spacing, ew, ew * 0.4f }    // right eye
         };
 
-        for (auto& eye : eyes)
+        if (isWinking)
         {
+            // ===== Coordinate separation =====
+            // Dividing line: cx (NONO center). Left eye stays LEFT, right eye stays RIGHT.
+            // Left eye center: eyes[0].x = cx - spacing
+            // Right eye center: eyes[1].x = cx + spacing
+            // Gap between centers = 2 * spacing = r * 0.6 * hScale
+            // We use cx as the hard boundary — nothing crosses it.
+
+            // ----- Left eye: vertical egg ellipse (fillEllipse) -----
+            {
+                float eggW = ew * 1.3f;                     // 1.3x wider
+                float eggH = eh * 1.8f;                     // 1.8x taller (egg shape)
+                float eggCX = eyes[0].x;                    // left eye center X
+                float eggLeft = eggCX - eggW * 0.5f;
+                float eggTop = vcy - eggH * 0.5f;
+
+                // Glow bloom behind egg
+                float bloomR = eggH * 0.9f;
+                juce::ColourGradient bloom(
+                    electricBlue.withAlpha(0.35f), eggCX, vcy,
+                    electricBlue.withAlpha(0.0f), eggCX + bloomR, vcy, true);
+                g.setGradientFill(bloom);
+                g.fillEllipse(eggCX - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                // Core egg
+                g.setColour(electricBlue.withAlpha(eyeGlow));
+                g.fillEllipse(eggLeft, eggTop, eggW, eggH);
+
+                // Specular highlight on upper third
+                g.setColour(juce::Colours::white.withAlpha(0.55f));
+                float specW = eggW * 0.4f, specH = eggH * 0.12f;
+                g.fillEllipse(eggCX - specW * 0.5f,
+                              eggTop + eggH * 0.1f,
+                              specW, specH);
+            }
+
+            // ----- Right eye: sharp "<" wink chevron -----
+            {
+                float chevW = spacing * 0.85f;              // width = 85% of half-face, stays in right zone
+                float chevH = eh * 2.2f;                    // tall for drama
+                // Anchor: chevron tip (fold point) sits at cx + spacing*0.35 (well past center)
+                float tipX = cx + spacing * 0.35f;          // fold vertex — far from left eye
+                float tipY = vcy;                           // vertically centered
+                float openX = tipX + chevW;                 // right open end
+
+                juce::Path winkPath;
+                winkPath.startNewSubPath(openX, tipY - chevH * 0.5f);   // top-right
+                winkPath.lineTo(tipX, tipY);                             // fold point
+                winkPath.lineTo(openX, tipY + chevH * 0.5f);            // bottom-right
+
+                // 3-layer glow: outer → mid → core
+                g.setColour(electricBlue.withAlpha(0.12f));
+                g.strokePath(winkPath, juce::PathStrokeType(14.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(electricBlue.withAlpha(0.35f));
+                g.strokePath(winkPath, juce::PathStrokeType(9.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(electricBlue.withAlpha(eyeGlow));
+                g.strokePath(winkPath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+            }
+
+            return; // Skip normal eye rendering
+        }
+
+        for (int idx = 0; idx < 2; ++idx)
+        {
+            auto& eye = eyes[idx];
+
+            // Normal eye rendering
             if (eyeGlow > 0.72f)
             {
                 float br = juce::jmax(eye.w, eh) * 2.0f * (eyeGlow - 0.3f);
@@ -1188,6 +1459,113 @@ private:
         const float bulbR = tubeW * 0.65f;
         const float rimH = r * 0.07f;
 
+        float tL = tubeX - tubeW / 2.0f, tR = tubeX + tubeW / 2.0f;
+        float tTop = tubeY - tubeH / 2.0f + rimH, tBot = tubeY + tubeH / 2.0f;
+
+        // ============================================================
+        // EXPLOSION MODE: broken tube stump + flying shards + splashes
+        // ============================================================
+        if (isExploded)
+        {
+            float fade = juce::jlimit(0.0f, 1.0f, 1.0f - explosionProgress * 0.3f);
+
+            // --- 1. Jagged broken tube base (bottom 40%) ---
+            float breakY = tTop + (tBot - tTop) * 0.55f;
+            juce::Path brokenTube;
+            brokenTube.startNewSubPath(tL, tBot - bulbR);
+            brokenTube.cubicTo(tL, tBot, tR, tBot, tR, tBot - bulbR);
+            brokenTube.lineTo(tR, breakY + tubeH * 0.05f);
+            brokenTube.lineTo(tubeX + tubeW * 0.15f, breakY + tubeH * 0.15f);
+            brokenTube.lineTo(tubeX + tubeW * 0.05f, breakY - tubeH * 0.02f);
+            brokenTube.lineTo(tubeX - tubeW * 0.1f, breakY + tubeH * 0.12f);
+            brokenTube.lineTo(tL, breakY + tubeH * 0.08f);
+            brokenTube.closeSubPath();
+
+            // Glass fill
+            g.setColour(juce::Colours::white.withAlpha(0.3f * fade));
+            g.fillPath(brokenTube);
+            g.setColour(bodyEdge.withAlpha(0.7f * fade));
+            g.strokePath(brokenTube, juce::PathStrokeType(1.5f));
+
+            // Jagged crack glow (danger red)
+            g.setColour(juce::Colour(0xFFFF0055).withAlpha(0.4f * fade));
+            g.strokePath(brokenTube, juce::PathStrokeType(3.0f));
+
+            // Residual rim (cracked)
+            juce::Path rimStub;
+            rimStub.addRoundedRectangle(tubeX - tubeW * 0.65f, tubeY - tubeH / 2.0f,
+                                         tubeW * 1.3f, rimH, 2.0f);
+            g.setColour(bodyEdge.withAlpha(0.5f * fade));
+            g.fillPath(rimStub);
+
+            // --- 2. Flying glass shards ---
+            for (const auto& s : shards)
+            {
+                float alpha = juce::jlimit(0.0f, 1.0f, 1.0f - explosionProgress * 0.8f);
+                if (alpha < 0.01f) continue;
+
+                float sx = tubeX + s.x;
+                float sy = tubeY + s.y;
+
+                juce::Path shard;
+                float half = s.sz * 0.5f;
+                shard.addTriangle(-half, -half * 0.6f,
+                                   half, -half * 0.3f,
+                                   0.0f, half);
+                shard.applyTransform(juce::AffineTransform::rotation(s.angle)
+                    .translated(sx, sy));
+
+                // Glass shard: white core + cyan edge glow
+                g.setColour(juce::Colours::white.withAlpha(0.7f * alpha));
+                g.fillPath(shard);
+                g.setColour(electricBlue.withAlpha(0.5f * alpha));
+                g.strokePath(shard, juce::PathStrokeType(1.5f));
+                // Outer glow
+                g.setColour(electricBlue.withAlpha(0.15f * alpha));
+                g.strokePath(shard, juce::PathStrokeType(4.0f));
+            }
+
+            // --- 3. Liquid splatter drops ---
+            const juce::Colour dangerPink(0xFFFF0055);
+            for (const auto& d : drops)
+            {
+                float alpha = juce::jlimit(0.0f, 1.0f, 1.0f - explosionProgress * 0.7f);
+                if (alpha < 0.01f) continue;
+
+                float dx = tubeX + d.x;
+                float dy = tubeY + d.y;
+                float dsz = d.sz * (1.0f - explosionProgress * 0.3f);
+
+                // Outer glow
+                g.setColour(dangerPink.withAlpha(0.2f * alpha));
+                g.fillEllipse(dx - dsz * 1.5f, dy - dsz * 1.5f, dsz * 3.0f, dsz * 3.0f);
+                // Core drop
+                g.setColour(dangerPink.withAlpha(0.85f * alpha));
+                g.fillEllipse(dx - dsz * 0.5f, dy - dsz * 0.5f, dsz, dsz);
+                // Specular
+                g.setColour(juce::Colours::white.withAlpha(0.4f * alpha));
+                g.fillEllipse(dx - dsz * 0.15f, dy - dsz * 0.25f, dsz * 0.3f, dsz * 0.25f);
+            }
+
+            // --- 4. Central explosion flash (first 30% of animation) ---
+            if (explosionProgress < 0.3f)
+            {
+                float flashAlpha = (0.3f - explosionProgress) / 0.3f;
+                float flashR = r * 0.6f * (1.0f + explosionProgress * 2.0f);
+                juce::ColourGradient flash(
+                    dangerPink.withAlpha(0.6f * flashAlpha), tubeX, tubeY,
+                    dangerPink.withAlpha(0.0f), tubeX + flashR, tubeY, true);
+                g.setGradientFill(flash);
+                g.fillEllipse(tubeX - flashR, tubeY - flashR, flashR * 2.0f, flashR * 2.0f);
+            }
+
+            return; // Skip normal tube drawing
+        }
+
+        // ============================================================
+        // NORMAL MODE: intact test tube
+        // ============================================================
+
         // Combine normal shake + pouring angle; pivot at tube bottom
         float totalAngle = tubeAngle + clearPourAngle;
         float pivotX = tubeX;
@@ -1196,15 +1574,21 @@ private:
 
         // Glass shell
         juce::Path tubePath;
-        float tL = tubeX - tubeW / 2.0f, tR = tubeX + tubeW / 2.0f;
-        float tTop = tubeY - tubeH / 2.0f + rimH, tBot = tubeY + tubeH / 2.0f;
-
         tubePath.startNewSubPath(tL, tTop);
         tubePath.lineTo(tL, tBot - bulbR);
         tubePath.cubicTo(tL, tBot, tR, tBot, tR, tBot - bulbR);
         tubePath.lineTo(tR, tTop);
         tubePath.closeSubPath();
         tubePath.applyTransform(rotation);
+
+        // Edit mode glow around tube
+        if (editModeTransition > 0.05f)
+        {
+            g.setColour(neonGreen.withAlpha(0.15f * editModeTransition));
+            g.strokePath(tubePath, juce::PathStrokeType(6.0f));
+            g.setColour(neonGreen.withAlpha(0.08f * editModeTransition));
+            g.strokePath(tubePath, juce::PathStrokeType(12.0f));
+        }
 
         g.setColour(juce::Colours::white.withAlpha(0.22f));
         g.fillPath(tubePath);
@@ -1230,11 +1614,44 @@ private:
             liqPath.closeSubPath();
             liqPath.applyTransform(rotation);
 
+            // Color transition: magicPink → neonGreen based on editModeTransition
+            juce::Colour liqColTop = magicPink.interpolatedWith(neonGreen, editModeTransition);
+            juce::Colour liqColBot = magicPink.darker(0.4f).interpolatedWith(
+                neonGreen.darker(0.3f), editModeTransition);
+
             juce::ColourGradient liqGrad(
-                magicPink.withAlpha(0.9f), tubeX, liqTop,
-                magicPink.darker(0.4f).withAlpha(0.95f), tubeX, tBot, false);
+                liqColTop.withAlpha(0.9f), tubeX, liqTop,
+                liqColBot.withAlpha(0.95f), tubeX, tBot, false);
             g.setGradientFill(liqGrad);
             g.fillPath(liqPath);
+
+            // Boiling bubbles (visible when editModeTransition > 0)
+            if (editModeTransition > 0.02f)
+            {
+                float bubbleAlpha = editModeTransition * 0.7f;
+                float tubeInnerW = (lR - lL);
+                float tubeCX = (lL + lR) * 0.5f;
+
+                for (const auto& b : tubeBubbles)
+                {
+                    // Bubble Y: rises from bottom to top of liquid
+                    float bubbleY = tBot - bulbR * 0.5f - b.phase * liqH * 0.9f;
+                    float bubbleX = tubeCX + b.xOff * tubeInnerW;
+
+                    // Transform bubble position
+                    auto bp = juce::Point<float>(bubbleX, bubbleY).transformedBy(rotation);
+
+                    float bsz = b.sz * editModeTransition;
+                    float bAlpha = bubbleAlpha * (1.0f - b.phase * 0.6f);  // fade near top
+
+                    // Outer glow
+                    g.setColour(neonGreen.withAlpha(bAlpha * 0.3f));
+                    g.fillEllipse(bp.x - bsz * 1.5f, bp.y - bsz * 1.5f, bsz * 3.0f, bsz * 3.0f);
+                    // Core
+                    g.setColour(juce::Colours::white.withAlpha(bAlpha * 0.85f));
+                    g.fillEllipse(bp.x - bsz * 0.5f, bp.y - bsz * 0.5f, bsz, bsz);
+                }
+            }
         }
 
         // Rim

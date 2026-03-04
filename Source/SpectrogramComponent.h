@@ -49,43 +49,61 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // ✅ 背景必须是干净的白色（通透感）
-        g.fillAll(juce::Colours::white);
-
-        // Safety check
-        if (spectrogramImage.isNull() || bounds.isEmpty())
+        if (bounds.isEmpty())
             return;
 
-        const int width = bounds.getWidth();
-        const int height = bounds.getHeight();
+        // 顶部留 15px 给 20k 文字空间，底部 0 极致压榨
+        auto plotBounds = bounds.withTrimmedLeft(5).withTrimmedRight(5)
+                               .withTrimmedTop(15).withTrimmedBottom(0);
 
-        // 🎨 零开销环形渲染：分两段拼接，产生"向左流动"错觉
-        // 1. 将原图从 drawX 到末尾的"老数据"，画在屏幕左侧
-        if (width - drawX > 0)
+        // Safety check
+        if (spectrogramImage.isNull())
         {
-            g.drawImage(spectrogramImage,
-                       0, 0, width - drawX, height,                // 目标区域 (Dest)
-                       drawX, 0, width - drawX, height);           // 源区域 (Source)
+            drawFreqScaleOverlay(g, plotBounds);
+            return;
         }
 
-        // 2. 将原图从 0 到 drawX 的"新数据"，画在屏幕右侧
-        if (drawX > 0)
+        const int width = plotBounds.getWidth();
+        const int height = plotBounds.getHeight();
+
+        // 环形渲染：瀑布图铺满全宽
+        if (width > 0 && height > 0)
         {
-            g.drawImage(spectrogramImage,
-                       width - drawX, 0, drawX, height,            // 目标区域 (Dest)
-                       0, 0, drawX, height);                       // 源区域 (Source)
+            int px = plotBounds.getX();
+            int py = plotBounds.getY();
+            int imgW = spectrogramImage.getWidth();
+
+            if (imgW - drawX > 0)
+            {
+                g.drawImage(spectrogramImage,
+                           px, py, width - drawX, height,
+                           drawX, 0, imgW - drawX, spectrogramImage.getHeight());
+            }
+            if (drawX > 0)
+            {
+                g.drawImage(spectrogramImage,
+                           px + width - drawX, py, drawX, height,
+                           0, 0, drawX, spectrogramImage.getHeight());
+            }
         }
+
+        // 最顶层：悬浮刻度尺 Overlay（压在瀑布图之上）
+        drawFreqScaleOverlay(g, plotBounds);
     }
 
     void resized() override
     {
         auto bounds = getLocalBounds();
 
-        if (bounds.getWidth() > 0 && bounds.getHeight() > 0)
+        // 全宽离屏缓冲（不再减去刻度宽度）
+        int imgW = juce::jmax(1, bounds.getWidth());
+        int imgH = bounds.getHeight();
+
+        if (imgW > 0 && imgH > 0)
         {
             juce::Image newImage(juce::Image::ARGB,
-                                 bounds.getWidth(),
-                                 bounds.getHeight(),
+                                 imgW,
+                                 imgH,
                                  true);
             newImage.clear(newImage.getBounds(), juce::Colours::white);
 
@@ -313,6 +331,46 @@ private:
         {
             // 0.5 ~ 1.0: 纯粉色 → 深暗绯红（爆音感）
             return mid.interpolatedWith(peak, (normalized - 0.5f) * 2.0f);
+        }
+    }
+
+    //==========================================================================
+    // 悬浮刻度尺 Overlay（最顶层绘制，压在瀑布图之上）
+    void drawFreqScaleOverlay(juce::Graphics& g, const juce::Rectangle<int>& plotBounds)
+    {
+        if (plotBounds.getHeight() < 20)
+            return;
+
+        const float logMin = std::log10(minFreq);
+        const float logMax = std::log10(maxFreq);
+        const float logRange = logMax - logMin;
+        const float plotTop = static_cast<float>(plotBounds.getY());
+        const float plotH = static_cast<float>(plotBounds.getHeight());
+        const float rightX = static_cast<float>(plotBounds.getRight());
+
+        const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
+
+        g.setColour(juce::Colours::black.withAlpha(0.85f));
+        g.setFont(juce::Font(10.0f, juce::Font::bold));
+
+        for (float freq : tickFreqs)
+        {
+            float normY = (std::log10(freq) - logMin) / logRange;
+            float y = plotTop + plotH - normY * plotH;
+
+            // 右边缘向左伸出 4px 短黑线
+            g.drawLine(rightX - 4.0f, y, rightX, y, 1.5f);
+
+            // 文字靠右对齐，与刻度线完美水平居中
+            juce::String text = (freq >= 1000.0f)
+                ? juce::String(static_cast<int>(freq / 1000.0f)) + "k"
+                : juce::String(static_cast<int>(freq));
+
+            g.drawText(text,
+                       static_cast<int>(rightX - 40.0f),
+                       static_cast<int>(y - 6.0f),
+                       34, 12,
+                       juce::Justification::right, false);
         }
     }
 

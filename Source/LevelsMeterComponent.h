@@ -294,24 +294,40 @@ private:
         g.setGradientFill(gradient);
         g.fillRect(b.withWidth(currentX));
 
-        // Peak hold line (Levels.tsx lines 111-113)
+        // Peak hold line (恢复原始黑色)
         g.setColour(GoodMeterLookAndFeel::border);
         g.fillRect(b.withX(holdX).withWidth(4.0f));
 
-        // Target loudness reference line
-        const float targetX = dbToX(currentTargetLUFS, width);
-        g.setColour(GoodMeterLookAndFeel::accentCyan);
+        // Target loudness reference — 荧光橙 + 过载脉冲发光
+        {
+            const float targetX = dbToX(currentTargetLUFS, width);
+            float peakNorm = juce::jlimit(0.0f, 1.0f, (currentPeak - minDb) / (maxDb - minDb));
 
-        // Dashed line
-        juce::Path dashPath;
-        dashPath.startNewSubPath(targetX, b.getY());
-        dashPath.lineTo(targetX, b.getBottom());
+            juce::Colour baseOrange(0xFFFF6600);
+            float overloadFactor = juce::jlimit(0.0f, 1.0f, (peakNorm - 0.85f) * 6.0f);
+            float flashPulse = 0.5f + 0.5f * std::abs(std::sin(
+                juce::Time::getMillisecondCounterHiRes() * 0.025));
+            float glowIntensity = overloadFactor * flashPulse;
 
-        float dashLengths[2] = { 8.0f, 8.0f };
-        juce::PathStrokeType strokeType(4.0f);
-        strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
+            auto targetBounds = juce::Rectangle<float>(targetX - 2.0f, b.getY(), 4.0f, b.getHeight());
 
-        g.strokePath(dashPath, strokeType);
+            if (glowIntensity > 0.01f)
+            {
+                g.setColour(baseOrange.withAlpha(glowIntensity * 0.6f));
+                g.fillRoundedRectangle(targetBounds.expanded(3.0f + 6.0f * glowIntensity), 2.0f);
+            }
+
+            juce::Colour coreColour = baseOrange.interpolatedWith(juce::Colours::white, glowIntensity * 0.5f);
+            g.setColour(coreColour);
+
+            juce::Path dashPath;
+            dashPath.startNewSubPath(targetX, b.getY());
+            dashPath.lineTo(targetX, b.getBottom());
+            float dashLengths[2] = { 8.0f, 8.0f };
+            juce::PathStrokeType strokeType(4.0f);
+            strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
+            g.strokePath(dashPath, strokeType);
+        }
     }
 
     //==========================================================================
@@ -453,24 +469,45 @@ private:
         g.setGradientFill(gradient);
         g.fillRect(barBounds.getX(), barBounds.getBottom() - fillH, w, fillH);
 
-        // Peak hold line (horizontal)
-        float holdNorm = juce::jlimit(0.0f, 1.0f, (holdPeak - minDb) / (maxDb - minDb));
-        float holdY = barBounds.getBottom() - holdNorm * h;
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.fillRect(barBounds.getX(), holdY - 1.5f, w, 3.0f);
+        // Peak hold marker (恢复原始黑色)
+        {
+            float holdNorm = juce::jlimit(0.0f, 1.0f, (holdPeak - minDb) / (maxDb - minDb));
+            float holdY = barBounds.getBottom() - holdNorm * h;
+            g.setColour(GoodMeterLookAndFeel::border);
+            g.fillRect(barBounds.getX(), holdY - 1.5f, w, 3.0f);
+        }
 
-        // Target loudness reference line
-        float targetNorm = juce::jlimit(0.0f, 1.0f, (currentTargetLUFS - minDb) / (maxDb - minDb));
-        float targetY = barBounds.getBottom() - targetNorm * h;
-        g.setColour(GoodMeterLookAndFeel::accentCyan);
+        // Target loudness reference — 荧光橙 + 过载脉冲发光
+        {
+            float targetNorm = juce::jlimit(0.0f, 1.0f, (currentTargetLUFS - minDb) / (maxDb - minDb));
+            float targetY = barBounds.getBottom() - targetNorm * h;
+            float peakNorm = juce::jlimit(0.0f, 1.0f, (currentPeak - minDb) / (maxDb - minDb));
 
-        juce::Path dashPath;
-        dashPath.startNewSubPath(barBounds.getX(), targetY);
-        dashPath.lineTo(barBounds.getRight(), targetY);
-        float dashLengths[2] = { 4.0f, 4.0f };
-        juce::PathStrokeType strokeType(2.0f);
-        strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
-        g.strokePath(dashPath, strokeType);
+            juce::Colour baseOrange(0xFFFF6600);
+            float overloadFactor = juce::jlimit(0.0f, 1.0f, (peakNorm - 0.85f) * 6.0f);
+            float flashPulse = 0.5f + 0.5f * std::abs(std::sin(
+                juce::Time::getMillisecondCounterHiRes() * 0.025));
+            float glowIntensity = overloadFactor * flashPulse;
+
+            auto targetBounds = juce::Rectangle<float>(barBounds.getX(), targetY - 2.0f, w, 4.0f);
+
+            if (glowIntensity > 0.01f)
+            {
+                g.setColour(baseOrange.withAlpha(glowIntensity * 0.6f));
+                g.fillRoundedRectangle(targetBounds.expanded(3.0f + 6.0f * glowIntensity), 2.0f);
+            }
+
+            juce::Colour coreColour = baseOrange.interpolatedWith(juce::Colours::white, glowIntensity * 0.5f);
+            g.setColour(coreColour);
+
+            juce::Path dashPath;
+            dashPath.startNewSubPath(barBounds.getX(), targetY);
+            dashPath.lineTo(barBounds.getRight(), targetY);
+            float dashLengths[2] = { 4.0f, 4.0f };
+            juce::PathStrokeType strokeType(4.0f);
+            strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
+            g.strokePath(dashPath, strokeType);
+        }
     }
 
     //==========================================================================
@@ -499,7 +536,7 @@ private:
         // Font sizes scale with BOTH width and height (take the smaller constraint)
         const float valueFontByH = bounds.getHeight() * 0.18f;
         const float valueFontByW = static_cast<float>(colWidth) * 0.35f;
-        const float valueFontSize = juce::jlimit(9.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW));
+        const float valueFontSize = juce::jlimit(13.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW));
 
         const float labelFontByH = bounds.getHeight() * 0.1f;
         const float labelFontByW = static_cast<float>(colWidth) * 0.12f;
