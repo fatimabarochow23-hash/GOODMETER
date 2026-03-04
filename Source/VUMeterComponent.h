@@ -43,73 +43,87 @@ public:
     {
         auto bounds = getLocalBounds().toFloat();
 
-        // Safety check
         if (bounds.isEmpty() || bounds.getHeight() < 20.0f)
             return;
 
-        // VU text space: shrinks when card is short, moves toward arc
+        int bw = getWidth(), bh = getHeight();
+
+        // Rebuild text cache only on resize
+        if (vuTextCache.isNull() || lastVuCacheW != bw || lastVuCacheH != bh)
+        {
+            lastVuCacheW = bw;
+            lastVuCacheH = bh;
+            vuTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
+            juce::Graphics tg(vuTextCache);
+
+            // Recompute geometry (same as below)
+            const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
+            const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);
+            const float topPad = juce::jlimit(5.0f, 15.0f, bounds.getHeight() * 0.05f);
+            const float sidePad = 15.0f;
+            float cx = bounds.getCentreX();
+            float cy = bounds.getBottom() - bottomPad - vuTextH;
+            float topSpace = juce::jmax(10.0f, cy - bounds.getY() - topPad);
+            float sideSpace = juce::jmax(10.0f, bounds.getWidth() / 2.0f - sidePad);
+            float radiusV = topSpace * 0.90f;
+            float sinVal = juce::jlimit(0.0f, 0.99f, sideSpace / juce::jmax(1.0f, radiusV));
+            float naturalHalfAngle = std::asin(sinVal);
+            float halfAngle = juce::jlimit(
+                juce::MathConstants<float>::pi / 3.5f,
+                juce::MathConstants<float>::pi * 0.44f,
+                naturalHalfAngle);
+            float radiusH = sideSpace / std::sin(halfAngle);
+            float radius = juce::jmax(15.0f, juce::jmin(radiusV, radiusH));
+            float minAngle = -halfAngle;
+            float maxAngle =  halfAngle;
+
+            // Draw tick labels to cache
+            drawTicksAndLabels(tg, cx, cy, radius, minAngle, maxAngle);
+
+            // Draw "VU" text to cache
+            const float vuFontSize = juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f);
+            tg.setColour(GoodMeterLookAndFeel::border);
+            tg.setFont(juce::Font(vuFontSize, juce::Font::bold));
+            tg.drawText("VU",
+                      static_cast<int>(bounds.getX()),
+                      static_cast<int>(cy + 2.0f),
+                      static_cast<int>(bounds.getWidth()),
+                      static_cast<int>(vuTextH),
+                      juce::Justification::centred, false);
+        }
+
+        // VU text space
         const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
         const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);
         const float topPad = juce::jlimit(5.0f, 15.0f, bounds.getHeight() * 0.05f);
         const float sidePad = 15.0f;
 
-        // Pivot point (arc center, near bottom)
         float cx = bounds.getCentreX();
         float cy = bounds.getBottom() - bottomPad - vuTextH;
-
-        // Available space for the arc
         float topSpace = juce::jmax(10.0f, cy - bounds.getY() - topPad);
         float sideSpace = juce::jmax(10.0f, bounds.getWidth() / 2.0f - sidePad);
-
-        // Radius: limited by VERTICAL space
-        // Arc top is at y = cy - radius (angle=0, 12 o'clock)
-        // So radius must be <= topSpace
         float radiusV = topSpace * 0.90f;
-
-        // Half-angle: determined by horizontal space for this radius
-        // Arc horizontal extent = radius * sin(halfAngle) <= sideSpace
         float sinVal = juce::jlimit(0.0f, 0.99f, sideSpace / juce::jmax(1.0f, radiusV));
         float naturalHalfAngle = std::asin(sinVal);
         float halfAngle = juce::jlimit(
-            juce::MathConstants<float>::pi / 3.5f,    // min ~51°
-            juce::MathConstants<float>::pi * 0.44f,    // max ~80°
-            naturalHalfAngle
-        );
-
-        // If halfAngle was clamped to minimum, also cap radius by horizontal space
+            juce::MathConstants<float>::pi / 3.5f,
+            juce::MathConstants<float>::pi * 0.44f,
+            naturalHalfAngle);
         float radiusH = sideSpace / std::sin(halfAngle);
         float radius = juce::jmax(15.0f, juce::jmin(radiusV, radiusH));
-
         float minAngle = -halfAngle;
         float maxAngle =  halfAngle;
-
-        // 0 VU angle
         float zeroVuAngle = juce::jmap(0.0f, minVu, maxVu, minAngle, maxAngle);
-
-        // Proportional arc thickness
         const float arcThickness = juce::jlimit(3.0f, 6.0f, radius * 0.04f);
 
-        // Draw normal arc (-30 to 0)
+        // Draw arcs (no text)
         drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, arcThickness);
-
-        // Draw danger arc (0 to +3)
         drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, arcThickness);
 
-        // Draw ticks and labels
-        drawTicksAndLabels(g, cx, cy, radius, minAngle, maxAngle);
+        // Blit cached text (tick labels + "VU")
+        g.drawImageAt(vuTextCache, 0, 0);
 
-        // Draw "VU" text below pivot, approaching arc as card shrinks
-        const float vuFontSize = juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f);
-        g.setColour(GoodMeterLookAndFeel::border);
-        g.setFont(juce::Font(vuFontSize, juce::Font::bold));
-        g.drawText("VU",
-                  static_cast<int>(bounds.getX()),
-                  static_cast<int>(cy + 2.0f),
-                  static_cast<int>(bounds.getWidth()),
-                  static_cast<int>(vuTextH),
-                  juce::Justification::centred, false);
-
-        // Draw needle
+        // Draw needle (dynamic, no text)
         drawNeedle(g, cx, cy, radius, minAngle, maxAngle);
     }
 
@@ -152,6 +166,11 @@ private:
 
     // Current display value (0.0 to 1.0)
     float currentVuDisplay = 0.0f;
+
+    // Offscreen text cache (STATIC — only rebuild on resize)
+    juce::Image vuTextCache;
+    int lastVuCacheW = 0;
+    int lastVuCacheH = 0;
 
     //==========================================================================
     void timerCallback() override

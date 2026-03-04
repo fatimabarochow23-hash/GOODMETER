@@ -1,10 +1,10 @@
 /*
   ==============================================================================
     SpectrogramComponent.h
-    GOODMETER - Waterfall Spectrogram (Phase 3.5)
+    GOODMETER - Waterfall Spectrogram (Data Ring Buffer Architecture)
 
-    High-performance ring buffer rendering (NO image copy!)
-    Features: 60Hz update, logarithmic Y-axis, smooth color gradient
+    Industrial-grade: raw FFT history + lossless rebuild on resize
+    Features: 60Hz single-column scroll, zero-stretch paint, instant resize
   ==============================================================================
 */
 
@@ -15,212 +15,192 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/**
- * Waterfall Spectrogram Component
- * Ring buffer rendering: draws new column, wraps around without image copy
- * Y-axis: 20Hz (bottom) to 20kHz (top) with logarithmic mapping
- * Color: -90dB (transparent gray) → -45dB (pink) → 0dB (bright yellow)
- */
 class SpectrogramComponent : public juce::Component,
-                               public juce::Timer
+                               public juce::Thread,
+                               public juce::AsyncUpdater
 {
 public:
     //==========================================================================
     SpectrogramComponent(GOODMETERAudioProcessor& processor)
-        : audioProcessor(processor)
+        : juce::Thread("SpectroDataThread"), audioProcessor(processor)
     {
-        // Initialize smoothed FFT buffer to zero
         smoothedFftData.fill(0.0f);
 
-        // Set fixed height
-        setSize(100, 300);
+        fftHistory.resize(historySize);
+        for (auto& frame : fftHistory)
+            frame.fill(0.0f);
 
-        // Start 60Hz timer for smooth waterfall animation
-        startTimerHz(60);
+        setSize(100, 300);
+        startThread(juce::Thread::Priority::high);
     }
 
     ~SpectrogramComponent() override
     {
-        stopTimer();
+        cancelPendingUpdate();  // 防止析构后回调
+        stopThread(1000);
     }
 
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
+        if (bounds.isEmpty()) return;
+        auto plotBounds = getPlotBounds();
 
-        if (bounds.isEmpty())
-            return;
+        const juce::ScopedLock sl(imageLock);
 
-        // 顶部留 15px 给 20k 文字空间，底部 0 极致压榨
-        auto plotBounds = bounds.withTrimmedLeft(5).withTrimmedRight(5)
-                               .withTrimmedTop(15).withTrimmedBottom(0);
-
-        // Safety check
         if (spectrogramImage.isNull())
         {
             drawFreqScaleOverlay(g, plotBounds);
             return;
         }
 
-        const int width = plotBounds.getWidth();
-        const int height = plotBounds.getHeight();
+        int width = plotBounds.getWidth();
+        int height = plotBounds.getHeight();
+        int imgW = spectrogramImage.getWidth();   // 固定 2048
+        int imgH = spectrogramImage.getHeight();
+        int px = plotBounds.getX();
+        int py = plotBounds.getY();
 
-        // 环形渲染：瀑布图铺满全宽
-        if (width > 0 && height > 0)
+        int drawWidth = juce::jmin(width, imgW);
+        int readPos = (drawX - drawWidth + imgW) % imgW;
+
+        if (readPos + drawWidth <= imgW)
         {
-            int px = plotBounds.getX();
-            int py = plotBounds.getY();
-            int imgW = spectrogramImage.getWidth();
+            // 连续段：1:1 直取
+            g.drawImage(spectrogramImage,
+                        px + width - drawWidth, py, drawWidth, height,
+                        readPos, 0, drawWidth, imgH);
+        }
+        else
+        {
+            // 跨越环形边界，分两段拼接
+            int part1W = imgW - readPos;
+            int part2W = drawWidth - part1W;
 
-            if (imgW - drawX > 0)
-            {
-                g.drawImage(spectrogramImage,
-                           px, py, width - drawX, height,
-                           drawX, 0, imgW - drawX, spectrogramImage.getHeight());
-            }
-            if (drawX > 0)
-            {
-                g.drawImage(spectrogramImage,
-                           px + width - drawX, py, drawX, height,
-                           0, 0, drawX, spectrogramImage.getHeight());
-            }
+            g.drawImage(spectrogramImage,
+                        px + width - drawWidth, py, part1W, height,
+                        readPos, 0, part1W, imgH);
+
+            g.drawImage(spectrogramImage,
+                        px + width - drawWidth + part1W, py, part2W, height,
+                        0, 0, part2W, imgH);
         }
 
-        // 最顶层：悬浮刻度尺 Overlay（压在瀑布图之上）
         drawFreqScaleOverlay(g, plotBounds);
     }
 
     void resized() override
     {
-        auto bounds = getLocalBounds();
+    }
 
-        // 全宽离屏缓冲（不再减去刻度宽度）
-        int imgW = juce::jmax(1, bounds.getWidth());
-        int imgH = bounds.getHeight();
-
-        if (imgW > 0 && imgH > 0)
-        {
-            juce::Image newImage(juce::Image::ARGB,
-                                 imgW,
-                                 imgH,
-                                 true);
-            newImage.clear(newImage.getBounds(), juce::Colours::white);
-
-            // Preserve existing waterfall data by rescaling old image
-            if (!spectrogramImage.isNull() &&
-                spectrogramImage.getWidth() > 0 &&
-                spectrogramImage.getHeight() > 0)
-            {
-                juce::Graphics gNew(newImage);
-
-                const int oldW = spectrogramImage.getWidth();
-                const int newW = newImage.getWidth();
-                const int newH = newImage.getHeight();
-
-                // Reconstruct the logical order: old data left, new data right
-                // Part 1: pixels from drawX..oldW (older data) -> left side
-                int oldPartWidth = oldW - drawX;
-                if (oldPartWidth > 0)
-                {
-                    float destW = static_cast<float>(oldPartWidth * newW) / static_cast<float>(oldW);
-                    gNew.drawImage(spectrogramImage,
-                                   0, 0, static_cast<int>(destW), newH,
-                                   drawX, 0, oldPartWidth, spectrogramImage.getHeight());
-                }
-
-                // Part 2: pixels from 0..drawX (newer data) -> right side
-                if (drawX > 0)
-                {
-                    float destStart = static_cast<float>((oldW - drawX) * newW) / static_cast<float>(oldW);
-                    float destW = static_cast<float>(drawX * newW) / static_cast<float>(oldW);
-                    gNew.drawImage(spectrogramImage,
-                                   static_cast<int>(destStart), 0, static_cast<int>(destW), newH,
-                                   0, 0, drawX, spectrogramImage.getHeight());
-                }
-
-                // After rescale, the logical cursor is at the right edge
-                drawX = newW > 0 ? (newW - 1) : 0;
-            }
-            else
-            {
-                drawX = 0;
-            }
-
-            spectrogramImage = newImage;
-        }
+    //==========================================================================
+    void handleAsyncUpdate() override
+    {
+        repaint();  // 主线程苏醒时只优雅重绘一次
     }
 
 private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
 
-    // 离屏缓冲区与环形游标
+    // 多线程保护锁 (OpenGL 渲染线程 vs 主线程)
+    juce::CriticalSection imageLock;
+
+    // 离屏缓冲区与环形游标 (固定 historySize 宽)
     juce::Image spectrogramImage;
     int drawX = 0;
+
+    // 原始数据环形缓冲 (2048 帧，无损存储)
+    static constexpr int historySize = 2048;
+    static constexpr int internalHeight = 512;  // 固定内部渲染高度，永不改变
+    std::vector<std::array<float, GOODMETERAudioProcessor::fftSize / 2>> fftHistory;
+    int historyHead = 0;
 
     // FFT data storage
     static constexpr int numBins = GOODMETERAudioProcessor::fftSize / 2;
     std::array<float, numBins> fftData;
 
-    // ✅ 时间平滑缓冲（核心云雾魔法）
+    // 时间平滑缓冲
     std::array<float, numBins> smoothedFftData;
     bool isFirstFrame = true;
 
     // Frequency range (logarithmic)
-    static constexpr float minFreq = 30.0f;    // 30 Hz (bottom) - 压缩底部无用空白
-    static constexpr float maxFreq = 20000.0f; // 20 kHz (top)
+    static constexpr float minFreq = 30.0f;
+    static constexpr float maxFreq = 20000.0f;
 
-    // dB range for color mapping (压榨动态范围！)
-    static constexpr float minDb = -80.0f;  // 底噪
-    static constexpr float maxDb = -10.0f;  // 天花板降低，普通音乐也能触发峰值色
+    // dB range for color mapping
+    static constexpr float minDb = -80.0f;
+    static constexpr float maxDb = -10.0f;
+
+    // Offscreen freq scale text cache (STATIC — only rebuild on resize)
+    juce::Image freqTextCache;
+    int lastFreqCacheW = 0;
+    int lastFreqCacheH = 0;
 
     //==========================================================================
-    void timerCallback() override
+    juce::Rectangle<int> getPlotBounds() const
     {
-        if (spectrogramImage.isNull())
-            return;
-
-        const int height = spectrogramImage.getHeight();
-        if (height <= 0)
-            return;
-
-        // Drain ALL available FFT frames, draw one column per frame
-        bool drewAny = false;
-        while (audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
-        {
-            // Time-domain smoothing (cloud texture)
-            if (isFirstFrame)
-            {
-                smoothedFftData = fftData;
-                isFirstFrame = false;
-            }
-            else
-            {
-                for (int i = 0; i < numBins; ++i)
-                {
-                    smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
-                }
-            }
-
-            // Render one pixel column using BitmapData (zero-overhead direct memory write)
-            drawOneColumn(height);
-            drawX = (drawX + 1) % spectrogramImage.getWidth();
-            drewAny = true;
-        }
-
-        if (drewAny)
-            repaint();
+        return getLocalBounds().withTrimmedLeft(5).withTrimmedRight(5)
+                               .withTrimmedTop(15).withTrimmedBottom(0);
     }
 
     //==========================================================================
-    /**
-     * Render a single pixel column at drawX using BitmapData for maximum speed
-     */
+    void run() override
+    {
+        while (!threadShouldExit())
+        {
+            bool drewAny = false;
+
+            {
+                const juce::ScopedLock sl(imageLock);
+
+                if (spectrogramImage.isNull())
+                {
+                    spectrogramImage = juce::Image(juce::Image::ARGB, historySize, internalHeight, true);
+                    spectrogramImage.clear(spectrogramImage.getBounds(), juce::Colours::transparentBlack);
+                    drawX = 0;
+                }
+
+                while (audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
+                {
+                    if (threadShouldExit()) return;
+
+                    if (isFirstFrame)
+                    {
+                        smoothedFftData = fftData;
+                        isFirstFrame = false;
+                    }
+                    else
+                    {
+                        for (int i = 0; i < numBins; ++i)
+                            smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
+                    }
+
+                    fftHistory[static_cast<size_t>(historyHead)] = smoothedFftData;
+                    historyHead = (historyHead + 1) % historySize;
+
+                    drawOneColumn(internalHeight);
+                    drawX = (drawX + 1) % historySize;
+                    drewAny = true;
+                }
+            } // ScopedLock released — GPU paint() can proceed
+
+            if (drewAny)
+            {
+                triggerAsyncUpdate();  // 自带合并：冻结期间只记1次标记，不积压消息
+            }
+
+            wait(16); // ~60fps throttle
+        }
+    }
+
+    //==========================================================================
     void drawOneColumn(int height)
     {
         const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
         const float frequencyRatio = maxFreq / minFreq;
+        const float fftSizeF = static_cast<float>(GOODMETERAudioProcessor::fftSize);
 
         juce::Image::BitmapData bitmapData(spectrogramImage, drawX, 0, 1, height,
                                             juce::Image::BitmapData::writeOnly);
@@ -230,51 +210,35 @@ private:
             const float normalizedY = 1.0f - (static_cast<float>(y) / static_cast<float>(height));
             const float currentFreq = minFreq * std::pow(frequencyRatio, normalizedY);
 
-            const float binFloat = (currentFreq * static_cast<float>(GOODMETERAudioProcessor::fftSize)) / sampleRate;
+            const float binFloat = (currentFreq * fftSizeF) / sampleRate;
             const int binIndex = static_cast<int>(binFloat);
             const float fraction = binFloat - static_cast<float>(binIndex);
 
             float rawMagnitude = 0.0f;
             if (binIndex >= 0 && binIndex < numBins - 1)
             {
-                const float mag1 = smoothedFftData[binIndex];
-                const float mag2 = smoothedFftData[binIndex + 1];
-                rawMagnitude = mag1 + fraction * (mag2 - mag1);
+                rawMagnitude = smoothedFftData[binIndex] + fraction * (smoothedFftData[binIndex + 1] - smoothedFftData[binIndex]);
             }
             else
             {
                 rawMagnitude = smoothedFftData[juce::jlimit(0, numBins - 1, binIndex)];
             }
 
-            const float scaledAmplitude = rawMagnitude / static_cast<float>(GOODMETERAudioProcessor::fftSize);
+            const float scaledAmplitude = rawMagnitude / fftSizeF;
             const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
-            const juce::Colour colour = getColourForDb(db);
-
-            bitmapData.setPixelColour(0, y, colour);
+            bitmapData.setPixelColour(0, y, getColourForDb(db));
         }
     }
 
     //==========================================================================
-    /**
-     * Convert Y pixel coordinate to frequency (Hz)
-     * ✅ 反转映射：top (y=0) = 20kHz, bottom (y=height-1) = 20Hz
-     */
     float yToFrequency(int y, int height) const
     {
-        // 归一化：top (0) = 1.0, bottom (height-1) = 0.0
         const float normalized = 1.0f - (static_cast<float>(y) / static_cast<float>(height - 1));
-
-        // Logarithmic interpolation
         const float logMin = std::log10(minFreq);
         const float logMax = std::log10(maxFreq);
-        const float logFreq = logMin + normalized * (logMax - logMin);
-
-        return std::pow(10.0f, logFreq);
+        return std::pow(10.0f, logMin + normalized * (logMax - logMin));
     }
 
-    /**
-     * Convert frequency (Hz) to FFT bin index
-     */
     int frequencyToBin(float freq) const
     {
         const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
@@ -282,96 +246,81 @@ private:
         return juce::jlimit(0, numBins - 1, bin);
     }
 
-    /**
-     * Get magnitude at specific frequency (使用平滑后的数据)
-     */
     float getMagnitudeAtFrequency(float freq) const
     {
-        const int bin = frequencyToBin(freq);
-        return smoothedFftData[bin];  // ✅ 使用平滑缓冲
+        return smoothedFftData[frequencyToBin(freq)];
     }
 
-    /**
-     * Convert magnitude to dB
-     */
     float magnitudeToDb(float magnitude) const
     {
         return 20.0f * std::log10(magnitude + 1e-8f);
     }
 
-    /**
-     * 🌸 粉色云雾调色板（Web 版高动态范围复刻）
-     * 彻底废弃 Alpha 通道，使用纯色 RGB 插值！
-     *
-     * 三级调色板：
-     * - 0.0 (静音): 纯白色（与卡片背景融合）
-     * - 0.5 (中等): RGB(230, 51, 95) 标志性主粉色
-     * - 1.0 (峰值): RGB(110, 15, 40) 极深邃暗绯红色（深色线条）
-     *
-     * dB 映射：-80dB (底噪) → -10dB (天花板)
-     */
+    //==========================================================================
     juce::Colour getColourForDb(float db) const
     {
-        // 压榨动态范围：-80dB ~ -10dB 映射到 0.0 ~ 1.0
         float normalized = juce::jmap(db, minDb, maxDb, 0.0f, 1.0f);
-        normalized = juce::jlimit(0.0f, 1.0f, normalized);  // 严格限制
+        normalized = juce::jlimit(0.0f, 1.0f, normalized);
 
-        // 三种纯色（无任何透明度！）
-        const juce::Colour bg = juce::Colours::white;   // 静音：纯白底色（与卡片融合）
-        const juce::Colour mid(230, 51, 95);            // 中等能量：标志性主粉色
-        const juce::Colour peak(110, 15, 40);           // 峰值：极深邃暗绯红（深色线条）
+        const juce::Colour bg = juce::Colours::white;
+        const juce::Colour mid(230, 51, 95);
+        const juce::Colour peak(110, 15, 40);
 
-        // 分段插值
         if (normalized < 0.5f)
-        {
-            // 0.0 ~ 0.5: 灰白 → 纯粉色
             return bg.interpolatedWith(mid, normalized * 2.0f);
-        }
         else
-        {
-            // 0.5 ~ 1.0: 纯粉色 → 深暗绯红（爆音感）
             return mid.interpolatedWith(peak, (normalized - 0.5f) * 2.0f);
-        }
     }
 
     //==========================================================================
-    // 悬浮刻度尺 Overlay（最顶层绘制，压在瀑布图之上）
     void drawFreqScaleOverlay(juce::Graphics& g, const juce::Rectangle<int>& plotBounds)
     {
         if (plotBounds.getHeight() < 20)
             return;
 
-        const float logMin = std::log10(minFreq);
-        const float logMax = std::log10(maxFreq);
-        const float logRange = logMax - logMin;
-        const float plotTop = static_cast<float>(plotBounds.getY());
-        const float plotH = static_cast<float>(plotBounds.getHeight());
-        const float rightX = static_cast<float>(plotBounds.getRight());
+        int pw = plotBounds.getWidth();
+        int ph = plotBounds.getHeight();
 
-        const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
-
-        g.setColour(juce::Colours::black.withAlpha(0.85f));
-        g.setFont(juce::Font(10.0f, juce::Font::bold));
-
-        for (float freq : tickFreqs)
+        // Only rebuild text cache on resize
+        if (freqTextCache.isNull() || lastFreqCacheW != pw || lastFreqCacheH != ph)
         {
-            float normY = (std::log10(freq) - logMin) / logRange;
-            float y = plotTop + plotH - normY * plotH;
+            lastFreqCacheW = pw;
+            lastFreqCacheH = ph;
+            freqTextCache = juce::Image(juce::Image::ARGB, pw, ph, true, juce::SoftwareImageType());
+            juce::Graphics tg(freqTextCache);
 
-            // 右边缘向左伸出 4px 短黑线
-            g.drawLine(rightX - 4.0f, y, rightX, y, 1.5f);
+            const float logMin = std::log10(minFreq);
+            const float logMax = std::log10(maxFreq);
+            const float logRange = logMax - logMin;
+            const float plotH = static_cast<float>(ph);
+            const float rightX = static_cast<float>(pw);
 
-            // 文字靠右对齐，与刻度线完美水平居中
-            juce::String text = (freq >= 1000.0f)
-                ? juce::String(static_cast<int>(freq / 1000.0f)) + "k"
-                : juce::String(static_cast<int>(freq));
+            const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            g.drawText(text,
-                       static_cast<int>(rightX - 40.0f),
-                       static_cast<int>(y - 6.0f),
-                       34, 12,
-                       juce::Justification::right, false);
+            tg.setColour(juce::Colours::black.withAlpha(0.85f));
+            tg.setFont(juce::Font(10.0f, juce::Font::bold));
+
+            for (float freq : tickFreqs)
+            {
+                float normY = (std::log10(freq) - logMin) / logRange;
+                float y = plotH - normY * plotH;
+
+                tg.drawLine(rightX - 4.0f, y, rightX, y, 1.5f);
+
+                juce::String text = (freq >= 1000.0f)
+                    ? juce::String(static_cast<int>(freq / 1000.0f)) + "k"
+                    : juce::String(static_cast<int>(freq));
+
+                tg.drawText(text,
+                           static_cast<int>(rightX - 40.0f),
+                           static_cast<int>(y - 6.0f),
+                           34, 12,
+                           juce::Justification::right, false);
+            }
         }
+
+        // Blit cached text
+        g.drawImageAt(freqTextCache, plotBounds.getX(), plotBounds.getY());
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpectrogramComponent)

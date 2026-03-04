@@ -83,7 +83,7 @@ private:
     //==========================================================================
     // Mini Mode (compact layout with aggressive space squeezing)
     //==========================================================================
-    bool isMiniMode = false;
+    bool isMiniMode = true;
     void toggleMiniMode();
 
     //==========================================================================

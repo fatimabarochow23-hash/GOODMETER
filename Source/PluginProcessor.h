@@ -186,15 +186,15 @@ public:
     std::atomic<float> rmsLevelHigh { -90.0f };  // 2k-20kHz
 
     // FFT Data (lock-free FIFOs — separate channels for Spectrum and Spectrogram)
-    LockFreeFIFO<float, 16> fftFifoL;            // Spectrum analyzer
-    LockFreeFIFO<float, 16> fftFifoR;            // Spectrum analyzer
-    LockFreeFIFO<float, 16> fftFifoSpectrogramL; // Spectrogram (independent)
+    LockFreeFIFO<float, 256> fftFifoL;            // Spectrum analyzer
+    LockFreeFIFO<float, 256> fftFifoR;            // Spectrum analyzer
+    LockFreeFIFO<float, 256> fftFifoSpectrogramL; // Spectrogram (independent)
 
     // Stereo Image Sample Buffer (for Goniometer/Lissajous)
     // Stores recent raw (L, R) sample pairs for XY plotting
     static constexpr int stereoSampleBufferSize = 1024;
-    LockFreeFIFO<float, 4> stereoSampleFifoL;  // Left channel samples
-    LockFreeFIFO<float, 4> stereoSampleFifoR;  // Right channel samples
+    LockFreeFIFO<float, 256> stereoSampleFifoL;  // Left channel samples
+    LockFreeFIFO<float, 256> stereoSampleFifoR;  // Right channel samples
 
     // FFT Engine
     static constexpr int fftOrder = 12; // 2^12 = 4096

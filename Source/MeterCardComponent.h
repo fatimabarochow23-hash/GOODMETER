@@ -96,27 +96,47 @@ public:
         auto dotY = headerBounds.getCentreY() - dd * 0.5f;
         GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dd, statusColour);
 
-        // Title text
-        auto textBounds = headerBounds.withTrimmedLeft(
-            static_cast<int>(pad + dd + (isMiniMode ? 4.0f : 12.0f)));
-        g.setColour(GoodMeterLookAndFeel::textMain);
-        float titleFont = isMiniMode ? 10.0f : 15.0f;
-        g.setFont(juce::Font(titleFont, juce::Font::bold));
-        g.drawText(cardTitle.toUpperCase(),
-                  textBounds.toNearestInt(),
-                  juce::Justification::centredLeft,
-                  false);
+        // Title + arrow: blit from pre-rendered cache (zero drawText in hot path)
+        {
+            int cacheW = static_cast<int>(headerBounds.getWidth());
+            bool needsRebuild = headerTextCache.isNull() ||
+                                lastHeaderCacheW != cacheW ||
+                                lastHeaderCacheMini != isMiniMode ||
+                                lastHeaderCacheExpanded != isExpanded;
 
-        // Expand/collapse arrow
-        float arrowW = isMiniMode ? 20.0f : 40.0f;
-        auto arrowBounds = headerBounds.removeFromRight(arrowW);
-        float arrowFont = isMiniMode ? 9.0f : 14.0f;
-        g.setFont(juce::Font(arrowFont, juce::Font::bold));
-        g.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
-                              : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
-                  arrowBounds.toNearestInt(),
-                  juce::Justification::centred,
-                  false);
+            if (needsRebuild)
+            {
+                lastHeaderCacheW = cacheW;
+                lastHeaderCacheMini = isMiniMode;
+                lastHeaderCacheExpanded = isExpanded;
+                headerTextCache = juce::Image(juce::Image::ARGB, cacheW, hh, true, juce::SoftwareImageType());
+                juce::Graphics tg(headerTextCache);
+
+                // Title text
+                float titleFont = isMiniMode ? 10.0f : 15.0f;
+                float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
+                float localDd = isMiniMode ? 8.0f : dotDiameter;
+                auto textArea = juce::Rectangle<int>(
+                    static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
+                    cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
+                tg.setColour(GoodMeterLookAndFeel::textMain);
+                tg.setFont(juce::Font(titleFont, juce::Font::bold));
+                tg.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
+
+                // Expand/collapse arrow
+                float localArrowW = isMiniMode ? 20.0f : 40.0f;
+                auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
+                                                       static_cast<int>(localArrowW), hh);
+                float arrowFont = isMiniMode ? 9.0f : 14.0f;
+                tg.setFont(juce::Font(arrowFont, juce::Font::bold));
+                tg.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
+                                       : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
+                            arrowArea, juce::Justification::centred, false);
+            }
+            g.drawImageAt(headerTextCache,
+                          static_cast<int>(headerBounds.getX()),
+                          static_cast<int>(headerBounds.getY()));
+        }
 
         // Position header widget inside card body
         if (headerWidget != nullptr)
@@ -125,7 +145,7 @@ public:
             const int widgetW = juce::jlimit(60, 140, static_cast<int>(cr.getWidth() * 0.3f));
             const int widgetH = isMiniMode ? 18 : 26;
             headerWidget->setBounds(
-                static_cast<int>(cr.getRight()) - widgetW - static_cast<int>(arrowW),
+                static_cast<int>(cr.getRight()) - widgetW - static_cast<int>(isMiniMode ? 20.0f : 40.0f),
                 static_cast<int>(cr.getY()) + (hh - widgetH) / 2,
                 widgetW,
                 widgetH
@@ -335,29 +355,34 @@ public:
         bool needsMoreFrames = false;
 
         // --- Collapse/expand height animation ---
-        const float heightDelta = targetHeight - currentHeight;
-        if (std::abs(heightDelta) >= 1.0f)
-        {
-            currentHeight += heightDelta * 0.2f;
-            setSize(getWidth(), static_cast<int>(std::round(currentHeight)));
-
-            if (onHeightChanged)
-                onHeightChanged();
-
-            needsMoreFrames = true;
-        }
-        else if (isAnimating)
+        if (std::abs(targetHeight - currentHeight) < 0.5f)
         {
             // Snap to target
             currentHeight = targetHeight;
-            setSize(getWidth(), static_cast<int>(currentHeight));
-            isAnimating = false;
+            int finalH = static_cast<int>(currentHeight);
+            if (getHeight() != finalH)
+            {
+                setSize(getWidth(), finalH);
+                if (onHeightChanged) onHeightChanged();
+            }
 
-            if (contentComponent != nullptr && !isExpanded)
-                contentComponent->setVisible(false);
-
-            if (onHeightChanged)
-                onHeightChanged();
+            if (isAnimating)
+            {
+                isAnimating = false;
+                if (contentComponent != nullptr && !isExpanded)
+                    contentComponent->setVisible(false);
+            }
+        }
+        else
+        {
+            currentHeight += (targetHeight - currentHeight) * 0.2f;
+            int newH = static_cast<int>(std::round(currentHeight));
+            if (getHeight() != newH)
+            {
+                setSize(getWidth(), newH);
+                if (onHeightChanged) onHeightChanged();
+            }
+            needsMoreFrames = true;
         }
 
         // --- Hover offset animation (Neo-Brutalism shadow depth) ---
@@ -373,11 +398,16 @@ public:
             currentHoverOffset = targetOffset;
         }
 
-        repaint();
-
-        // Stop timer when all animations are done
-        if (!needsMoreFrames && !isAnimating)
+        // Only repaint if still animating; stop timer when all done
+        if (needsMoreFrames || isAnimating)
+        {
+            repaint();
+        }
+        else
+        {
+            repaint();  // Final frame
             stopTimer();
+        }
     }
 
 private:
@@ -392,6 +422,12 @@ private:
 
     // Optional header widget (e.g. ComboBox for Levels card)
     juce::Component* headerWidget = nullptr;  // Non-owning pointer
+
+    // === Offscreen header text cache (STATIC — only rebuild on resize/mode/expand change) ===
+    juce::Image headerTextCache;
+    int lastHeaderCacheW = 0;
+    bool lastHeaderCacheMini = false;
+    bool lastHeaderCacheExpanded = false;
 
     // Animation state
     float currentHeight = 0.0f;

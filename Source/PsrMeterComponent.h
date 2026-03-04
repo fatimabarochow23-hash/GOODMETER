@@ -89,12 +89,25 @@ private:
     static constexpr float maxPsrDisplay = 20.0f;
     static constexpr float dangerThreshold = 8.0f;
 
+    // Offscreen text caches
+    juce::Image gridTextCache;
+    juce::Image readoutTextCache;
+    int lastGridW = 0, lastGridH = 0;
+    int lastReadoutW = 0, lastReadoutH = 0;
+
     // Electro-cyan palette
     static inline const juce::Colour techCyan = juce::Colour(0xFF20C997);
 
     //==========================================================================
     void timerCallback() override
     {
+        // 60Hz → 30Hz smart throttle during mouse drag
+        if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        {
+            static int dragThrottleCounter = 0;
+            if (++dragThrottleCounter % 2 != 0) return;
+        }
+
         // Read peak and short-term LUFS from processor
         const float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
         const float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
@@ -122,6 +135,16 @@ private:
         psrHistory[historyWriteIndex] = currentPsr;
         historyWriteIndex = (historyWriteIndex + 1) % historySize;
 
+        // Pre-render readout text (moves drawText out of paint/CATransaction)
+        {
+            auto bounds = getLocalBounds().toFloat();
+            if (!bounds.isEmpty())
+            {
+                const float readoutH = juce::jlimit(18.0f, 32.0f, bounds.getHeight() * 0.12f);
+                prerenderReadout(static_cast<int>(bounds.getWidth()), static_cast<int>(readoutH));
+            }
+        }
+
         repaint();
     }
 
@@ -142,36 +165,41 @@ private:
      */
     void drawGrid(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        const float centerY = bounds.getCentreY();
-        const float halfH = bounds.getHeight() / 2.0f;
+        int bw = static_cast<int>(bounds.getWidth());
+        int bh = static_cast<int>(bounds.getHeight());
+        if (bw < 2 || bh < 2) return;
 
-        g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.15f));
-
-        const float gridValues[] = { 3.0f, 6.0f, 9.0f, 12.0f, 15.0f, 18.0f };
-        const float labelFontSize = juce::jlimit(7.0f, 10.0f, halfH * 0.08f);
-
-        for (float val : gridValues)
+        if (gridTextCache.isNull() || lastGridW != bw || lastGridH != bh)
         {
-            float yOffset = juce::jmap(val, 0.0f, maxPsrDisplay, 0.0f, halfH);
-            float yTop = centerY - yOffset;
-            float yBot = centerY + yOffset;
+            lastGridW = bw;
+            lastGridH = bh;
+            gridTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
+            juce::Graphics tg(gridTextCache);
 
-            // Horizontal lines
-            g.drawHorizontalLine(static_cast<int>(yTop), bounds.getX(), bounds.getRight());
-            g.drawHorizontalLine(static_cast<int>(yBot), bounds.getX(), bounds.getRight());
+            const float centerY = static_cast<float>(bh) / 2.0f;
+            const float halfH = static_cast<float>(bh) / 2.0f;
+            const float labelFontSize = juce::jlimit(7.0f, 10.0f, halfH * 0.08f);
+            const float gridValues[] = { 3.0f, 6.0f, 9.0f, 12.0f, 15.0f, 18.0f };
 
-            // Labels on left edge (top half only)
-            g.setFont(juce::Font(labelFontSize));
-            g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.3f));
-            g.drawText(juce::String(static_cast<int>(val)),
-                       static_cast<int>(bounds.getX() + 2),
-                       static_cast<int>(yTop - 6),
-                       20, 12,
-                       juce::Justification::centredLeft, false);
+            for (float val : gridValues)
+            {
+                float yOffset = juce::jmap(val, 0.0f, maxPsrDisplay, 0.0f, halfH);
+                float yTop = centerY - yOffset;
+                float yBot = centerY + yOffset;
 
-            // Reset colour for next grid line
-            g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.15f));
+                tg.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.15f));
+                tg.drawHorizontalLine(static_cast<int>(yTop), 0.0f, static_cast<float>(bw));
+                tg.drawHorizontalLine(static_cast<int>(yBot), 0.0f, static_cast<float>(bw));
+
+                tg.setFont(juce::Font(labelFontSize));
+                tg.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.3f));
+                tg.drawText(juce::String(static_cast<int>(val)),
+                           2, static_cast<int>(yTop - 6), 20, 12,
+                           juce::Justification::centredLeft, false);
+            }
         }
+
+        g.drawImageAt(gridTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
     }
 
     //==========================================================================
@@ -282,23 +310,33 @@ private:
      */
     void drawReadout(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        const float fontSize = juce::jlimit(12.0f, 22.0f, bounds.getHeight() * 0.75f);
-        const float labelFontSize = juce::jlimit(8.0f, 12.0f, bounds.getHeight() * 0.45f);
+        if (!readoutTextCache.isNull())
+            g.drawImageAt(readoutTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
+    }
 
-        // Label "PSR" on left
-        g.setColour(GoodMeterLookAndFeel::textMuted);
-        g.setFont(juce::Font(labelFontSize, juce::Font::bold));
-        g.drawText("PEAK-TO-SHORT",
-                   static_cast<int>(bounds.getX() + 4),
-                   static_cast<int>(bounds.getY()),
-                   static_cast<int>(bounds.getWidth() * 0.5f),
-                   static_cast<int>(bounds.getHeight()),
-                   juce::Justification::centredLeft, false);
+    void prerenderReadout(int w, int h)
+    {
+        if (w < 10 || h < 10) return;
+        if (readoutTextCache.isNull() || lastReadoutW != w || lastReadoutH != h)
+        {
+            readoutTextCache = juce::Image(juce::Image::ARGB, w, h, true, juce::SoftwareImageType());
+            lastReadoutW = w;
+            lastReadoutH = h;
+        }
+        readoutTextCache.clear(readoutTextCache.getBounds());
+        juce::Graphics tg(readoutTextCache);
 
-        // Value on right — red warning if below threshold (use heavy-damped textPsr)
+        const float fontSize = juce::jlimit(12.0f, 22.0f, static_cast<float>(h) * 0.75f);
+        const float labelFontSize = juce::jlimit(8.0f, 12.0f, static_cast<float>(h) * 0.45f);
+
+        tg.setColour(GoodMeterLookAndFeel::textMuted);
+        tg.setFont(juce::Font(labelFontSize, juce::Font::bold));
+        tg.drawText("PEAK-TO-SHORT", 4, 0, static_cast<int>(w * 0.5f), h,
+                    juce::Justification::centredLeft, false);
+
         bool isDanger = textPsr < dangerThreshold && textPsr > 0.1f;
-        g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : techCyan);
-        g.setFont(juce::Font(fontSize, juce::Font::bold));
+        tg.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : techCyan);
+        tg.setFont(juce::Font(fontSize, juce::Font::bold));
 
         juce::String valueStr;
         if (textPsr < 0.1f)
@@ -306,12 +344,7 @@ private:
         else
             valueStr = juce::String(textPsr, 1) + " dB";
 
-        g.drawText(valueStr,
-                   static_cast<int>(bounds.getX()),
-                   static_cast<int>(bounds.getY()),
-                   static_cast<int>(bounds.getWidth() - 4),
-                   static_cast<int>(bounds.getHeight()),
-                   juce::Justification::centredRight, false);
+        tg.drawText(valueStr, 0, 0, w - 4, h, juce::Justification::centredRight, false);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PsrMeterComponent)

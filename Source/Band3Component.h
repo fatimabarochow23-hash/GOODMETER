@@ -62,9 +62,20 @@ private:
     static constexpr float minDb = -60.0f;
     static constexpr float maxDb = 0.0f;
 
+    // Offscreen label cache (STATIC — rebuild on resize only)
+    juce::Image vesselLabelCache;
+    int lastVesselLabelW = 0, lastVesselLabelH = 0;
+
     //==========================================================================
     void timerCallback() override
     {
+        // 60Hz → 30Hz smart throttle during mouse drag
+        if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        {
+            static int dragThrottleCounter = 0;
+            if (++dragThrottleCounter % 2 != 0) return;
+        }
+
         currentLow = audioProcessor.rmsLevelLow.load(std::memory_order_relaxed);
         currentMid = audioProcessor.rmsLevelMid3Band.load(std::memory_order_relaxed);
         currentHigh = audioProcessor.rmsLevelHigh.load(std::memory_order_relaxed);
@@ -113,6 +124,31 @@ private:
         drawBeaker(g, beakerCol, displayLow, GoodMeterLookAndFeel::accentPink, "LOW");
         drawCylinder(g, cylinderCol, displayMid, GoodMeterLookAndFeel::accentYellow, "MID");
         drawFlask(g, flaskCol, displayHigh, GoodMeterLookAndFeel::accentGreen, "HIGH");
+
+        // Blit cached vessel labels (static, rebuild on resize)
+        int areaW = static_cast<int>(area.getWidth());
+        int labelH = static_cast<int>(labelSpace * 1.6f + 4.0f);
+        if (vesselLabelCache.isNull() || lastVesselLabelW != areaW || lastVesselLabelH != labelH)
+        {
+            lastVesselLabelW = areaW;
+            lastVesselLabelH = labelH;
+            vesselLabelCache = juce::Image(juce::Image::ARGB, areaW, labelH, true, juce::SoftwareImageType());
+            juce::Graphics tg(vesselLabelCache);
+
+            const juce::String labels[] = { "LOW", "MID", "HIGH" };
+            for (int i = 0; i < 3; ++i)
+            {
+                float colX = i * (colWidth + gap);
+                const float fontSize = juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f);
+                tg.setColour(GoodMeterLookAndFeel::textMain);
+                tg.setFont(juce::Font(fontSize, juce::Font::bold));
+                tg.drawText(labels[i],
+                           static_cast<int>(colX), 2,
+                           static_cast<int>(colWidth), static_cast<int>(fontSize * 1.6f),
+                           juce::Justification::centred, false);
+            }
+        }
+        g.drawImageAt(vesselLabelCache, static_cast<int>(area.getX()), static_cast<int>(area.getY() + vesselHeight));
     }
 
     //==========================================================================
@@ -209,7 +245,6 @@ private:
             cx - bulbRx, rimTopY, bulbW, bottom - rimTopY
         );
         drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
-        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
@@ -261,8 +296,6 @@ private:
             float tickStroke = (t % 5 == 0) ? 1.0f : 0.6f;
             g.drawLine(cx + cw - tickLen, tickY, cx + cw, tickY, tickStroke);
         }
-
-        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
@@ -314,7 +347,6 @@ private:
 
         auto vesselBounds = juce::Rectangle<float>(cx - baseHalfW, topY, baseHalfW * 2.0f, fh);
         drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
-        drawVesselLabel(g, col, label);
     }
 
     //==========================================================================
@@ -360,24 +392,6 @@ private:
         // === 4. Glass highlight (subtle white reflection on left edge) ===
         g.setColour(juce::Colours::white.withAlpha(0.20f));
         g.strokePath(vesselPath, juce::PathStrokeType(0.8f));
-    }
-
-    //==========================================================================
-    // Label below vessel — bold, centered under the column
-    void drawVesselLabel(juce::Graphics& g, const juce::Rectangle<float>& col, const juce::String& label)
-    {
-        const float fontSize = juce::jlimit(10.0f, 15.0f, col.getHeight() * 0.07f);
-        const float labelY = col.getBottom() + 2.0f;
-        const int labelH = static_cast<int>(fontSize * 1.6f);
-
-        g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(fontSize, juce::Font::bold));
-        g.drawText(label,
-                   static_cast<int>(col.getX()),
-                   static_cast<int>(labelY),
-                   static_cast<int>(col.getWidth()),
-                   labelH,
-                   juce::Justification::centred, false);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Band3Component)

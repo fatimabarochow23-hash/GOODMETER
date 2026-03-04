@@ -24,7 +24,7 @@ public:
         : audioProcessor(processor)
     {
         setSize(100, 200);
-        startTimer(16);  // ~60Hz
+        startTimerHz(60);  // 60Hz visual refresh
     }
 
     ~LevelsMeterComponent() override
@@ -48,6 +48,9 @@ public:
         targetMenu.addItem("EBU R128", 2);    // -23.0
         targetMenu.addItem("ATSC A/85", 3);   // -24.0
         targetMenu.addItem("Netflix", 4);      // -27.0
+        targetMenu.addItem("YouTube", 5);      // -14.0
+        targetMenu.addItem("Douyin", 6);       // -14.0
+        targetMenu.addItem("Bilibili", 7);     // -16.0
         targetMenu.setSelectedId(2, juce::dontSendNotification);
 
         // Invisible style — our LookAndFeel draws custom
@@ -63,6 +66,9 @@ public:
                 case 2: currentTargetLUFS = -23.0f; standard = "EBU R128"; break;
                 case 3: currentTargetLUFS = -24.0f; standard = "ATSC A/85"; break;
                 case 4: currentTargetLUFS = -27.0f; standard = "Netflix"; break;
+                case 5: currentTargetLUFS = -14.0f; standard = "YouTube"; break;
+                case 6: currentTargetLUFS = -14.0f; standard = "Douyin"; break;
+                case 7: currentTargetLUFS = -16.0f; standard = "Bilibili"; break;
                 default: break;
             }
             repaint();
@@ -176,6 +182,43 @@ public:
             }
         }
 
+        // Pre-render text caches (moves drawText out of paint/CATransaction)
+        {
+            auto bounds = getLocalBounds();
+            if (!bounds.isEmpty())
+            {
+                const bool useVerticalLayout = bounds.getHeight() < 140;
+                int infoW, infoH;
+
+                if (useVerticalLayout)
+                {
+                    // Vertical layout: bars on left, info on right
+                    const int spacing = juce::jlimit(5, 12, static_cast<int>(bounds.getWidth() * 0.02f));
+                    const int barsWidth = juce::jlimit(60, 160, static_cast<int>(bounds.getWidth() * 0.25f));
+                    infoW = bounds.getWidth() - barsWidth - spacing;
+                    infoH = bounds.getHeight();
+                }
+                else
+                {
+                    // Horizontal layout: bars on top, info below
+                    const int totalHeight = bounds.getHeight();
+                    const int barsHeight = static_cast<int>(totalHeight * 0.55f);
+                    const int spacing = 10;
+                    infoW = bounds.getWidth();
+                    infoH = totalHeight - barsHeight - spacing;
+                }
+
+                prerenderLUFSText(infoW, infoH);
+
+                // Tick labels: compute bar width same as drawPeakBars
+                if (!useVerticalLayout)
+                {
+                    auto barArea = bounds.reduced(20, 0).withTrimmedTop(16);
+                    prerenderTickText(barArea.getWidth());
+                }
+            }
+        }
+
         repaint();
     }
 
@@ -234,6 +277,14 @@ private:
     static constexpr float maxDb = 0.0f;
     static constexpr int barHeight = 28;
     static constexpr int barGap = 12;
+
+    // === Offscreen text cache (zero drawText in paint!) ===
+    juce::Image lufsTextCache;
+    juce::Image tickTextCache;
+    int lastTickWidth = 0;
+    int lastTickHeight = 0;
+    int lastLufsWidth = 0;
+    int lastLufsHeight = 0;
 
     //==========================================================================
     void timerCallback() override
@@ -351,28 +402,22 @@ private:
 
         // Draw scale ticks (Levels.tsx lines 154-161)
         g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
-        g.setFont(10.0f);
 
-        // ✅ 获取准确的上下边界（相对于 area）
         float lineTop = static_cast<float>(barL.getY());
         float lineBottom = static_cast<float>(barR.getBottom() + 4);
 
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
         {
-            // ✅ 使用 area 的宽度和 X 起点，而非原始 bounds
             float x = static_cast<float>(barL.getX()) + dbToX(static_cast<float>(db), static_cast<float>(barL.getWidth()));
-
-            // Tick line (从 L 通道顶部画到 R 通道底部)
             g.drawVerticalLine(static_cast<int>(x), lineTop, lineBottom);
+        }
 
-            // Label (贴在竖线底部)
-            juce::String label = juce::String(db);
-            g.setColour(GoodMeterLookAndFeel::textMuted);
-            g.drawText(label,
-                      static_cast<int>(x - 15), static_cast<int>(lineBottom + 2),
-                      30, 12,
-                      juce::Justification::centred, false);
+        // Blit pre-rendered tick labels (rendered in updateMetrics)
+        if (!tickTextCache.isNull())
+        {
+            int tickY = static_cast<int>(lineBottom + 2);
+            g.drawImageAt(tickTextCache, barL.getX(), tickY);
         }
     }
 
@@ -527,76 +572,145 @@ private:
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f, 2.0f);
 
-        // Grid padding proportional
-        const int padX = juce::jlimit(4, 16, static_cast<int>(bounds.getWidth() * 0.02f));
-        const int padY = juce::jlimit(3, 12, static_cast<int>(bounds.getHeight() * 0.05f));
-        auto gridBounds = bounds.reduced(padX, padY);
-        const int colWidth = gridBounds.getWidth() / 3;
+        // Blit pre-rendered text cache (rendered in updateMetrics, NOT here)
+        if (!lufsTextCache.isNull())
+            g.drawImageAt(lufsTextCache, bounds.getX(), bounds.getY());
+    }
 
-        // Font sizes scale with BOTH width and height (take the smaller constraint)
-        const float valueFontByH = bounds.getHeight() * 0.18f;
+    //==========================================================================
+    /**
+     * Pre-render LUFS text to offscreen image (called from updateMetrics, NOT paint)
+     * This moves ALL drawText cost out of CATransaction::commit
+     */
+    void prerenderLUFSText(int w, int h)
+    {
+        if (w < 30 || h < 20) return;
+
+        if (lufsTextCache.isNull() || lastLufsWidth != w || lastLufsHeight != h)
+        {
+            lufsTextCache = juce::Image(juce::Image::ARGB, w, h, true, juce::SoftwareImageType());
+            lastLufsWidth = w;
+            lastLufsHeight = h;
+        }
+
+        lufsTextCache.clear(lufsTextCache.getBounds());
+        juce::Graphics tg(lufsTextCache);
+        renderLUFSText(tg, w, h);
+    }
+
+    /**
+     * Pre-render tick labels to offscreen image (called from updateMetrics)
+     * Tick labels are STATIC — only need rebuild on resize
+     */
+    void prerenderTickText(int barWidth)
+    {
+        if (barWidth < 10) return;
+        if (!tickTextCache.isNull() && lastTickWidth == barWidth) return;
+
+        lastTickWidth = barWidth;
+        tickTextCache = juce::Image(juce::Image::ARGB, barWidth, 14, true, juce::SoftwareImageType());
+        juce::Graphics tg(tickTextCache);
+        tg.setFont(10.0f);
+
+        const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
+        for (int db : tickDbs)
+        {
+            float x = dbToX(static_cast<float>(db), static_cast<float>(barWidth));
+            tg.setColour(GoodMeterLookAndFeel::textMuted);
+            tg.drawText(juce::String(db),
+                        static_cast<int>(x - 15), 0, 30, 12,
+                        juce::Justification::centred, false);
+        }
+    }
+
+    void renderLUFSText(juce::Graphics& g, int boundsW, int boundsH)
+    {
+        const int padX = juce::jlimit(4, 16, static_cast<int>(boundsW * 0.02f));
+        const int padY = juce::jlimit(3, 12, static_cast<int>(boundsH * 0.05f));
+        auto gridBounds = juce::Rectangle<int>(0, 0, boundsW, boundsH).reduced(padX, padY);
+
+        // Adaptive grid: tall panel (left-right mode) → 2 cols × 3 rows
+        //                wide panel (top-bottom mode) → 3 cols × 2 rows
+        const bool useTallGrid = (boundsH > boundsW * 0.6f);
+        const int numCols = useTallGrid ? 2 : 3;
+        const int numRows = useTallGrid ? 3 : 2;
+
+        const int colWidth = gridBounds.getWidth() / numCols;
+        const int rowHeight = gridBounds.getHeight() / numRows;
+
+        const float valueFontByH = static_cast<float>(rowHeight) * 0.38f;
         const float valueFontByW = static_cast<float>(colWidth) * 0.35f;
         const float valueFontSize = juce::jlimit(13.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW));
 
-        const float labelFontByH = bounds.getHeight() * 0.1f;
+        const float labelFontByH = static_cast<float>(rowHeight) * 0.2f;
         const float labelFontByW = static_cast<float>(colWidth) * 0.12f;
         const float labelFontSize = juce::jlimit(6.0f, 12.0f, juce::jmin(labelFontByH, labelFontByW));
 
-        // Narrow panel: shrink label ratio to give more space to numbers
         const float labelRatio = (colWidth < 120) ? 0.25f : 0.4f;
-
-        // Hide units when too narrow
         const bool showUnit = colWidth > 180;
 
-        auto drawMetric = [&](int col, int row, const juce::String& label, float value, const juce::String& unit, bool highlight = false)
+        juce::Font labelFont(labelFontSize, juce::Font::bold);
+        juce::Font valueFont(valueFontSize, juce::Font::bold);
+
+        auto drawMetric = [&](int col, int row, const juce::String& label, float value, const juce::String& unit, bool highlight)
         {
-            auto colBounds = juce::Rectangle<int>(
+            auto cellBounds = juce::Rectangle<int>(
                 gridBounds.getX() + col * colWidth,
-                gridBounds.getY(),
+                gridBounds.getY() + row * rowHeight,
                 colWidth,
-                gridBounds.getHeight()
+                rowHeight
             );
 
-            juce::Rectangle<int> cellBounds;
-            const int cellPad = juce::jlimit(1, 6, static_cast<int>(gridBounds.getHeight() * 0.03f));
-            if (row == 0)
-                cellBounds = colBounds.removeFromTop(colBounds.getHeight() / 2).reduced(0, cellPad);
-            else
-                cellBounds = colBounds.removeFromBottom(colBounds.getHeight() / 2).reduced(0, cellPad);
+            const int cellPad = juce::jlimit(1, 6, static_cast<int>(rowHeight * 0.06f));
+            cellBounds = cellBounds.reduced(0, cellPad);
 
-            // Label/value split (adaptive ratio)
             auto labelArea = cellBounds.removeFromLeft(static_cast<int>(cellBounds.getWidth() * labelRatio));
             auto valueArea = cellBounds;
 
-            // Label (abbreviated when narrow)
             g.setColour(GoodMeterLookAndFeel::textMuted);
-            g.setFont(juce::Font(labelFontSize, juce::Font::bold));
+            g.setFont(labelFont);
             g.drawText(label.toLowerCase(), labelArea,
                       juce::Justification::centredLeft, false);
 
-            // Value - scale decimal places based on available width
             juce::String valueStr;
             if (value <= -60.0f)
                 valueStr = juce::String(juce::CharPointer_UTF8(u8"\u2013\u221e"));
             else if (valueFontSize < 11.0f)
-                valueStr = juce::String(static_cast<int>(std::round(value)));  // No decimals when tiny
+                valueStr = juce::String(static_cast<int>(std::round(value)));
             else
                 valueStr = juce::String(value, 1);
 
             if (showUnit) valueStr += " " + unit;
 
             g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
-            g.setFont(juce::Font(valueFontSize, juce::Font::bold));
+            g.setFont(valueFont);
             g.drawText(valueStr, valueArea,
                       juce::Justification::centredLeft, false);
         };
 
-        drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
-        drawMetric(0, 1, "true peak l", textPeakL, "dBTP", currentPeakL > -1.0f);
-        drawMetric(1, 0, "short-term", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS);
-        drawMetric(1, 1, "true peak r", textPeakR, "dBTP", currentPeakR > -1.0f);
-        drawMetric(2, 0, "integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS);
-        drawMetric(2, 1, "lu range", textLURange, "LU");
+        if (useTallGrid)
+        {
+            // 2 cols × 3 rows layout:
+            // Row 0: momentary | short-term
+            // Row 1: integrated | lu range
+            // Row 2: true peak l | true peak r
+            drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
+            drawMetric(1, 0, "short-t", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS);
+            drawMetric(0, 1, "integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS);
+            drawMetric(1, 1, "lu range", textLURange, "LU", false);
+            drawMetric(0, 2, "true pk l", textPeakL, "dBTP", currentPeakL > -1.0f);
+            drawMetric(1, 2, "true pk r", textPeakR, "dBTP", currentPeakR > -1.0f);
+        }
+        else
+        {
+            // 3 cols × 2 rows layout (original):
+            drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
+            drawMetric(0, 1, "true peak l", textPeakL, "dBTP", currentPeakL > -1.0f);
+            drawMetric(1, 0, "short-term", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS);
+            drawMetric(1, 1, "true peak r", textPeakR, "dBTP", currentPeakR > -1.0f);
+            drawMetric(2, 0, "integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS);
+            drawMetric(2, 1, "lu range", textLURange, "LU", false);
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LevelsMeterComponent)

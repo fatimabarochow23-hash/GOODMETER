@@ -175,8 +175,19 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
     contentComponent->addAndMakeVisible(psrCard.get());
     contentComponent->addAndMakeVisible(nonoCard.get());
 
-    // Set initial size (matches typical plugin dimensions)
-    setSize(500, 700);
+    // Propagate initial mini mode state to all cards
+    for (int i = 0; i < 9; ++i)
+    {
+        auto* card = getCardByIndex(i);
+        if (card != nullptr)
+            card->isMiniMode = isMiniMode;
+    }
+
+    // Set initial size: mini mode 3-column 9-panel grid
+    setSize(780, 500);
+
+    // Opaque: tell Core Animation no alpha blending needed behind us
+    setOpaque(true);
 
     // 🎨 开启自由横向缩放（对标专业插件）
     setResizable(true, true);
@@ -365,6 +376,13 @@ void GOODMETERAudioProcessorEditor::resized()
 //==============================================================================
 void GOODMETERAudioProcessorEditor::timerCallback()
 {
+    // 60Hz → 30Hz smart throttle during mouse drag (host window move etc.)
+    if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+    {
+        static int dragThrottleCounter = 0;
+        if (++dragThrottleCounter % 2 != 0) return;
+    }
+
     // Read atomic values from processor (thread-safe)
     float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
     float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);

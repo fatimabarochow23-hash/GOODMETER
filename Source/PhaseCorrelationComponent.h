@@ -26,7 +26,7 @@ public:
     PhaseCorrelationComponent()
     {
         setSize(100, 180);
-        startTimer(16);  // ~60Hz
+        startTimerHz(60);  // 60Hz visual refresh
     }
 
     ~PhaseCorrelationComponent() override
@@ -59,6 +59,31 @@ public:
     void updateCorrelation(float correlation)
     {
         smoothedPhase += (correlation - smoothedPhase) * 0.1f;
+
+        // Pre-render value text to offscreen cache
+        auto bounds = getLocalBounds();
+        if (!bounds.isEmpty())
+        {
+            const int labelH = juce::jlimit(18, 35, static_cast<int>(bounds.getHeight() * 0.15f));
+            const float padX = juce::jlimit(10.0f, 40.0f, bounds.getWidth() * 0.08f);
+            int lw = bounds.getWidth() - static_cast<int>(padX) * 2;
+            if (lw > 10 && labelH > 5)
+            {
+                if (valueTextCache.isNull() || lastValueW != lw || lastValueH != labelH)
+                {
+                    valueTextCache = juce::Image(juce::Image::ARGB, lw, labelH, true, juce::SoftwareImageType());
+                    lastValueW = lw;
+                    lastValueH = labelH;
+                }
+                valueTextCache.clear(valueTextCache.getBounds());
+                juce::Graphics tg(valueTextCache);
+                const float valueFont = juce::jlimit(11.0f, 19.0f, labelH * 0.7f);
+                tg.setColour(GoodMeterLookAndFeel::textMain);
+                tg.setFont(juce::Font(valueFont, juce::Font::bold));
+                tg.drawText(juce::String(smoothedPhase, 2), 0, 0, lw, labelH, juce::Justification::centred, false);
+            }
+        }
+
         repaint();
     }
 
@@ -70,6 +95,12 @@ private:
     static constexpr int loopsDefault = 8;   // Normal size: 8 loops
     static constexpr int loopsSmall = 6;     // Small size: 6 loops
     int currentLoops = loopsDefault;         // Adaptive per frame
+
+    // Offscreen text caches
+    juce::Image sideLabelsCache;   // STATIC: -1.0 and +1.0
+    juce::Image valueTextCache;    // DYNAMIC: correlation value
+    int lastSideLabelsW = 0, lastSideLabelsH = 0;
+    int lastValueW = 0, lastValueH = 0;
 
     //==========================================================================
     void timerCallback() override {}
@@ -321,30 +352,33 @@ private:
     {
         const float padX = juce::jlimit(10.0f, 40.0f, bounds.getWidth() * 0.08f);
         auto labelBounds = bounds.reduced(static_cast<int>(padX), 0);
+        int lw = labelBounds.getWidth();
+        int lh = labelBounds.getHeight();
+        if (lw < 10 || lh < 5) return;
 
-        const float labelFont = juce::jlimit(9.0f, 14.0f, bounds.getHeight() * 0.5f);
-        const float valueFont = juce::jlimit(11.0f, 19.0f, bounds.getHeight() * 0.7f);
-        const int sideW = juce::jlimit(30, 80, static_cast<int>(labelBounds.getWidth() * 0.2f));
+        // Static side labels (rebuild on resize only)
+        if (sideLabelsCache.isNull() || lastSideLabelsW != lw || lastSideLabelsH != lh)
+        {
+            lastSideLabelsW = lw;
+            lastSideLabelsH = lh;
+            sideLabelsCache = juce::Image(juce::Image::ARGB, lw, lh, true, juce::SoftwareImageType());
+            juce::Graphics tg(sideLabelsCache);
 
-        // -1.0 (pink)
-        g.setColour(GoodMeterLookAndFeel::accentPink);
-        g.setFont(juce::Font(labelFont, juce::Font::bold));
-        g.drawText("-1.0",
-                   labelBounds.removeFromLeft(sideW),
-                   juce::Justification::centredLeft, false);
+            const float labelFont = juce::jlimit(9.0f, 14.0f, lh * 0.5f);
+            const int sideW = juce::jlimit(30, 80, static_cast<int>(lw * 0.2f));
 
-        // +1.0 (cyan)
-        g.setColour(GoodMeterLookAndFeel::accentCyan);
-        g.drawText("+1.0",
-                   labelBounds.removeFromRight(sideW),
-                   juce::Justification::centredRight, false);
+            tg.setFont(juce::Font(labelFont, juce::Font::bold));
+            tg.setColour(GoodMeterLookAndFeel::accentPink);
+            tg.drawText("-1.0", 0, 0, sideW, lh, juce::Justification::centredLeft, false);
 
-        // Center value
-        g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(valueFont, juce::Font::bold));
-        g.drawText(juce::String(smoothedPhase, 2),
-                   labelBounds,
-                   juce::Justification::centred, false);
+            tg.setColour(GoodMeterLookAndFeel::accentCyan);
+            tg.drawText("+1.0", lw - sideW, 0, sideW, lh, juce::Justification::centredRight, false);
+        }
+        g.drawImageAt(sideLabelsCache, labelBounds.getX(), labelBounds.getY());
+
+        // Dynamic value (pre-rendered in updateCorrelation)
+        if (!valueTextCache.isNull())
+            g.drawImageAt(valueTextCache, labelBounds.getX(), labelBounds.getY());
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PhaseCorrelationComponent)

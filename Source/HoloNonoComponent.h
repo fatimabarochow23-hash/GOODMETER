@@ -24,6 +24,7 @@ struct NonoAnalysisResult
     float momentaryMaxLUFS  = -100.0f;
     float shortTermMaxLUFS  = -100.0f;
     float integratedLUFS    = -100.0f;
+    int   numChannels       = 0;
 };
 
 //==============================================================================
@@ -38,6 +39,10 @@ public:
     {
         setSize(100, 200);
         startTimerHz(60);
+
+        lastScreenPos = getScreenPosition();
+        lastW = getWidth();
+        lastH = getHeight();
 
         auto& rng = juce::Random::getSystemRandom();
         for (auto& b : tubeBubbles)
@@ -78,6 +83,9 @@ public:
     // Wink state (set by PluginEditor when swap is ready)
     bool isWinking = false;
     void setWinking(bool w) { isWinking = w; repaint(); }
+
+    // Dizzy state (nausea accumulator driven)
+    bool isDizzy = false;
 
     void onCardFolded(const juce::String& cardName)
     {
@@ -320,6 +328,16 @@ public:
 
 private:
     //==========================================================================
+    // Dizzy: nausea accumulator state
+    //==========================================================================
+    juce::Point<int> lastScreenPos;
+    int lastW = 0;
+    int lastH = 0;
+    float nauseaLevel = 0.0f;
+    int dizzyRecoveryFrames = 0;
+    int osQueryCounter = 0;
+
+    //==========================================================================
     // Inner: Biquad filter for K-weighting
     //==========================================================================
     struct Biquad
@@ -388,7 +406,7 @@ private:
                 return;
             }
 
-            const int numCh = juce::jmin((int)reader->numChannels, 2);
+            const int numCh = juce::jmin((int)reader->numChannels, 64);
             const double sr = reader->sampleRate;
             const juce::int64 maxSamples = (juce::int64)(sr * 600.0); // 10 min cap
             const juce::int64 totalSamples = juce::jmin(reader->lengthInSamples, maxSamples);
@@ -399,24 +417,39 @@ private:
                 return;
             }
 
-            // ---- K-weighting filters ----
-            Biquad s1[2], s2[2];
-            computeKWeighting(sr, s1[0], s2[0]);
-            if (numCh > 1) computeKWeighting(sr, s1[1], s2[1]);
+            // ---- ITU-R BS.1770-4 channel weighting ----
+            // Standard layout: L R C LFE Ls Rs ...
+            // LFE (ch index 3 for >= 6ch) is excluded (weight = 0)
+            // Surround/height channels (index >= 4 for >= 6ch) get +1.5 dB (G_i = ~1.41)
+            // For stereo (2ch) or unknown layouts: equal weight 1.0
+            std::vector<double> channelWeight(numCh, 1.0);
+            if (numCh >= 6)
+            {
+                // ch0=L, ch1=R, ch2=C: weight 1.0
+                channelWeight[3] = 0.0;  // LFE — excluded per BS.1770
+                for (int ch = 4; ch < numCh; ++ch)
+                    channelWeight[ch] = 1.41253754;  // +1.5 dB = 10^(1.5/10)
+            }
+
+            // ---- K-weighting filters (one pair per channel) ----
+            std::vector<Biquad> s1(numCh), s2(numCh);
+            for (int ch = 0; ch < numCh; ++ch)
+                computeKWeighting(sr, s1[ch], s2[ch]);
 
             // ---- 100ms sub-block accumulators ----
             const int subBlockSize = (int)(sr * 0.1);
             if (subBlockSize <= 0) { callbackResult(NonoAnalysisResult{}); return; }
 
-            std::vector<double> subMS;              // mean-square per 100ms sub-block
-            double subBlockPower[2] = { 0.0, 0.0 }; // running sum per channel
+            std::vector<double> subMS;              // weighted mean-square per 100ms sub-block
+            std::vector<double> subBlockPower(numCh, 0.0); // running sum per channel
             int subBlockPos = 0;                     // sample position within current sub-block
 
             NonoAnalysisResult result;
             float globalMaxMag = 0.0f;
 
             // ==== CHUNKED READ LOOP (never loads entire file) ====
-            constexpr int blockSize = 65536;
+            // For large channel counts, reduce block size to limit memory
+            const int blockSize = (numCh <= 8) ? 65536 : juce::jmax(4096, 65536 * 2 / numCh);
             juce::AudioBuffer<float> buffer(numCh, blockSize);
             juce::int64 samplesRead = 0;
 
@@ -426,19 +459,26 @@ private:
 
                 const int toRead = (int)juce::jmin((juce::int64)blockSize, totalSamples - samplesRead);
                 buffer.clear();
-                reader->read(&buffer, 0, toRead, samplesRead, true, numCh > 1);
+
+                // Read all channels: JUCE AudioFormatReader::read with
+                // destBuffer having numCh channels reads channels 0..numCh-1
+                reader->read(&buffer, 0, toRead, samplesRead, true, true);
                 samplesRead += toRead;
 
-                // ---- True Peak (before K-weighting) ----
+                // ---- True Peak (before K-weighting, all channels) ----
                 for (int ch = 0; ch < numCh; ++ch)
-                    globalMaxMag = juce::jmax(globalMaxMag,
-                                              buffer.getMagnitude(ch, 0, toRead));
+                {
+                    if (channelWeight[ch] > 0.0)  // skip LFE for peak too
+                        globalMaxMag = juce::jmax(globalMaxMag,
+                                                  buffer.getMagnitude(ch, 0, toRead));
+                }
 
                 // ---- K-weight in-place + accumulate 100ms sub-blocks ----
                 for (int i = 0; i < toRead; ++i)
                 {
                     for (int ch = 0; ch < numCh; ++ch)
                     {
+                        if (channelWeight[ch] <= 0.0) continue;  // skip LFE
                         double x = (double)buffer.getSample(ch, i);
                         x = s1[ch].process(x);
                         x = s2[ch].process(x);
@@ -451,7 +491,7 @@ private:
                         double ms = 0.0;
                         for (int ch = 0; ch < numCh; ++ch)
                         {
-                            ms += subBlockPower[ch] / subBlockSize;
+                            ms += channelWeight[ch] * subBlockPower[ch] / subBlockSize;
                             subBlockPower[ch] = 0.0;
                         }
                         subMS.push_back(ms);
@@ -464,6 +504,7 @@ private:
 
             // ---- Peak dBFS ----
             result.peakDBFS = juce::Decibels::gainToDecibels(globalMaxMag, -100.0f);
+            result.numChannels = numCh;
 
             if (threadShouldExit()) return;
 
@@ -684,6 +725,58 @@ private:
     //==========================================================================
     void timerCallback() override
     {
+        // 60Hz → 30Hz smart throttle during mouse drag
+        if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        {
+            static int dragThrottleCounter = 0;
+            if (++dragThrottleCounter % 2 != 0) return;
+        }
+
+        // ==========================================
+        // 慢速轨道 (10Hz)：每6帧查一次岗，避开OS跨进程IPC锁竞争
+        // ==========================================
+        osQueryCounter++;
+        if (osQueryCounter >= 6)
+        {
+            osQueryCounter = 0;
+            auto currentPos = getScreenPosition();
+            int currentW = getWidth();
+            int currentH = getHeight();
+
+            float deltaX = static_cast<float>(currentPos.x - lastScreenPos.x);
+            float deltaY = static_cast<float>(currentPos.y - lastScreenPos.y);
+            float distance = std::sqrt(deltaX * deltaX + deltaY * deltaY);
+            float deltaW = static_cast<float>(std::abs(currentW - lastW));
+            float deltaH = static_cast<float>(std::abs(currentH - lastH));
+
+            float violence = distance + deltaW + deltaH;
+            if (violence > 30.0f)
+                nauseaLevel += 18.0f;
+
+            lastScreenPos = currentPos;
+            lastW = currentW;
+            lastH = currentH;
+        }
+
+        // ==========================================
+        // 高速轨道 (60Hz)：自然衰减 + 状态机
+        // ==========================================
+        nauseaLevel -= 0.5f;
+        nauseaLevel = juce::jlimit(0.0f, 100.0f, nauseaLevel);
+
+        if (nauseaLevel >= 90.0f)
+        {
+            isDizzy = true;
+            dizzyRecoveryFrames = 30;
+        }
+
+        if (isDizzy)
+        {
+            dizzyRecoveryFrames--;
+            if (dizzyRecoveryFrames <= 0 && nauseaLevel < 10.0f)
+                isDizzy = false;
+        }
+
         // Audio level
         float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
         float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
@@ -1206,6 +1299,57 @@ private:
         float maxH = r * 0.5f, minH = r * 0.08f;
         float eh = juce::jmap(juce::jlimit(0.2f, 1.0f, eyeOpenness), 0.2f, 1.0f, minH, maxH);
 
+        // ===== Dizzy: spinning spiral / mosquito-coil eyes =====
+        if (isDizzy)
+        {
+            float angle = static_cast<float>(juce::Time::getMillisecondCounterHiRes()) * 0.015f;
+
+            for (int idx = 0; idx < 2; ++idx)
+            {
+                float ex = (idx == 0) ? (cx - spacing) : (cx + spacing);
+                float spiralR = r * 0.22f;
+                float eyeAngle = (idx == 0) ? angle : -angle;
+
+                // Glow bloom behind spiral
+                juce::ColourGradient bloom(
+                    electricBlue.withAlpha(0.3f), ex, vcy,
+                    electricBlue.withAlpha(0.0f), ex + spiralR * 1.5f, vcy, true);
+                g.setGradientFill(bloom);
+                g.fillEllipse(ex - spiralR * 1.5f, vcy - spiralR * 1.5f,
+                              spiralR * 3.0f, spiralR * 3.0f);
+
+                // Spiral path (3-turn mosquito coil)
+                juce::Path spiral;
+                const float turns = 3.0f;
+                const float maxAngle = turns * juce::MathConstants<float>::twoPi;
+                bool first = true;
+                for (float a = 0.0f; a <= maxAngle; a += 0.15f)
+                {
+                    float t = a / maxAngle;
+                    float sr = spiralR * t;
+                    float px = ex + sr * std::cos(a);
+                    float py = vcy + sr * std::sin(a);
+                    if (first) { spiral.startNewSubPath(px, py); first = false; }
+                    else spiral.lineTo(px, py);
+                }
+
+                // Rotate around eye center
+                g.saveState();
+                g.addTransform(juce::AffineTransform::rotation(eyeAngle, ex, vcy));
+
+                // 3-layer neon glow
+                g.setColour(electricBlue.withAlpha(0.1f));
+                g.strokePath(spiral, juce::PathStrokeType(6.0f));
+                g.setColour(electricBlue.withAlpha(0.35f));
+                g.strokePath(spiral, juce::PathStrokeType(3.0f));
+                g.setColour(electricBlue.withAlpha(0.9f));
+                g.strokePath(spiral, juce::PathStrokeType(1.5f));
+
+                g.restoreState();
+            }
+            return;
+        }
+
         struct EyeParams { float x, w, corner; };
         EyeParams eyes[2] = {
             { cx - spacing, ew, ew * 0.4f },   // left eye
@@ -1405,6 +1549,23 @@ private:
 
         // ===== 2x2 Grid: 自适应文字排版 =====
         auto textArea = body.reduced(10.0f, 6.0f);
+
+        // Channel count badge (top-right corner of body)
+        if (analysisResult.numChannels > 2)
+        {
+            juce::String chStr = juce::String(analysisResult.numChannels) + "ch";
+            float badgeFontSize = juce::jlimit(9.0f, 13.0f, textArea.getHeight() * 0.1f);
+            g.setFont(juce::Font(badgeFontSize, juce::Font::bold));
+            float badgeW = g.getCurrentFont().getStringWidthFloat(chStr) + 10.0f;
+            float badgeH = badgeFontSize + 4.0f;
+            auto badgeRect = juce::Rectangle<float>(body.getRight() - badgeW - 6.0f,
+                                                     body.getY() + 4.0f, badgeW, badgeH);
+            g.setColour(electricBlue.withAlpha(0.2f * fade));
+            g.fillRoundedRectangle(badgeRect, 4.0f);
+            g.setColour(electricBlue.withAlpha(0.9f * fade));
+            g.drawText(chStr, badgeRect.toNearestInt(), juce::Justification::centred, false);
+        }
+
         float fontSize = juce::jlimit(14.0f, 26.0f, textArea.getHeight() * 0.2f);
 
         float halfW = textArea.getWidth() / 2.0f;

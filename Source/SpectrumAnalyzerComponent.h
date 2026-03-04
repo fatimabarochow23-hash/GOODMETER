@@ -98,10 +98,21 @@ private:
     static constexpr float minDb = -100.0f;
     static constexpr float maxDb = 6.0f;
 
+    // Offscreen text cache (STATIC — rebuild on resize only)
+    juce::Image freqGridTextCache;
+    int lastFreqGridW = 0, lastFreqGridH = 0;
+
     //==========================================================================
     void timerCallback() override
     {
-        // === 1. Drain FIFO: consume all queued frames, keep only the latest ===
+        // 60Hz → 30Hz smart throttle during mouse drag
+        if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        {
+            static int dragThrottleCounter = 0;
+            if (++dragThrottleCounter % 2 != 0) return;
+        }
+
+        // === 1. Flush FIFO: drain everything, keep only the latest frame ===
         bool gotNewData = false;
         while (audioProcessor.fftFifoL.pop(tempBuffer.data(), numBins))
         {
@@ -201,32 +212,44 @@ private:
     //==========================================================================
     void drawFrequencyGrid(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        const float width = bounds.getWidth();
+        int bw = static_cast<int>(bounds.getWidth());
+        int bh = static_cast<int>(bounds.getHeight());
+        if (bw < 4 || bh < 4) return;
 
-        const float frequencies[] = { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
-                                     1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
-
-        g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.2f));
-        g.setFont(juce::Font(10.0f));
-
-        for (float freq : frequencies)
+        if (freqGridTextCache.isNull() || lastFreqGridW != bw || lastFreqGridH != bh)
         {
-            const float x = bounds.getX() + frequencyToX(freq, width);
+            lastFreqGridW = bw;
+            lastFreqGridH = bh;
+            freqGridTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
+            juce::Graphics tg(freqGridTextCache);
 
-            g.drawVerticalLine(static_cast<int>(x), bounds.getY(), bounds.getBottom());
+            const float width = static_cast<float>(bw);
+            const float frequencies[] = { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
+                                         1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            juce::String label;
-            if (freq >= 1000.0f)
-                label = juce::String(freq / 1000.0f, 1) + "k";
-            else
-                label = juce::String(static_cast<int>(freq));
+            tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.2f));
+            tg.setFont(juce::Font(10.0f));
 
-            g.setColour(GoodMeterLookAndFeel::textMuted);
-            g.drawText(label,
-                      static_cast<int>(x - 15), static_cast<int>(bounds.getBottom() - 20),
-                      30, 16,
-                      juce::Justification::centred, false);
+            for (float freq : frequencies)
+            {
+                const float x = frequencyToX(freq, width);
+                tg.drawVerticalLine(static_cast<int>(x), 0.0f, static_cast<float>(bh));
+
+                juce::String label;
+                if (freq >= 1000.0f)
+                    label = juce::String(freq / 1000.0f, 1) + "k";
+                else
+                    label = juce::String(static_cast<int>(freq));
+
+                tg.setColour(GoodMeterLookAndFeel::textMuted);
+                tg.drawText(label,
+                          static_cast<int>(x - 15), bh - 20,
+                          30, 16,
+                          juce::Justification::centred, false);
+            }
         }
+
+        g.drawImageAt(freqGridTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpectrumAnalyzerComponent)
