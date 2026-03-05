@@ -25,6 +25,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		00780AFFB9F6D3C2187286D6 /* StandaloneApp.cpp */ = {isa = PBXBuildFile; fileRef = A9906A349E68F620E225DF53; };
 		0396A931E607B77BE8A2D0E7 /* include_juce_audio_utils.mm */ = {isa = PBXBuildFile; fileRef = E30B9B7E011508D5BEC74C16; };
 		067E51599C19EF4FBC16E1E0 /* include_juce_audio_plugin_client_ARA.cpp */ = {isa = PBXBuildFile; fileRef = EBADB2BE6CD581170A7D1373; };
 		06F3F1FBF2C32D0A32075001 /* include_juce_opengl.mm */ = {isa = PBXBuildFile; fileRef = 19E47B6CE909B9A88C42B1E4; };
@@ -92,6 +93,7 @@
 		328A926EA37B30312DE5DC6F /* AudioToolbox.framework */ /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
 		3612FF26CD2DAF6AF2FFF338 /* Shared Code */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libGOODMETER.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		3D68193A600390F3E11D6D2C /* include_juce_audio_processors_ara.cpp */ /* include_juce_audio_processors_ara.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = include_juce_audio_processors_ara.cpp; path = ../../JuceLibraryCode/include_juce_audio_processors_ara.cpp; sourceTree = SOURCE_ROOT; };
+		469A471504D77170B2871AB8 /* StandaloneNonoEditor.h */ /* StandaloneNonoEditor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = StandaloneNonoEditor.h; path = ../../Source/StandaloneNonoEditor.h; sourceTree = SOURCE_ROOT; };
 		47204EDC978850265613C850 /* Metal.framework */ /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		477B905673014DB8A21EB92B /* AU */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.component; sourceTree = BUILT_PRODUCTS_DIR; };
 		4EB4089F706DCB7AC8DCFEBD /* VST3 */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.vst3; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -119,6 +121,7 @@
 		A25993E16A5A7C0F4D9663D4 /* juce_data_structures */ /* juce_data_structures */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_data_structures; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_data_structures; sourceTree = "<absolute>"; };
 		A53554732F2848F145B759B5 /* juce_analytics */ /* juce_analytics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_analytics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_analytics; sourceTree = "<absolute>"; };
 		A6BEFECB1C97022B95AC2D0D /* DiscRecording.framework */ /* DiscRecording.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiscRecording.framework; path = System/Library/Frameworks/DiscRecording.framework; sourceTree = SDKROOT; };
+		A9906A349E68F620E225DF53 /* StandaloneApp.cpp */ /* StandaloneApp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = StandaloneApp.cpp; path = ../../Source/StandaloneApp.cpp; sourceTree = SOURCE_ROOT; };
 		AAE84E1677A3EC1A69E2C3BC /* include_juce_audio_plugin_client_Standalone.cpp */ /* include_juce_audio_plugin_client_Standalone.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = include_juce_audio_plugin_client_Standalone.cpp; path = ../../JuceLibraryCode/include_juce_audio_plugin_client_Standalone.cpp; sourceTree = SOURCE_ROOT; };
 		AB69B880B47B63F0E5811AB2 /* JucePluginDefines.h */ /* JucePluginDefines.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = JucePluginDefines.h; path = ../../JuceLibraryCode/JucePluginDefines.h; sourceTree = SOURCE_ROOT; };
 		ABEA82DE08B4E36F11E19781 /* IOKit.framework */ /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
@@ -385,6 +388,8 @@
 				8BA51DC839F52ADF755354F5,
 				680D039E71C97ECD3CF3CFED,
 				223574BB228C5D80B47973F3,
+				469A471504D77170B2871AB8,
+				A9906A349E68F620E225DF53,
 			);
 			name = Source;
 			sourceTree = "<group>";
@@ -716,6 +721,7 @@
 			files = (
 				83023CCF060FBB76620FE5C7,
 				7D17A4383387C2E9C48C7313,
+				00780AFFB9F6D3C2187286D6,
 				D0904EDCEF7C3B7B758009EE,
 				66A146E041AC88445E1C4947,
 				CBC0BECE84CBFB772C66F358,
@@ -901,6 +907,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1025,6 +1032,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1186,6 +1194,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1296,6 +1305,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1455,6 +1465,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1566,6 +1577,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1691,6 +1703,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1802,6 +1815,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -1914,6 +1928,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",
@@ -2029,6 +2044,7 @@
 					"JucePlugin_ARADocumentArchiveID=\\\"com.Solaris.GOODMETER.aradocumentarchive.1.0.0\\\"",
 					"JucePlugin_ARACompatibleArchiveIDs=\\\"\\\"",
 					"JUCE_STANDALONE_APPLICATION=JucePlugin_Build_Standalone",
+					"JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1",
 					"JUCER_XCODE_MAC_F6D2F4CF=1",
 					"JUCE_APP_VERSION=1.0.0",
 					"JUCE_APP_VERSION_HEX=0x10000",

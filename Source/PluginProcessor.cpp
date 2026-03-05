@@ -13,6 +13,10 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#if JucePlugin_Build_Standalone
+#include "StandaloneNonoEditor.h"
+#endif
+
 //==============================================================================
 GOODMETERAudioProcessor::GOODMETERAudioProcessor()
     : AudioProcessor(BusesProperties()
@@ -608,7 +612,11 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 //==============================================================================
 juce::AudioProcessorEditor* GOODMETERAudioProcessor::createEditor()
 {
+#if JucePlugin_Build_Standalone
+    return new StandaloneNonoEditor(*this);
+#else
     return new GOODMETERAudioProcessorEditor(*this);
+#endif
 }
 
 bool GOODMETERAudioProcessor::hasEditor() const
