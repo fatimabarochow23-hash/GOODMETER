@@ -27,6 +27,7 @@
 /* Begin PBXBuildFile section */
 		0396A931E607B77BE8A2D0E7 /* include_juce_audio_utils.mm */ = {isa = PBXBuildFile; fileRef = E30B9B7E011508D5BEC74C16; };
 		067E51599C19EF4FBC16E1E0 /* include_juce_audio_plugin_client_ARA.cpp */ = {isa = PBXBuildFile; fileRef = EBADB2BE6CD581170A7D1373; };
+		06F3F1FBF2C32D0A32075001 /* include_juce_opengl.mm */ = {isa = PBXBuildFile; fileRef = 19E47B6CE909B9A88C42B1E4; };
 		2CB2ECB514EB5EB5F84A79A4 /* include_juce_graphics_Harfbuzz.cpp */ = {isa = PBXBuildFile; fileRef = E35EE91CC70E8F8CB61067B3; };
 		2CE35ED849199E6CF261BD9C /* include_juce_audio_processors_ara.cpp */ = {isa = PBXBuildFile; fileRef = 3D68193A600390F3E11D6D2C; };
 		2D5857B82833D9743A80D6F2 /* include_juce_events.mm */ = {isa = PBXBuildFile; fileRef = F4D2628CB5030560B455F5E4; };
@@ -69,6 +70,7 @@
 		D915A83EA03BEB80AC120F9D /* CoreMIDI.framework */ = {isa = PBXBuildFile; fileRef = 6262BFD63BD42A11DCDFD99B; };
 		DC0BF249E226D87F7E45FFA1 /* include_juce_audio_formats.mm */ = {isa = PBXBuildFile; fileRef = 999C851A68426DAB133A50C7; };
 		DD976E333DAE715306A79151 /* IOKit.framework */ = {isa = PBXBuildFile; fileRef = ABEA82DE08B4E36F11E19781; };
+		DF6FF9D4E52D53DFA36A4144 /* OpenGL.framework */ = {isa = PBXBuildFile; fileRef = BBB63E78B2896782208B6412; };
 		E15B2D2B7DBFE9080E122DBB /* include_juce_graphics.mm */ = {isa = PBXBuildFile; fileRef = 5BCBDDEF18EACBAFBBF61366; };
 		E6C61F32E24912426ECE6C3F /* include_juce_audio_plugin_client_AU_1.mm */ = {isa = PBXBuildFile; fileRef = 600EEE8C24588943A250EE38; };
 		E7A2CFC631E63FB2ABE5D997 /* DiscRecording.framework */ = {isa = PBXBuildFile; fileRef = A6BEFECB1C97022B95AC2D0D; };
@@ -81,6 +83,7 @@
 		088E944FE0D2824CEF8D79B0 /* PluginEditor.cpp */ /* PluginEditor.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = PluginEditor.cpp; path = ../../Source/PluginEditor.cpp; sourceTree = SOURCE_ROOT; };
 		0D93657C935B5625160AB732 /* PluginProcessor.h */ /* PluginProcessor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = PluginProcessor.h; path = ../../Source/PluginProcessor.h; sourceTree = SOURCE_ROOT; };
 		15AE088E45C3F3B007798BDA /* juce_graphics */ /* juce_graphics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_graphics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_graphics; sourceTree = "<absolute>"; };
+		19E47B6CE909B9A88C42B1E4 /* include_juce_opengl.mm */ /* include_juce_opengl.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_opengl.mm; path = ../../JuceLibraryCode/include_juce_opengl.mm; sourceTree = SOURCE_ROOT; };
 		1FB65D57A478BB0F8C1F72A0 /* juce_audio_plugin_client */ /* juce_audio_plugin_client */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_audio_plugin_client; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_audio_plugin_client; sourceTree = "<absolute>"; };
 		223574BB228C5D80B47973F3 /* LevelsMeterComponent.h */ /* LevelsMeterComponent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = LevelsMeterComponent.h; path = ../../Source/LevelsMeterComponent.h; sourceTree = SOURCE_ROOT; };
 		24326842BF993FBFA552E460 /* juce_gui_basics */ /* juce_gui_basics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_gui_basics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_gui_basics; sourceTree = "<absolute>"; };
@@ -107,6 +110,7 @@
 		8A0C0CA07AD148AC7D6EAB0D /* PluginProcessor.cpp */ /* PluginProcessor.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = PluginProcessor.cpp; path = ../../Source/PluginProcessor.cpp; sourceTree = SOURCE_ROOT; };
 		8BA27885A1EB41AF3BBF9157 /* WebKit.framework */ /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		8BA51DC839F52ADF755354F5 /* GoodMeterLookAndFeel.h */ /* GoodMeterLookAndFeel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = GoodMeterLookAndFeel.h; path = ../../Source/GoodMeterLookAndFeel.h; sourceTree = SOURCE_ROOT; };
+		8EF325EF3F719550ADE3AC18 /* juce_opengl */ /* juce_opengl */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_opengl; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_opengl; sourceTree = "<absolute>"; };
 		957234307976803DC885E4C0 /* juce_audio_formats */ /* juce_audio_formats */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_audio_formats; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_audio_formats; sourceTree = "<absolute>"; };
 		97111525BC7CDFD66A3177CF /* VST3 Manifest Helper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = juce_vst3_helper; sourceTree = BUILT_PRODUCTS_DIR; };
 		999C851A68426DAB133A50C7 /* include_juce_audio_formats.mm */ /* include_juce_audio_formats.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_audio_formats.mm; path = ../../JuceLibraryCode/include_juce_audio_formats.mm; sourceTree = SOURCE_ROOT; };
@@ -122,6 +126,7 @@
 		B74FAA1664DC8CB2AB03CD8F /* PluginEditor.h */ /* PluginEditor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = PluginEditor.h; path = ../../Source/PluginEditor.h; sourceTree = SOURCE_ROOT; };
 		B7E650A5EE761F17327853E9 /* Cocoa.framework */ /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		B9451C0F3BA92F7CC5CFBC25 /* Info-AU.plist */ /* Info-AU.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Info-AU.plist"; path = "Info-AU.plist"; sourceTree = SOURCE_ROOT; };
+		BBB63E78B2896782208B6412 /* OpenGL.framework */ /* OpenGL.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenGL.framework; path = System/Library/Frameworks/OpenGL.framework; sourceTree = SDKROOT; };
 		BEB62B3780E8B2B19C51FB7F /* Standalone Plugin */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GOODMETER.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF6B22E8694C1ADA91063344 /* include_juce_core.mm */ /* include_juce_core.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_core.mm; path = ../../JuceLibraryCode/include_juce_core.mm; sourceTree = SOURCE_ROOT; };
 		C4C636B6A43DFC5177E93688 /* juce_audio_basics */ /* juce_audio_basics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_audio_basics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_audio_basics; sourceTree = "<absolute>"; };
@@ -166,6 +171,7 @@
 				E7A2CFC631E63FB2ABE5D997,
 				CDB65906E60CDF0617F9C024,
 				DD976E333DAE715306A79151,
+				DF6FF9D4E52D53DFA36A4144,
 				D0662E5E1C20BCD5E668EE3E,
 				9786CECDFFF6BEAC356444D6,
 				BE80C5BAED60D7083A3557A2,
@@ -188,6 +194,7 @@
 				E7A2CFC631E63FB2ABE5D997,
 				CDB65906E60CDF0617F9C024,
 				DD976E333DAE715306A79151,
+				DF6FF9D4E52D53DFA36A4144,
 				D0662E5E1C20BCD5E668EE3E,
 				9786CECDFFF6BEAC356444D6,
 				BE80C5BAED60D7083A3557A2,
@@ -209,6 +216,7 @@
 				E7A2CFC631E63FB2ABE5D997,
 				CDB65906E60CDF0617F9C024,
 				DD976E333DAE715306A79151,
+				DF6FF9D4E52D53DFA36A4144,
 				D0662E5E1C20BCD5E668EE3E,
 				9786CECDFFF6BEAC356444D6,
 				BE80C5BAED60D7083A3557A2,
@@ -230,6 +238,7 @@
 				E7A2CFC631E63FB2ABE5D997,
 				CDB65906E60CDF0617F9C024,
 				DD976E333DAE715306A79151,
+				DF6FF9D4E52D53DFA36A4144,
 				D0662E5E1C20BCD5E668EE3E,
 				9786CECDFFF6BEAC356444D6,
 				BE80C5BAED60D7083A3557A2,
@@ -280,6 +289,7 @@
 				9BFD0285FD1C62465852370B,
 				FD5F70343A4BE6538EE9B52D,
 				D59251E5414B9689AC6B5EBF,
+				19E47B6CE909B9A88C42B1E4,
 				60E65648A2E405CDD328EDD6,
 				AB69B880B47B63F0E5811AB2,
 			);
@@ -299,6 +309,7 @@
 				A6BEFECB1C97022B95AC2D0D,
 				D712D14F13B6F1C5268220D7,
 				ABEA82DE08B4E36F11E19781,
+				BBB63E78B2896782208B6412,
 				8124824926B8051E09FD9E87,
 				0452BCF3685E2150FAA4A84A,
 				8BA27885A1EB41AF3BBF9157,
@@ -359,6 +370,7 @@
 				15AE088E45C3F3B007798BDA,
 				24326842BF993FBFA552E460,
 				DE31F5CC866BA5395A1F8CE6,
+				8EF325EF3F719550ADE3AC18,
 			);
 			name = "JUCE Modules";
 			sourceTree = "<group>";
@@ -724,6 +736,7 @@
 				A56929FA2B3B1388FC027E2E,
 				AAF7E48FC4B3883AE2F7EC06,
 				4D9520ACE50C7B7D5CCFAEC5,
+				06F3F1FBF2C32D0A32075001,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -833,6 +846,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -911,6 +925,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 				WRAPPER_EXTENSION = component;
 			};
@@ -955,6 +970,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1030,6 +1046,7 @@
 				PRODUCT_NAME = "GOODMETER";
 				SKIP_INSTALL = YES;
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Release;
@@ -1114,6 +1131,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1187,6 +1205,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "juce_vst3_helper";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Debug;
@@ -1222,6 +1241,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1296,6 +1316,7 @@
 				PRODUCT_NAME = "GOODMETER";
 				SKIP_INSTALL = YES;
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Debug;
@@ -1379,6 +1400,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1453,6 +1475,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "juce_vst3_helper";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Release;
@@ -1488,6 +1511,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1567,6 +1591,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 				WRAPPER_EXTENSION = component;
 			};
@@ -1611,6 +1636,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1685,6 +1711,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Debug;
@@ -1720,6 +1747,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1795,6 +1823,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 			};
 			name = Release;
@@ -1830,6 +1859,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -1907,6 +1937,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 				WRAPPER_EXTENSION = vst3;
 			};
@@ -1943,6 +1974,7 @@
 					"JUCE_MODULE_AVAILABLE_juce_graphics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_basics=1",
 					"JUCE_MODULE_AVAILABLE_juce_gui_extra=1",
+					"JUCE_MODULE_AVAILABLE_juce_opengl=1",
 					"JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1",
 					"JUCE_VST3_CAN_REPLACE_VST2=0",
 					"JUCE_STRICT_REFCOUNTEDPOINTER=1",
@@ -2021,6 +2053,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.solaris.GOODMETER;
 				PRODUCT_NAME = "GOODMETER";
 				USE_HEADERMAP = NO;
+				VALIDATE_WORKSPACE_SKIPPED_SDK_FRAMEWORKS = OpenGL;
 				VALID_ARCHS = "i386 x86_64 arm64 arm64e";
 				WRAPPER_EXTENSION = vst3;
 			};

@@ -217,6 +217,8 @@ private:
 
         auto normLevel = [&](float db) -> float {
             float n = juce::jlimit(0.0f, 1.0f, juce::jmap(db, dbMin, dbMax, 0.0f, 1.0f));
+            // Perceptual pseudo-log: sqrt expands high-level detail
+            n = std::pow(n, 0.5f);
             return n < 0.005f ? 0.0f : n;
         };
 
@@ -305,13 +307,17 @@ private:
             g.setColour(juce::Colours::white.withAlpha(0.20f));
             g.strokePath(tubePath, juce::PathStrokeType(0.8f));
 
-            // === Tick marks ===
+            // === Tick marks (synced with pow(0.5) mapping) ===
             g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.10f));
-            for (int tick = 1; tick <= 3; ++tick)
+            const float tickDbs[] = { -45.0f, -30.0f, -15.0f };
+            for (float tdb : tickDbs)
             {
-                float tickY = ty + tick * (th / 4.0f);
-                float tickLen = (tick == 2) ? tw * 0.4f : tw * 0.25f;
-                float tickStroke = (tick == 2) ? 1.0f : 0.6f;
+                float tn = juce::jlimit(0.0f, 1.0f, (tdb - dbMin) / (dbMax - dbMin));
+                tn = std::pow(tn, 0.5f);
+                float tickY = ty + th - tn * th;
+                bool isMajor = (static_cast<int>(tdb) == -30);
+                float tickLen = isMajor ? tw * 0.4f : tw * 0.25f;
+                float tickStroke = isMajor ? 1.0f : 0.6f;
                 g.drawLine(tx + tw - tickLen, tickY, tx + tw, tickY, tickStroke);
             }
         }
@@ -444,7 +450,7 @@ private:
                                 float& outX, float& outY) const
     {
         const float mid  = sampleBufferL[i] + sampleBufferR[i];
-        const float side = sampleBufferR[i] - sampleBufferL[i];
+        const float side = sampleBufferL[i] - sampleBufferR[i];
         float x = cx + side * scale;
         float y = cy - mid * scale;
         const float dist = std::abs(x - cx) + std::abs(y - cy);
@@ -562,6 +568,8 @@ private:
             for (float db : tickDbs)
             {
                 float norm = juce::jlimit(0.0f, 1.0f, (db - dbMin) / (dbMax - dbMin));
+                // Sync with perceptual pow(0.5) mapping used in normLevel
+                norm = std::pow(norm, 0.5f);
                 float y = tubeTop + tubeH - norm * tubeH;
                 tg.drawLine(rightX - 4.0f, y, rightX, y, 1.2f);
                 juce::String text = juce::String(static_cast<int>(db));

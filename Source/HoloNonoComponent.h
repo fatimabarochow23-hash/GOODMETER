@@ -24,6 +24,7 @@ struct NonoAnalysisResult
     float momentaryMaxLUFS  = -100.0f;
     float shortTermMaxLUFS  = -100.0f;
     float integratedLUFS    = -100.0f;
+    float centerLUFS        = -100.0f;   // Center channel (C) integrated LUFS (>= 6ch only)
     int   numChannels       = 0;
 };
 
@@ -114,6 +115,12 @@ public:
     //==========================================================================
     void mouseDoubleClick(const juce::MouseEvent& e) override
     {
+        // Cancel any pending smile click (this is a double-click, not a single-click)
+        pendingSmileClick = false;
+
+        // Block all interactions during orbit
+        if (isOrbitLocked) return;
+
         // Right-double-click → toggle Mini Mode
         if (e.mods.isRightButtonDown())
         {
@@ -171,6 +178,16 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
+        if (isOrbitLocked) return;
+
+        // Front-face body single-click → pending smile (300ms delay to distinguish from double-click)
+        if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
+            && bodyHitRect.contains(e.position) && !isEditMode && !e.mods.isRightButtonDown())
+        {
+            pendingSmileClick = true;
+            pendingSmileClickTime = juce::Time::getMillisecondCounter();
+        }
+
         if (nonoState == NonoState::Back && bodyHitRect.contains(e.position))
             openFileChooser();
     }
@@ -205,6 +222,7 @@ public:
     void filesDropped(const juce::StringArray& files, int, int) override
     {
         isDragHovering = false;
+        if (isOrbitLocked) return;
 
         for (const auto& f : files)
         {
@@ -251,8 +269,22 @@ public:
         const float unit = juce::jmin(nonoDrawArea.getWidth(), nonoDrawArea.getHeight());
         const float radius = unit * 0.18f;
 
-        const float cx = nonoDrawArea.getCentreX() - radius * 0.6f + idleOffsetX + collisionOffsetX;
-        const float cy = nonoDrawArea.getCentreY() - radius * 0.3f + idleOffsetY + collisionOffsetY;
+        // Orbit offset: smooth elliptical loop around panel inner border
+        float orbitOX = 0.0f, orbitOY = 0.0f;
+        if (isOrbiting && orbitProgress > 0.0f)
+        {
+            float angle = orbitProgress * juce::MathConstants<float>::twoPi;
+            // Smooth envelope: sin(π·t) → departs from center, returns to center
+            float envelope = std::sin(orbitProgress * juce::MathConstants<float>::pi);
+            // Maximum safe radii: panel half-size minus body+tube footprint, ×0.88 safety margin
+            float orbitRx = juce::jmax(10.0f, (nonoDrawArea.getWidth() * 0.5f - radius * 2.0f) * 0.88f);
+            float orbitRy = juce::jmax(10.0f, (nonoDrawArea.getHeight() * 0.5f - radius * 1.2f) * 0.85f);
+            orbitOX = envelope * orbitRx * std::sin(angle);
+            orbitOY = envelope * orbitRy * -std::cos(angle);
+        }
+
+        const float cx = nonoDrawArea.getCentreX() - radius * 0.6f + idleOffsetX + collisionOffsetX + orbitOX;
+        const float cy = nonoDrawArea.getCentreY() - radius * 0.3f + idleOffsetY + collisionOffsetY + orbitOY;
 
         // Update hit test regions
         bodyHitRect = { cx - radius, cy - radius, radius * 2.0f, radius * 2.0f };
@@ -444,6 +476,11 @@ private:
             std::vector<double> subBlockPower(numCh, 0.0); // running sum per channel
             int subBlockPos = 0;                     // sample position within current sub-block
 
+            // Center channel (ch[2]) separate accumulator for dialogue loudness
+            const bool hasCenter = (numCh >= 6);
+            std::vector<double> centerSubMS;         // center-only mean-square per 100ms
+            double centerBlockPower = 0.0;
+
             NonoAnalysisResult result;
             float globalMaxMag = 0.0f;
 
@@ -483,6 +520,10 @@ private:
                         x = s1[ch].process(x);
                         x = s2[ch].process(x);
                         subBlockPower[ch] += x * x;
+
+                        // Accumulate center channel separately
+                        if (hasCenter && ch == 2)
+                            centerBlockPower += x * x;
                     }
 
                     ++subBlockPos;
@@ -495,6 +536,14 @@ private:
                             subBlockPower[ch] = 0.0;
                         }
                         subMS.push_back(ms);
+
+                        // Center channel sub-block (weight 1.0, single channel)
+                        if (hasCenter)
+                        {
+                            centerSubMS.push_back(centerBlockPower / subBlockSize);
+                            centerBlockPower = 0.0;
+                        }
+
                         subBlockPos = 0;
                     }
                 }
@@ -587,6 +636,52 @@ private:
                 else
                 {
                     result.integratedLUFS = -100.0f;
+                }
+            }
+
+            // Center channel integrated LUFS (EBU R128 dual gating, ch[2] only)
+            if (hasCenter && !centerSubMS.empty())
+            {
+                const int win = 4;
+                const int numCenterSubs = (int)centerSubMS.size();
+                std::vector<double> cWinPower;
+                std::vector<float> cWinLUFS;
+
+                for (int i = 0; i <= numCenterSubs - win; ++i)
+                {
+                    double sum = 0;
+                    for (int j = 0; j < win; ++j) sum += centerSubMS[i + j];
+                    double pwr = sum / win;
+                    cWinPower.push_back(pwr);
+                    cWinLUFS.push_back(toLUFS(pwr));
+                }
+
+                // Absolute gate (-70 LUFS)
+                double absSum = 0;
+                int absCnt = 0;
+                for (size_t i = 0; i < cWinPower.size(); ++i)
+                {
+                    if (cWinLUFS[i] > -70.0f)
+                    {
+                        absSum += cWinPower[i];
+                        absCnt++;
+                    }
+                }
+
+                if (absCnt > 0)
+                {
+                    float relThresh = toLUFS(absSum / absCnt) - 10.0f;
+                    double relSum = 0;
+                    int relCnt = 0;
+                    for (size_t i = 0; i < cWinPower.size(); ++i)
+                    {
+                        if (cWinLUFS[i] > -70.0f && cWinLUFS[i] > relThresh)
+                        {
+                            relSum += cWinPower[i];
+                            relCnt++;
+                        }
+                    }
+                    result.centerLUFS = (relCnt > 0) ? toLUFS(relSum / relCnt) : -100.0f;
                 }
             }
 
@@ -695,6 +790,16 @@ private:
     bool isDragHovering = false;
     juce::File pendingAnalysisFile;
     std::unique_ptr<juce::FileChooser> fileChooser;
+
+    // Smile + orbit animation state
+    bool isSmiling = false;
+    bool isOrbiting = false;
+    bool isOrbitLocked = false;       // all mouse interactions disabled during orbit
+    float orbitProgress = 0.0f;       // 0→1 during orbit (1.2s)
+    int smileFramesLeft = 0;          // smile duration countdown (2s = 120 frames)
+    int orbitLockFramesLeft = 0;      // interaction lock countdown (1.5s = 90 frames)
+    bool pendingSmileClick = false;   // delayed single-click detection
+    juce::uint32 pendingSmileClickTime = 0;
 
     // Hit test regions (computed in paint, used in mouse handlers)
     juce::Rectangle<float> bodyHitRect;
@@ -959,6 +1064,40 @@ private:
                 showParticles = false;
         }
 
+        // Smile + orbit: delayed single-click detection (300ms to distinguish from double-click)
+        if (pendingSmileClick && juce::Time::getMillisecondCounter() - pendingSmileClickTime > 300)
+        {
+            pendingSmileClick = false;
+            triggerSmileOrbit();
+        }
+
+        // Orbit animation progress (1.2s = 72 frames at 60Hz)
+        if (isOrbiting)
+        {
+            orbitProgress += 1.0f / 72.0f;
+            if (orbitProgress >= 1.0f)
+            {
+                orbitProgress = 0.0f;
+                isOrbiting = false;
+            }
+        }
+
+        // Smile countdown (2s = 120 frames)
+        if (smileFramesLeft > 0)
+        {
+            smileFramesLeft--;
+            if (smileFramesLeft <= 0)
+                isSmiling = false;
+        }
+
+        // Orbit lock countdown (1.5s = 90 frames from orbit start)
+        if (orbitLockFramesLeft > 0)
+        {
+            orbitLockFramesLeft--;
+            if (orbitLockFramesLeft <= 0)
+                isOrbitLocked = false;
+        }
+
         repaint();
     }
 
@@ -1035,6 +1174,17 @@ private:
         collisionDir = dir;
         frontAnimTimer = 0;
         targetCollisionX = targetCollisionY = 0.0f;
+    }
+
+    void triggerSmileOrbit()
+    {
+        if (isOrbiting || isOrbitLocked) return;
+        isSmiling = true;
+        isOrbiting = true;
+        isOrbitLocked = true;
+        orbitProgress = 0.0f;
+        smileFramesLeft = 120;       // 2 seconds at 60Hz
+        orbitLockFramesLeft = 90;    // 1.5 seconds at 60Hz
     }
 
     //==========================================================================
@@ -1356,6 +1506,41 @@ private:
             { cx + spacing, ew, ew * 0.4f }    // right eye
         };
 
+        // ===== Smile: upward "∧" chevron eyes =====
+        if (isSmiling)
+        {
+            for (int idx = 0; idx < 2; ++idx)
+            {
+                float ex = eyes[idx].x;
+                float chevW = spacing * 0.75f;
+                float chevH = eh * 2.0f;
+                float tipY = vcy - chevH * 0.35f;   // tip points upward
+                float baseY = vcy + chevH * 0.35f;  // open ends at bottom
+
+                // Glow bloom behind each eye
+                float bloomR = chevH * 0.6f;
+                juce::ColourGradient bloom(
+                    electricBlue.withAlpha(0.3f), ex, vcy,
+                    electricBlue.withAlpha(0.0f), ex + bloomR, vcy, true);
+                g.setGradientFill(bloom);
+                g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                juce::Path smilePath;
+                smilePath.startNewSubPath(ex - chevW * 0.5f, baseY);   // bottom-left
+                smilePath.lineTo(ex, tipY);                             // top tip
+                smilePath.lineTo(ex + chevW * 0.5f, baseY);            // bottom-right
+
+                // 3-layer neon glow (thinner than wink for delicate smile)
+                g.setColour(electricBlue.withAlpha(0.10f));
+                g.strokePath(smilePath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(electricBlue.withAlpha(0.30f));
+                g.strokePath(smilePath, juce::PathStrokeType(4.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(electricBlue.withAlpha(eyeGlow));
+                g.strokePath(smilePath, juce::PathStrokeType(2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+            }
+            return;  // Skip normal eye rendering
+        }
+
         if (isWinking)
         {
             // ===== Coordinate separation =====
@@ -1547,7 +1732,7 @@ private:
         g.drawRoundedRectangle(body, 8.0f, 1.5f);
         g.strokePath(tail, juce::PathStrokeType(1.5f));
 
-        // ===== 2x2 Grid: 自适应文字排版 =====
+        // ===== Adaptive Grid: 2x2 (stereo) or 3x2 (multichannel with center) =====
         auto textArea = body.reduced(10.0f, 6.0f);
 
         // Channel count badge (top-right corner of body)
@@ -1566,44 +1751,56 @@ private:
             g.drawText(chStr, badgeRect.toNearestInt(), juce::Justification::centred, false);
         }
 
-        float fontSize = juce::jlimit(14.0f, 26.0f, textArea.getHeight() * 0.2f);
+        // Determine if we have center channel data
+        const bool showCenter = (analysisResult.numChannels >= 6 && analysisResult.centerLUFS > -99.0f);
+        const int numRows = showCenter ? 3 : 2;
+        const int numCols = 2;
 
-        float halfW = textArea.getWidth() / 2.0f;
-        float halfH = textArea.getHeight() / 2.0f;
+        float fontSize = juce::jlimit(12.0f, 24.0f, textArea.getHeight() / static_cast<float>(numRows) * 0.38f);
+        float cellW = textArea.getWidth() / static_cast<float>(numCols);
+        float cellH = textArea.getHeight() / static_cast<float>(numRows);
 
         struct MetricInfo { const char* label; float value; const char* unit; };
-        MetricInfo metrics[4] = {
+
+        // Build metrics array: 4 base + optional center
+        MetricInfo baseMetrics[5] = {
             { u8"\u5cf0\u503c",             analysisResult.peakDBFS,         "dBFS" },
             { u8"\u77ac\u65f6\u6700\u5927", analysisResult.momentaryMaxLUFS, "LUFS" },
             { u8"\u77ed\u671f\u6700\u5927", analysisResult.shortTermMaxLUFS, "LUFS" },
-            { u8"\u5e73\u5747\u54cd\u5ea6", analysisResult.integratedLUFS,   "LUFS" }
+            { u8"\u5e73\u5747\u54cd\u5ea6", analysisResult.integratedLUFS,   "LUFS" },
+            { u8"\u4e2d\u58f0\u9053",       analysisResult.centerLUFS,       "LUFS" }
         };
 
-        // Grid: [0,0] [1,0] / [0,1] [1,1]
-        int gridPos[4][2] = { {0,0}, {1,0}, {0,1}, {1,1} };
+        // Grid positions: row-major, 2 columns
+        // Stereo:      [peak, momentary] [short-term, integrated]
+        // Multichannel: [peak, momentary] [short-term, integrated] [center, —]
+        int gridPos[][2] = { {0,0}, {1,0}, {0,1}, {1,1}, {0,2} };
+        int numMetrics = showCenter ? 5 : 4;
 
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < numMetrics; ++i)
         {
-            float cellX = textArea.getX() + gridPos[i][0] * halfW;
-            float cellY = textArea.getY() + gridPos[i][1] * halfH;
-            auto cell = juce::Rectangle<float>(cellX, cellY, halfW, halfH).reduced(3.0f);
+            float cx = textArea.getX() + gridPos[i][0] * cellW;
+            float cy = textArea.getY() + gridPos[i][1] * cellH;
+            auto cell = juce::Rectangle<float>(cx, cy, cellW, cellH).reduced(3.0f);
 
-            auto labelRect = cell.removeFromLeft(cell.getWidth() * 0.42f);
+            // For the center channel row (single item spanning wider label)
+            float labelRatio = (i == 4) ? 0.35f : 0.42f;
+            auto labelRect = cell.removeFromLeft(cell.getWidth() * labelRatio);
             auto valueRect = cell;
 
             // Label (muted grey)
             g.setFont(juce::Font(fontSize * 0.8f, juce::Font::bold));
             g.setColour(GoodMeterLookAndFeel::textMuted.withMultipliedAlpha(fade));
-            g.drawText(juce::String(juce::CharPointer_UTF8(metrics[i].label)),
+            g.drawText(juce::String(juce::CharPointer_UTF8(baseMetrics[i].label)),
                        labelRect.toNearestInt(), juce::Justification::centredLeft, false);
 
-            // Value (electric blue)
+            // Value (electric blue, center channel uses magicPink accent)
             g.setFont(juce::Font(fontSize, juce::Font::bold));
-            g.setColour(electricBlue.withMultipliedAlpha(fade));
-            juce::String valStr = (metrics[i].value <= -99.0f)
+            g.setColour((i == 4 ? magicPink : electricBlue).withMultipliedAlpha(fade));
+            juce::String valStr = (baseMetrics[i].value <= -99.0f)
                                    ? juce::String(juce::CharPointer_UTF8(u8"\u2013\u221e"))
-                                   : juce::String(metrics[i].value, 1);
-            g.drawText(valStr + " " + metrics[i].unit,
+                                   : juce::String(baseMetrics[i].value, 1);
+            g.drawText(valStr + " " + baseMetrics[i].unit,
                        valueRect.toNearestInt(), juce::Justification::centredLeft, false);
         }
     }

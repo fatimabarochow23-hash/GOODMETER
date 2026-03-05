@@ -142,7 +142,7 @@ private:
     juce::Rectangle<int> getPlotBounds() const
     {
         return getLocalBounds().withTrimmedLeft(5).withTrimmedRight(5)
-                               .withTrimmedTop(15).withTrimmedBottom(0);
+                               .withTrimmedTop(5).withTrimmedBottom(0);
     }
 
     //==========================================================================
@@ -298,12 +298,18 @@ private:
             const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
             tg.setColour(juce::Colours::black.withAlpha(0.85f));
-            tg.setFont(juce::Font(10.0f, juce::Font::bold));
+            tg.setFont(juce::Font(11.0f, juce::Font::bold));
+
+            // Reserve top/bottom margins so 20k and 50 labels don't clip
+            const float labelH = 12.0f;
+            const float topMargin = labelH * 0.5f;   // half-label above top tick
+            const float botMargin = 2.0f;             // minimal bottom safety
+            const float usableH = plotH - topMargin - botMargin;
 
             for (float freq : tickFreqs)
             {
                 float normY = (std::log10(freq) - logMin) / logRange;
-                float y = plotH - normY * plotH;
+                float y = topMargin + usableH * (1.0f - normY);
 
                 tg.drawLine(rightX - 4.0f, y, rightX, y, 1.5f);
 
@@ -311,10 +317,12 @@ private:
                     ? juce::String(static_cast<int>(freq / 1000.0f)) + "k"
                     : juce::String(static_cast<int>(freq));
 
+                // Center label vertically on tick, clamped to image bounds
+                float textY = juce::jlimit(0.0f, plotH - labelH, y - labelH * 0.5f);
                 tg.drawText(text,
-                           static_cast<int>(rightX - 40.0f),
-                           static_cast<int>(y - 6.0f),
-                           34, 12,
+                           static_cast<int>(rightX - 42.0f),
+                           static_cast<int>(textY),
+                           36, static_cast<int>(labelH),
                            juce::Justification::right, false);
             }
         }

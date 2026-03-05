@@ -84,6 +84,11 @@ private:
         float targetMid = juce::jlimit(0.0f, 1.0f, juce::jmap(currentMid, minDb, maxDb, 0.0f, 1.0f));
         float targetHigh = juce::jlimit(0.0f, 1.0f, juce::jmap(currentHigh, minDb, maxDb, 0.0f, 1.0f));
 
+        // Perceptual pseudo-log: sqrt expands high-level detail
+        targetLow = std::pow(targetLow, 0.5f);
+        targetMid = std::pow(targetMid, 0.5f);
+        targetHigh = std::pow(targetHigh, 0.5f);
+
         // Damped smoothing (silky 0.25 lerp)
         const float smoothing = 0.25f;
         displayLow += (targetLow - displayLow) * smoothing;

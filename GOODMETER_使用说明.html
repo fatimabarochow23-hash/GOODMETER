@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GOODMETER v1.0.0 使用说明</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: #f8f9fa;
+            color: #2d2d2d;
+            line-height: 1.8;
+            font-size: 15px;
+        }
+
+        .container {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 40px 32px 80px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 48px;
+            padding: 48px 24px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 40%, rgba(0,170,255,0.08) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 60%, rgba(230,51,95,0.06) 0%, transparent 50%);
+            pointer-events: none;
+        }
+        .header h1 {
+            font-size: 42px;
+            font-weight: 800;
+            letter-spacing: 4px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .header .version {
+            font-size: 14px;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 2px;
+            margin-bottom: 16px;
+        }
+        .header .tagline {
+            font-size: 16px;
+            color: rgba(255,255,255,0.75);
+        }
+
+        /* TOC */
+        .toc {
+            background: #fff;
+            border-radius: 12px;
+            padding: 28px 32px;
+            margin-bottom: 40px;
+            border: 1px solid #e8e8e8;
+        }
+        .toc h2 {
+            font-size: 18px;
+            color: #555;
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+        .toc ol {
+            padding-left: 20px;
+        }
+        .toc li {
+            margin: 6px 0;
+        }
+        .toc a {
+            color: #0077cc;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        /* Section */
+        .section {
+            background: #fff;
+            border-radius: 12px;
+            padding: 32px;
+            margin-bottom: 28px;
+            border: 1px solid #e8e8e8;
+        }
+        .section h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 3px solid #0af;
+            display: inline-block;
+        }
+        .section h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin: 20px 0 10px;
+        }
+        .section p {
+            margin: 10px 0;
+        }
+
+        /* Meter card style */
+        .meter-title {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .meter-badge {
+            display: inline-block;
+            padding: 3px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #fff;
+        }
+        .badge-pink { background: #e6335f; }
+        .badge-yellow { background: #f5a623; }
+        .badge-purple { background: #9b59b6; }
+        .badge-cyan { background: #00c2cc; }
+        .badge-green { background: #00d084; }
+        .badge-teal { background: #20c997; }
+        .badge-holo { background: #00e5ff; color: #1a1a2e; }
+
+        /* Info boxes */
+        .info-box {
+            background: #f0f7ff;
+            border-left: 4px solid #0af;
+            border-radius: 0 8px 8px 0;
+            padding: 14px 18px;
+            margin: 14px 0;
+            font-size: 14px;
+        }
+        .info-box.warn {
+            background: #fff8f0;
+            border-left-color: #f5a623;
+        }
+        .info-box.tip {
+            background: #f0fff4;
+            border-left-color: #00d084;
+        }
+
+        /* Shortcut table */
+        .shortcut-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 14px;
+        }
+        .shortcut-table th {
+            background: #f5f5f5;
+            text-align: left;
+            padding: 10px 14px;
+            font-weight: 600;
+            border-bottom: 2px solid #ddd;
+        }
+        .shortcut-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #eee;
+        }
+        .shortcut-table tr:hover { background: #fafafa; }
+
+        .kbd {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #f3f3f3;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Menlo', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 32px 0;
+            color: #999;
+            font-size: 13px;
+        }
+        .footer a { color: #666; text-decoration: none; }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .container { padding: 20px 16px 60px; }
+            .header h1 { font-size: 28px; }
+            .section { padding: 20px; }
+        }
+
+        /* Standard list */
+        .std-list {
+            margin: 10px 0 10px 0;
+            padding-left: 24px;
+        }
+        .std-list li {
+            margin: 4px 0;
+        }
+
+        /* Feature grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin: 16px 0;
+        }
+        .feature-item {
+            background: #fafafa;
+            border-radius: 8px;
+            padding: 12px 16px;
+            border: 1px solid #eee;
+        }
+        .feature-item strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 4px;
+            color: #333;
+        }
+        .feature-item span {
+            font-size: 13px;
+            color: #666;
+        }
+
+        @media (max-width: 540px) {
+            .feature-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+<!-- ================================================================ -->
+<!-- HEADER -->
+<!-- ================================================================ -->
+<div class="header">
+    <h1>GOODMETER</h1>
+    <div class="version">v1.0.0</div>
+    <div class="tagline">Professional Audio Metering Suite</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- TOC -->
+<!-- ================================================================ -->
+<div class="toc">
+    <h2>目录</h2>
+    <ol>
+        <li><a href="#overview">概览</a></li>
+        <li><a href="#install">安装与卸载</a></li>
+        <li><a href="#ui">界面总览与模式切换</a></li>
+        <li><a href="#levels">LEVELS — 峰值与响度表</a></li>
+        <li><a href="#vu">VU METER — 经典 VU 表</a></li>
+        <li><a href="#band3">3-BAND — 三频段液位表</a></li>
+        <li><a href="#spectrum">SPECTRUM — 频谱分析仪</a></li>
+        <li><a href="#phase">PHASE — 相位相关表</a></li>
+        <li><a href="#stereo">STEREO — 立体声场分析</a></li>
+        <li><a href="#spectrogram">SPECTROGRAM — 瀑布图</a></li>
+        <li><a href="#psr">PSR — 峰值瞬态比表</a></li>
+        <li><a href="#nono">NONO — 智能伴侣机器人</a></li>
+        <li><a href="#edit">搬家模式 — 面板排列自定义</a></li>
+        <li><a href="#formats">支持格式与系统要求</a></li>
+    </ol>
+</div>
+
+<!-- ================================================================ -->
+<!-- 1. OVERVIEW -->
+<!-- ================================================================ -->
+<div class="section" id="overview">
+    <h2>1. 概览</h2>
+    <p>
+        <strong>GOODMETER</strong> 是一款专业音频计量插件，提供九块独立的测量面板，覆盖响度合规、频谱分析、
+        立体声场监测、瞬态动态等核心维度。所有计量面板均支持折叠/展开、拖拽排序与紧凑模式，
+        适配从母带缩混到直播推流的全场景工作流。
+    </p>
+    <p>插件提供三种格式：</p>
+    <ul class="std-list">
+        <li><strong>VST3</strong> — 适用于 REAPER、Cubase、Studio One、Ableton Live 等</li>
+        <li><strong>Audio Unit (AU)</strong> — 适用于 Logic Pro、GarageBand、Final Cut Pro 等</li>
+        <li><strong>Standalone App</strong> — 独立运行，无需 DAW</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<!-- 2. INSTALL -->
+<!-- ================================================================ -->
+<div class="section" id="install">
+    <h2>2. 安装与卸载</h2>
+    <h3>安装</h3>
+    <p>双击 <code>GOODMETER_Installer_v1.0.0.pkg</code> 安装包，按照引导完成安装。安装包已通过 Apple 公证 (Notarization)，可直接打开，无需绕过 Gatekeeper。</p>
+    <p>安装路径：</p>
+    <ul class="std-list">
+        <li><code>/Library/Audio/Plug-Ins/VST3/GOODMETER.vst3</code></li>
+        <li><code>/Library/Audio/Plug-Ins/Components/GOODMETER.component</code></li>
+        <li><code>/Applications/GOODMETER.app</code></li>
+    </ul>
+    <p>安装完成后，重启 DAW，在插件列表中即可找到 GOODMETER。</p>
+
+    <h3>卸载</h3>
+    <p>将以上三个路径中的对应文件移至废纸篓即可。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 3. UI OVERVIEW -->
+<!-- ================================================================ -->
+<div class="section" id="ui">
+    <h2>3. 界面总览与模式切换</h2>
+    <p>
+        GOODMETER 采用<strong>可折叠卡片</strong>布局，九块测量面板以多列瀑布流排列，自适应窗口宽度。
+    </p>
+
+    <h3>两种显示模式</h3>
+    <table class="shortcut-table">
+        <tr>
+            <th>模式</th>
+            <th>特点</th>
+            <th>列数断点</th>
+        </tr>
+        <tr>
+            <td><strong>Mini 模式</strong>（默认）</td>
+            <td>紧凑标题栏 (24px)、更小间距，适合嵌入混音工作流</td>
+            <td>≥600px → 3列 / ≥400px → 2列 / 其他 → 1列</td>
+        </tr>
+        <tr>
+            <td><strong>Normal 模式</strong></td>
+            <td>标准标题栏 (48px)、更大间距，适合全屏专注分析</td>
+            <td>≥1000px → 3列 / ≥650px → 2列 / 其他 → 1列</td>
+        </tr>
+    </table>
+
+    <div class="info-box tip">
+        <strong>切换方法：</strong>在 NONO 机器人身体区域<strong>鼠标右键双击</strong>即可在 Mini / Normal 模式之间切换。
+    </div>
+
+    <h3>卡片折叠/展开</h3>
+    <p>点击任意面板的<strong>标题栏</strong>即可折叠或展开该面板。折叠状态下只显示标题，节省纵向空间。</p>
+    <p>窗口支持自由缩放，面板会自动适应可用空间。展开的面板平均分配列内剩余高度。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 4. LEVELS -->
+<!-- ================================================================ -->
+<div class="section" id="levels">
+    <div class="meter-title">
+        <h2>4. LEVELS</h2>
+        <span class="meter-badge badge-pink">响度表</span>
+    </div>
+    <p>
+        核心响度监测面板，提供峰值柱与 LUFS 数据读数，是混音/母带阶段确保响度合规的主力工具。
+    </p>
+
+    <h3>峰值柱 (Peak Bars)</h3>
+    <ul class="std-list">
+        <li>L / R 双通道，量程 -60 dB ~ 0 dB</li>
+        <li>渐变色带：<span style="color:#00d084">绿色</span>（安全）→ <span style="color:#f5a623">黄色</span>（-18 dB 以上）→ <span style="color:#e6335f">粉红</span>（-6 dB 以上）</li>
+        <li>峰值保持标记（黑色竖线），保持 1 秒后缓慢衰减</li>
+        <li>目标响度参考线（<span style="color:#ff6600">荧光橙色虚线</span>），逼近过载时脉冲闪烁</li>
+    </ul>
+
+    <h3>响度标准选择</h3>
+    <p>点击 LEVELS 卡片标题栏右侧的下拉菜单，选择目标响度标准：</p>
+    <div class="feature-grid">
+        <div class="feature-item"><strong>Streaming</strong><span>-14.0 LUFS（通用流媒体）</span></div>
+        <div class="feature-item"><strong>EBU R128</strong><span>-23.0 LUFS（欧洲广播标准）</span></div>
+        <div class="feature-item"><strong>ATSC A/85</strong><span>-24.0 LUFS（美国广播标准）</span></div>
+        <div class="feature-item"><strong>Netflix</strong><span>-27.0 LUFS</span></div>
+        <div class="feature-item"><strong>YouTube</strong><span>-14.0 LUFS</span></div>
+        <div class="feature-item"><strong>抖音 (Douyin)</strong><span>-14.0 LUFS</span></div>
+        <div class="feature-item"><strong>哔哩哔哩 (Bilibili)</strong><span>-16.0 LUFS</span></div>
+    </div>
+
+    <h3>LUFS 数据区</h3>
+    <table class="shortcut-table">
+        <tr><th>指标</th><th>含义</th></tr>
+        <tr><td>Momentary</td><td>瞬时响度 (400ms 窗口)</td></tr>
+        <tr><td>Short-Term</td><td>短期响度 (3s 窗口)</td></tr>
+        <tr><td>Integrated</td><td>积分响度（全曲/全段平均，含 EBU R128 双门限）</td></tr>
+        <tr><td>LU Range</td><td>响度范围 (LRA)，反映动态变化幅度</td></tr>
+        <tr><td>True Peak L / R</td><td>真峰值（dBTP），超过 -1.0 dBTP 时高亮警告</td></tr>
+    </table>
+
+    <div class="info-box">
+        超过目标响度的指标会以<span style="color:#e6335f">粉红色</span>高亮显示，方便快速定位超标项。
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- 5. VU METER -->
+<!-- ================================================================ -->
+<div class="section" id="vu">
+    <div class="meter-title">
+        <h2>5. VU METER</h2>
+        <span class="meter-badge badge-yellow">VU 表</span>
+    </div>
+    <p>
+        经典模拟 VU 表，以弧形表盘 + 指针的方式反映音频的 RMS 电平，具有类似硬件的惯性阻尼特性。
+    </p>
+
+    <h3>表盘说明</h3>
+    <ul class="std-list">
+        <li>量程：-30 dB ~ +3 dB</li>
+        <li><span style="color:#00d084">绿色区域</span>：-30 dB ~ 0 VU（安全范围）</li>
+        <li><span style="color:#e6335f">红色区域</span>：0 VU ~ +3 VU（过载警告）</li>
+        <li>刻度层级：主刻度（-30, -20, -10, 0）、中刻度（-5, -3, -1, +1, +2, +3）、细分刻度（每 1 dB）</li>
+    </ul>
+    <p>指针运动模拟真实 VU 表的惯性响应（约 300ms 积分时间），适合观察音乐的整体动态走势而非瞬态峰值。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 6. BAND3 -->
+<!-- ================================================================ -->
+<div class="section" id="band3">
+    <div class="meter-title">
+        <h2>6. 3-BAND</h2>
+        <span class="meter-badge badge-purple">三频段</span>
+    </div>
+    <p>
+        三频段能量分布可视化，以三种不同形状的"炼金术玻璃容器"直观显示低/中/高频的实时电平。
+    </p>
+
+    <h3>频段划分与容器形态</h3>
+    <table class="shortcut-table">
+        <tr><th>频段</th><th>频率范围</th><th>容器形状</th><th>颜色</th></tr>
+        <tr><td>LOW</td><td>20 Hz ~ 250 Hz</td><td>球形烧瓶 (Beaker)</td><td style="color:#e6335f">粉红</td></tr>
+        <tr><td>MID</td><td>250 Hz ~ 2 kHz</td><td>量筒 (Graduated Cylinder)</td><td style="color:#f5a623">黄色</td></tr>
+        <tr><td>HIGH</td><td>2 kHz ~ 20 kHz</td><td>锥形瓶 (Erlenmeyer Flask)</td><td style="color:#00d084">绿色</td></tr>
+    </table>
+    <p>液面高度与对应频段能量成正比。液面表面有弯月面高光，容器外围有淡淡的霓虹光晕。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 7. SPECTRUM -->
+<!-- ================================================================ -->
+<div class="section" id="spectrum">
+    <div class="meter-title">
+        <h2>7. SPECTRUM</h2>
+        <span class="meter-badge badge-cyan">频谱</span>
+    </div>
+    <p>
+        FFT 频谱分析仪，实时显示 20 Hz ~ 20 kHz 的频率分布，适合定位频率冲突与谐波问题。
+    </p>
+
+    <h3>技术参数</h3>
+    <ul class="std-list">
+        <li>FFT 大小：4096 点（75% 重叠，~43 Hz 帧率）</li>
+        <li>频率轴：对数刻度，20 Hz ~ 20 kHz</li>
+        <li>幅度轴：-100 dB ~ +6 dB</li>
+        <li>渐变填充：顶部粉红，底部渐隐</li>
+        <li>频率网格标注：20, 50, 100, 200, 500, 1k, 2k, 5k, 10k, 20k Hz</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<!-- 8. PHASE -->
+<!-- ================================================================ -->
+<div class="section" id="phase">
+    <div class="meter-title">
+        <h2>8. PHASE</h2>
+        <span class="meter-badge badge-green">相位</span>
+    </div>
+    <p>
+        相位相关表，以"冷凝器"科学仪器造型展示 L/R 通道的相位相关性 (-1.0 ~ +1.0)。
+    </p>
+
+    <h3>读数解释</h3>
+    <table class="shortcut-table">
+        <tr><th>数值区间</th><th>含义</th><th>颜色</th></tr>
+        <tr><td>+1.0</td><td>完全单声道（L = R）</td><td style="color:#00aaff">青色</td></tr>
+        <tr><td>0.0</td><td>完全不相关</td><td>中性</td></tr>
+        <tr><td>-1.0</td><td>完全反相（L = -R），可能导致单声道回放时信号消失</td><td style="color:#e6335f">粉红</td></tr>
+    </table>
+    <p>液滴在玻璃螺旋管中的位置直观反映当前相位状态。相关性为正时液滴显示为青色，为负时变为粉红色。</p>
+    <div class="info-box warn">
+        <strong>注意：</strong>如果相位值长期偏向 -1.0（粉红区域），请检查信号链中是否存在相位反转问题，
+        尤其在多麦克风录音或并联处理的场景中。
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- 9. STEREO -->
+<!-- ================================================================ -->
+<div class="section" id="stereo">
+    <div class="meter-title">
+        <h2>9. STEREO</h2>
+        <span class="meter-badge badge-pink">立体声场</span>
+    </div>
+    <p>
+        立体声场分析面板，由左侧 LRMS 试管与右侧 Goniometer（李萨如图）组成。
+    </p>
+
+    <h3>LRMS 试管（左侧）</h3>
+    <table class="shortcut-table">
+        <tr><th>试管</th><th>含义</th><th>颜色</th></tr>
+        <tr><td>L</td><td>左声道电平</td><td style="color:#e6335f">粉红</td></tr>
+        <tr><td>R</td><td>右声道电平</td><td style="color:#e6335f">粉红</td></tr>
+        <tr><td>M</td><td>中声道 (Mid = L + R)</td><td style="color:#f5a623">黄色</td></tr>
+        <tr><td>S</td><td>侧声道 (Side = R - L)</td><td style="color:#00d084">绿色</td></tr>
+    </table>
+    <p>左侧有 dB 刻度尺（-6 ~ -60 dB），三条刻度线标注在 25%、50%、75% 液位处。</p>
+
+    <h3>Goniometer / 李萨如图（右侧）</h3>
+    <p>菱形背景中显示实时李萨如轨迹，用于直观观察立体声宽度与声像分布。</p>
+    <ul class="std-list">
+        <li><strong>M 轴</strong>（纵向）：能量集中在中间说明单声道成分多</li>
+        <li><strong>S 轴</strong>（横向）：能量偏向两侧说明立体声宽度大</li>
+        <li>轨迹偏向左上 = 声像偏左，偏向右上 = 声像偏右</li>
+        <li>内外两个菱形参考框帮助判断能量范围</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<!-- 10. SPECTROGRAM -->
+<!-- ================================================================ -->
+<div class="section" id="spectrogram">
+    <div class="meter-title">
+        <h2>10. SPECTROGRAM</h2>
+        <span class="meter-badge badge-yellow">瀑布图</span>
+    </div>
+    <p>
+        实时瀑布图（Waterfall），以颜色深浅显示频率-时间-能量的三维分布，适合追踪随时间变化的频率事件。
+    </p>
+
+    <h3>参数</h3>
+    <ul class="std-list">
+        <li>频率范围：30 Hz ~ 20 kHz（对数刻度）</li>
+        <li>动态范围：-80 dB ~ -10 dB</li>
+        <li>颜色映射：白色（安静）→ 粉红色（中等）→ 深红色（响亮）</li>
+        <li>滚动方向：从左向右，实时推进</li>
+        <li>频率标注（右侧）：50, 100, 200, 500, 1k, 2k, 5k, 10k, 20k Hz</li>
+    </ul>
+    <p>
+        瀑布图使用独立的后台渲染线程与环形缓冲区（2048 帧），确保大窗口下也不会卡顿。
+    </p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 11. PSR -->
+<!-- ================================================================ -->
+<div class="section" id="psr">
+    <div class="meter-title">
+        <h2>11. PSR</h2>
+        <span class="meter-badge badge-teal">瞬态比</span>
+    </div>
+    <p>
+        Peak-to-Short-Term Ratio（峰值瞬态比），反映音频的动态保留程度，是评估压缩处理是否过度的关键指标。
+    </p>
+
+    <h3>计算公式</h3>
+    <p style="font-size: 18px; font-weight: 600; text-align: center; margin: 16px 0; color: #20c997;">
+        PSR = Peak (dBFS) - Short-Term LUFS
+    </p>
+
+    <h3>读数解释</h3>
+    <table class="shortcut-table">
+        <tr><th>PSR 值</th><th>含义</th></tr>
+        <tr><td>&gt; 12 dB</td><td>动态充裕，瞬态保留优秀</td></tr>
+        <tr><td>8 ~ 12 dB</td><td>常规混音范围</td></tr>
+        <tr><td>&lt; 8 dB</td><td><span style="color:#e6335f">过度压缩警告</span>（红色虚线标注）</td></tr>
+    </table>
+
+    <p>面板中央显示镜像波形图，实时绘制约 6.7 秒的 PSR 历史。右上角数字读数：正常为青色，低于 8 dB 时变为粉红色。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- 12. NONO -->
+<!-- ================================================================ -->
+<div class="section" id="nono">
+    <div class="meter-title">
+        <h2>12. NONO</h2>
+        <span class="meter-badge badge-holo">智能伴侣</span>
+    </div>
+    <p>
+        NONO 是 GOODMETER 的"赛博炼金术"机器人伴侣，集离线音频分析与交互动画于一身。
+        它能独立分析音频文件的响度指标，无需加载到 DAW 中播放。
+    </p>
+
+    <h3>外观组成</h3>
+    <ul class="std-list">
+        <li><strong>球形主体</strong>：金属质感壳体，带镜面高光与边缘反射</li>
+        <li><strong>面罩</strong>（正面）：深色屏幕，蓝色荧光边框</li>
+        <li><strong>眼睛</strong>：电蓝色光条，跟随音频电平张合</li>
+        <li><strong>全息耳</strong>：固态底座 + 青色能量刃片</li>
+        <li><strong>漂浮试管</strong>：粉红色液体，跟随音频节奏晃动</li>
+        <li><strong>反重力辉光</strong>：底部青色光晕</li>
+    </ul>
+
+    <h3>鼠标操作一览</h3>
+    <table class="shortcut-table">
+        <tr><th>操作</th><th>位置</th><th>效果</th></tr>
+        <tr>
+            <td><span class="kbd">左键双击</span></td>
+            <td>NONO 身体（正面）</td>
+            <td>翻转到背面（显示"+"拖放区）</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">左键双击</span></td>
+            <td>NONO 身体（背面）</td>
+            <td>翻转回正面</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">左键单击</span></td>
+            <td>NONO 身体（背面）</td>
+            <td>打开文件选择器，选择音频文件进行分析</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">左键双击</span></td>
+            <td>NONO 身体（结果显示状态）</td>
+            <td>清除分析结果，试管倾倒倒液动画，回到正面</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">左键双击</span></td>
+            <td>漂浮试管</td>
+            <td>进入<strong>搬家模式</strong>（面板拖拽排序）</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">左键双击</span></td>
+            <td>NONO 身体（搬家模式中）</td>
+            <td>退出搬家模式</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">右键双击</span></td>
+            <td>NONO 身体（任意状态）</td>
+            <td>切换 Mini / Normal 显示模式</td>
+        </tr>
+        <tr>
+            <td><span class="kbd">拖放音频文件</span></td>
+            <td>NONO 身体（任意状态）</td>
+            <td>自动翻转到背面并开始分析</td>
+        </tr>
+    </table>
+
+    <h3>音频文件分析</h3>
+    <p>NONO 可以分析离线音频文件，独立计算完整的 EBU R128 响度指标。有两种触发方式：</p>
+    <ol class="std-list">
+        <li><strong>拖放</strong>：将音频文件直接拖到 NONO 身上</li>
+        <li><strong>文件选择</strong>：双击翻到背面，单击"+"区域打开文件选择器</li>
+    </ol>
+
+    <p>支持的音频格式：<code>.wav</code> <code>.mp3</code> <code>.aiff</code> <code>.aif</code> <code>.flac</code> <code>.ogg</code></p>
+
+    <h3>分析结果</h3>
+    <p>分析完成后 NONO 自动翻回正面，下方气泡显示结果：</p>
+    <table class="shortcut-table">
+        <tr><th>指标</th><th>含义</th></tr>
+        <tr><td>峰值</td><td>文件真峰值 (dBFS)</td></tr>
+        <tr><td>瞬时最大</td><td>最大瞬时响度 (400ms 窗口)</td></tr>
+        <tr><td>短期最大</td><td>最大短期响度 (3s 窗口)</td></tr>
+        <tr><td>平均响度</td><td>积分响度 (EBU R128 双门限)</td></tr>
+        <tr><td>中声道</td><td>中声道 (Center) 积分响度 — 仅多声道 (≥6ch) 文件显示</td></tr>
+    </table>
+
+    <div class="info-box tip">
+        <strong>多声道支持：</strong>NONO 完整支持多声道音频文件（最多 64 通道），遵循 ITU-R BS.1770-4 标准的声道权重：
+        LFE 通道自动排除，环绕/顶部通道 +1.5 dB 加权。多声道文件分析结果右上角会显示通道数标签（如 "58ch"）。
+    </div>
+
+    <div class="info-box">
+        <strong>中声道 (Center) 响度：</strong>当分析 5.1 或更多声道的音频文件时，NONO 会额外计算第 3 通道（Center）的独立积分响度，
+        以<span style="color:#FF2A7F">粉红色</span>显示在结果气泡第三行。这对检查对白/人声的响度非常实用。
+    </div>
+
+    <h3>特殊动画</h3>
+    <ul class="std-list">
+        <li><strong>分析中</strong>：蓝色涟漪扩散动画</li>
+        <li><strong>过载爆炸</strong>（峰值 ≥ 0 dBFS）：试管粉碎 → 玻璃碎片飞溅 → 液体溅射 → 3 秒后自动修复</li>
+        <li><strong>倒液清除</strong>：试管倾斜 120° 倒出液体，液面下降，然后恢复直立</li>
+        <li><strong>晕眩</strong>：快速拖拽/缩放窗口时 NONO 的眼睛会变成旋转蚊香图案</li>
+        <li><strong>眨眼</strong>：搬家模式下悬停即将交换时 NONO 会眨眼确认</li>
+        <li><strong>编辑模式变色</strong>：试管液体从粉红变为霓虹绿，液面冒泡</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<!-- 13. EDIT MODE -->
+<!-- ================================================================ -->
+<div class="section" id="edit">
+    <h2>13. 搬家模式 — 面板排列自定义</h2>
+    <p>
+        搬家模式允许您通过拖拽来自由调整九块面板的显示顺序，打造个人专属布局。
+    </p>
+
+    <h3>操作流程</h3>
+    <table class="shortcut-table">
+        <tr><th>步骤</th><th>操作</th></tr>
+        <tr>
+            <td>1. 进入搬家模式</td>
+            <td><span class="kbd">左键双击</span> NONO 的漂浮试管</td>
+        </tr>
+        <tr>
+            <td>2. 观察状态变化</td>
+            <td>所有面板开始轻微抖动，试管液体变为霓虹绿色并冒泡</td>
+        </tr>
+        <tr>
+            <td>3. 拖拽面板</td>
+            <td>按住任意面板拖动，面板会变为半透明（60% 不透明度）</td>
+        </tr>
+        <tr>
+            <td>4. 悬停交换</td>
+            <td>将面板拖到目标位置上方<strong>悬停 1 秒</strong>，NONO 眨眼确认可以交换</td>
+        </tr>
+        <tr>
+            <td>5. 松开完成交换</td>
+            <td>松开鼠标，两块面板以平滑动画完成位置交换</td>
+        </tr>
+        <tr>
+            <td>6. 退出搬家模式</td>
+            <td><span class="kbd">左键双击</span> NONO 的身体，或<span class="kbd">左键双击</span>任意空白区域</td>
+        </tr>
+    </table>
+
+    <div class="info-box warn">
+        搬家模式下面板的折叠/展开功能暂时禁用，避免操作冲突。退出搬家模式后恢复正常。
+    </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- 14. FORMATS -->
+<!-- ================================================================ -->
+<div class="section" id="formats">
+    <h2>14. 支持格式与系统要求</h2>
+
+    <h3>插件格式</h3>
+    <ul class="std-list">
+        <li><strong>VST3</strong> — 通用格式，支持 REAPER、Cubase、Studio One、Ableton Live、FL Studio (Mac) 等</li>
+        <li><strong>Audio Unit (AU)</strong> — macOS 原生格式，支持 Logic Pro、GarageBand、Final Cut Pro 等</li>
+        <li><strong>Standalone App</strong> — 独立运行，可选择系统音频输入进行实时监测</li>
+    </ul>
+
+    <h3>系统要求</h3>
+    <table class="shortcut-table">
+        <tr><th>项目</th><th>要求</th></tr>
+        <tr><td>操作系统</td><td>macOS 11.0 (Big Sur) 及以上</td></tr>
+        <tr><td>处理器架构</td><td>Apple Silicon (arm64) / Intel (x86_64) 通用二进制</td></tr>
+        <tr><td>最低窗口尺寸</td><td>760 × 600 像素</td></tr>
+        <tr><td>最大窗口尺寸</td><td>2400 × 1600 像素</td></tr>
+    </table>
+
+    <h3>NONO 离线分析支持的音频格式</h3>
+    <p><code>.wav</code> <code>.mp3</code> <code>.aiff</code> <code>.aif</code> <code>.flac</code> <code>.ogg</code></p>
+    <p>最多支持 64 通道，最长分析时长 10 分钟。</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- FOOTER -->
+<!-- ================================================================ -->
+<div class="footer">
+    <p>GOODMETER v1.0.0 &copy; 2025 Solaris. All rights reserved.</p>
+    <p>Support: <a href="mailto:bidagosila@icloud.com">bidagosila@icloud.com</a></p>
+</div>
+
+</div>
+</body>
+</html>

@@ -225,8 +225,10 @@ private:
     // LOW: 20-250Hz, MID: 250-2kHz, HIGH: 2k-20kHz
     juce::dsp::IIR::Filter<float> lowPassL_250Hz;
     juce::dsp::IIR::Filter<float> lowPassR_250Hz;
-    juce::dsp::IIR::Filter<float> bandPassL_250_2k;
-    juce::dsp::IIR::Filter<float> bandPassR_250_2k;
+    juce::dsp::IIR::Filter<float> midHpL_250Hz;   // MID band: HP @ 250Hz
+    juce::dsp::IIR::Filter<float> midHpR_250Hz;
+    juce::dsp::IIR::Filter<float> midLpL_2kHz;   // MID band: LP @ 2kHz
+    juce::dsp::IIR::Filter<float> midLpR_2kHz;
     juce::dsp::IIR::Filter<float> highPassL_2kHz;
     juce::dsp::IIR::Filter<float> highPassR_2kHz;
 

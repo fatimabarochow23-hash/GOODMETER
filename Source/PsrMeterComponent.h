@@ -84,6 +84,7 @@ private:
     float currentPsr = 0.0f;
     float displayPsr = 0.0f;   // Fast lerp for waveform animation
     float textPsr = 0.0f;      // Heavy-damped lerp for stable numeric readout
+    float lastShownPsr = -1.0f; // Last displayed (quantized) value — only update when delta > threshold
 
     // Y axis range
     static constexpr float maxPsrDisplay = 20.0f;
@@ -129,7 +130,12 @@ private:
         displayPsr += (currentPsr - displayPsr) * 0.3f;
 
         // Heavy-damped text value (slow — for stable numeric readout)
-        textPsr += (currentPsr - textPsr) * 0.08f;
+        textPsr += (currentPsr - textPsr) * 0.04f;
+
+        // Quantized display: only update shown value when change > 0.3 dB
+        // This prevents rapid digit flickering while still tracking real changes
+        if (lastShownPsr < 0.0f || std::abs(textPsr - lastShownPsr) > 0.3f)
+            lastShownPsr = textPsr;
 
         // Push to history ring buffer
         psrHistory[historyWriteIndex] = currentPsr;
@@ -334,15 +340,15 @@ private:
         tg.drawText("PEAK-TO-SHORT", 4, 0, static_cast<int>(w * 0.5f), h,
                     juce::Justification::centredLeft, false);
 
-        bool isDanger = textPsr < dangerThreshold && textPsr > 0.1f;
+        bool isDanger = lastShownPsr < dangerThreshold && lastShownPsr > 0.1f;
         tg.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : techCyan);
         tg.setFont(juce::Font(fontSize, juce::Font::bold));
 
         juce::String valueStr;
-        if (textPsr < 0.1f)
+        if (lastShownPsr < 0.1f)
             valueStr = "---";
         else
-            valueStr = juce::String(textPsr, 1) + " dB";
+            valueStr = juce::String(lastShownPsr, 1) + " dB";
 
         tg.drawText(valueStr, 0, 0, w - 4, h, juce::Justification::centredRight, false);
     }

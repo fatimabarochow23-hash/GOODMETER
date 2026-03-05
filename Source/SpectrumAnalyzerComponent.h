@@ -224,26 +224,78 @@ private:
             juce::Graphics tg(freqGridTextCache);
 
             const float width = static_cast<float>(bw);
+            const float height = static_cast<float>(bh);
+
+            // ---- Horizontal dB grid lines (Pro-Q style: every 10 dB) ----
+            const float dbLines[] = { -90.0f, -80.0f, -70.0f, -60.0f, -50.0f,
+                                      -40.0f, -30.0f, -20.0f, -10.0f, 0.0f };
+
+            tg.setFont(juce::Font(9.0f));
+            for (float db : dbLines)
+            {
+                float y = dbToY(db, height, 0.0f);
+                if (y < 0.0f || y > height) continue;
+
+                // Subtle horizontal line
+                tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.12f));
+                tg.drawHorizontalLine(static_cast<int>(y), 0.0f, width);
+
+                // dB label on the left
+                tg.setColour(GoodMeterLookAndFeel::textMuted);
+                tg.drawText(juce::String(static_cast<int>(db)),
+                           2, static_cast<int>(y - 6), 28, 12,
+                           juce::Justification::centredLeft, false);
+            }
+
+            // ---- Vertical frequency grid lines ----
             const float frequencies[] = { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
                                          1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.2f));
+            // Key frequency accent colors: 100=green, 1k=yellow, 10k=orange
+            auto getFreqColour = [](float freq) -> juce::Colour
+            {
+                if (std::abs(freq - 100.0f)   < 1.0f) return juce::Colour(0xFF00D084);  // green
+                if (std::abs(freq - 1000.0f)  < 1.0f) return juce::Colour(0xFFF5A623);  // yellow
+                if (std::abs(freq - 10000.0f) < 1.0f) return juce::Colour(0xFFFF6600);  // orange
+                return juce::Colour(0x00000000);  // no accent
+            };
+
             tg.setFont(juce::Font(10.0f));
 
             for (float freq : frequencies)
             {
                 const float x = frequencyToX(freq, width);
-                tg.drawVerticalLine(static_cast<int>(x), 0.0f, static_cast<float>(bh));
+                auto accent = getFreqColour(freq);
+                bool hasAccent = accent.getAlpha() > 0;
 
+                if (hasAccent)
+                {
+                    // Glow layers: wide soft → narrow bright
+                    tg.setColour(accent.withAlpha(0.06f));
+                    tg.fillRect(x - 4.0f, 0.0f, 8.0f, height);
+                    tg.setColour(accent.withAlpha(0.15f));
+                    tg.fillRect(x - 1.5f, 0.0f, 3.0f, height);
+                    tg.setColour(accent.withAlpha(0.5f));
+                    tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
+                }
+                else
+                {
+                    tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.2f));
+                    tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
+                }
+
+                // Frequency label (no decimals: "1k" not "1.0k")
                 juce::String label;
                 if (freq >= 1000.0f)
-                    label = juce::String(freq / 1000.0f, 1) + "k";
+                    label = juce::String(static_cast<int>(freq / 1000.0f)) + "k";
                 else
                     label = juce::String(static_cast<int>(freq));
 
-                tg.setColour(GoodMeterLookAndFeel::textMuted);
+                // Clamp label rect so rightmost labels don't clip
+                int labelX = juce::jlimit(0, bw - 30, static_cast<int>(x - 15));
+                tg.setColour(hasAccent ? accent.withAlpha(0.9f) : GoodMeterLookAndFeel::textMuted);
                 tg.drawText(label,
-                          static_cast<int>(x - 15), bh - 20,
+                          labelX, bh - 20,
                           30, 16,
                           juce::Justification::centred, false);
             }

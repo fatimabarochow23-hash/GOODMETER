@@ -144,9 +144,12 @@ public:
         // 1. Calculate max RMS in dB (ClassicVUMeter.tsx line 32)
         const float vu_dB = std::max(rmsL_dB, rmsR_dB);
 
-        // 2. Normalize to 0.0-1.0 range (ClassicVUMeter.tsx lines 42-43)
-        // VU range: -30 dB to +3 dB
-        float targetLevel = (vu_dB - minVu) / (maxVu - minVu);
+        // 2. Apply +18 dB offset: 0 VU = -18 dBFS (broadcast standard)
+        const float vuCalibrated = vu_dB + 18.0f;
+
+        // 3. Normalize to 0.0-1.0 range (ClassicVUMeter.tsx lines 42-43)
+        // VU range: -30 VU to +3 VU
+        float targetLevel = (vuCalibrated - minVu) / (maxVu - minVu);
         targetLevel = juce::jlimit(0.0f, 1.0f, targetLevel);
 
         // 3. Apply ballistics (smoothing) (ClassicVUMeter.tsx line 46)
@@ -161,11 +164,18 @@ private:
     static constexpr float minVu = -30.0f;
     static constexpr float maxVu = 3.0f;
 
-    // Ballistics (ClassicVUMeter.tsx line 15)
-    static constexpr float vuSmoothing = 0.08f;
+    // Ballistics: 300ms integration time constant (IIR first-order)
+    // alpha = 1 - exp(-dt/tau), dt=1/60s, tau=0.3s → ~0.054
+    static constexpr float vuSmoothing = 0.054f;
 
     // Current display value (0.0 to 1.0)
     float currentVuDisplay = 0.0f;
+
+    // Needle trail ring buffer (stores recent angles for afterimage)
+    static constexpr int trailSize = 12;
+    float trailAngles[trailSize] = {};
+    int trailHead = 0;
+    bool trailFilled = false;  // true once buffer has been filled at least once
 
     // Offscreen text cache (STATIC — only rebuild on resize)
     juce::Image vuTextCache;
@@ -313,46 +323,138 @@ private:
 
     //==========================================================================
     /**
-     * Draw needle using AffineTransform rotation (CORRECT METHOD)
-     *
-     * Pattern from user's template:
-     * 1. Map currentVuDisplay (0.0-1.0) to angle range using jmap
-     * 2. Create vertical needle path pointing straight up (12 o'clock)
-     * 3. Save graphics state with ScopedSaveState
-     * 4. Apply rotation transform around pivot point (cx, cy)
-     * 5. Stroke the transformed path
+     * Draw needle with green fluorescent sweep trail on the tip quarter
+     * Trail is perpendicular to needle — a soft glowing fan/flag that sweeps with motion
      */
     void drawNeedle(juce::Graphics& g,
                    float centerX, float centerY, float radius,
                    float minAngle, float maxAngle)
     {
-        // 🔒 CRITICAL: 数值安全锁 - 防止 NaN/Infinity 炸毁 AffineTransform
         float safeVuDisplay = currentVuDisplay;
-
-        // 检查并修复 NaN/Infinity
         if (std::isnan(safeVuDisplay) || std::isinf(safeVuDisplay))
-            safeVuDisplay = 0.0f;  // 重置到最小位置
-
-        // 严格限幅到 0.0-1.0 范围
+            safeVuDisplay = 0.0f;
         safeVuDisplay = juce::jlimit(0.0f, 1.0f, safeVuDisplay);
 
-        // Map current VU display value to angle using jmap
         const float mappedAngle = juce::jmap(safeVuDisplay, 0.0f, 1.0f, minAngle, maxAngle);
-
-        // Needle length extends slightly past arc
         const float needleLength = radius * 0.9f;
 
-        // Create vertical needle path pointing straight up (12 o'clock direction)
+        // Push current angle into trail buffer
+        trailAngles[trailHead] = mappedAngle;
+        trailHead = (trailHead + 1) % trailSize;
+        if (trailHead == 0) trailFilled = true;
+
+        // ===== Fluorescent sweep: sliced fan with head→tail gradient =====
+        const int trailCount = trailFilled ? trailSize : trailHead;
+        if (trailCount > 2)
+        {
+            // Find angle range in trail buffer
+            float trailMin = mappedAngle, trailMax = mappedAngle;
+            for (int i = 0; i < trailCount; ++i)
+            {
+                int idx = trailFilled ? (trailHead + i) % trailSize : i;
+                trailMin = juce::jmin(trailMin, trailAngles[idx]);
+                trailMax = juce::jmax(trailMax, trailAngles[idx]);
+            }
+
+            float spread = trailMax - trailMin;
+            if (spread > 0.003f)
+            {
+                const float innerR = needleLength * 0.68f;
+                const float outerR = needleLength * 1.02f;
+
+                // Zone colors: green → yellow → purple by dB region
+                const juce::Colour colGreen (0xFF00D084);  // -30 ~ -16
+                const juce::Colour colYellow(0xFFF5A623);  // -16 ~ -8
+                const juce::Colour colPurple(0xFFB44DFF);  //  -8 ~ +3
+
+                // Precompute angle thresholds for zone boundaries
+                const float angleAt16 = juce::jmap(-16.0f, minVu, maxVu, minAngle, maxAngle);
+                const float angleAt8  = juce::jmap(-8.0f,  minVu, maxVu, minAngle, maxAngle);
+
+                // Map angle → trail colour with smooth crossfade at boundaries
+                auto getTrailColour = [&](float angle) -> juce::Colour
+                {
+                    float db = juce::jmap(angle, minAngle, maxAngle, minVu, maxVu);
+                    if (db < -16.0f)
+                        return colGreen;
+                    else if (db < -8.0f)
+                        return colYellow;
+                    else
+                        return colPurple;
+                };
+
+                // Determine which side is the "tail" (away from needle)
+                // and which is the "head" (near current needle angle)
+                float distToMin = std::abs(mappedAngle - trailMin);
+                float distToMax = std::abs(mappedAngle - trailMax);
+                float headAngle, tailAngle;
+                if (distToMin < distToMax)
+                {
+                    headAngle = trailMin;  // needle is near min side
+                    tailAngle = trailMax;
+                }
+                else
+                {
+                    headAngle = trailMax;  // needle is near max side
+                    tailAngle = trailMin;
+                }
+
+                // Gap: push headAngle away from needle so trail doesn't overlap
+                // Direction: head → tail, so we move head 15% of spread toward tail
+                const float gapRatio = 0.15f;
+                headAngle += (tailAngle - headAngle) * gapRatio;
+                float gappedSpread = std::abs(tailAngle - headAngle);
+
+                if (gappedSpread > 0.002f)
+                {
+                // Slice the fan into N angular strips with gradient alpha
+                const int numSlices = 14;
+                for (int s = 0; s < numSlices; ++s)
+                {
+                    float t0 = static_cast<float>(s) / static_cast<float>(numSlices);
+                    float t1 = static_cast<float>(s + 1) / static_cast<float>(numSlices);
+                    // t=0 is head (bright), t=1 is tail (dim)
+                    float a0 = headAngle + (tailAngle - headAngle) * t0;
+                    float a1 = headAngle + (tailAngle - headAngle) * t1;
+                    float tMid = (t0 + t1) * 0.5f;
+
+                    // Intensity: cubic falloff from head to tail
+                    float intensity = (1.0f - tMid) * (1.0f - tMid);
+
+                    // Color based on angular position (dB zone)
+                    float aMid = (a0 + a1) * 0.5f;
+                    juce::Colour sliceColour = getTrailColour(aMid);
+
+                    // Build slice path
+                    juce::Path slice;
+                    slice.addCentredArc(centerX, centerY, outerR, outerR,
+                                        0.0f, a0, a1, true);
+                    slice.lineTo(centerX + std::sin(a1) * innerR,
+                                 centerY - std::cos(a1) * innerR);
+                    slice.addCentredArc(centerX, centerY, innerR, innerR,
+                                        0.0f, a1, a0, false);
+                    slice.closeSubPath();
+
+                    // Layer 1: wide soft bloom (outer haze)
+                    g.setColour(sliceColour.withAlpha(0.12f * intensity));
+                    g.strokePath(slice, juce::PathStrokeType(6.0f));
+
+                    // Layer 2: core fill
+                    g.setColour(sliceColour.withAlpha(0.55f * intensity));
+                    g.fillPath(slice);
+                }
+                } // gappedSpread guard
+            }
+        }
+
+        // ===== Main needle =====
         juce::Path needle;
         needle.startNewSubPath(centerX, centerY);
         needle.lineTo(centerX, centerY - needleLength);
 
-        // 🎨 Z-Index 正确顺序：先画所有背景，最后画指针
-        // Save graphics state and apply rotation transform
         juce::Graphics::ScopedSaveState state(g);
         g.addTransform(juce::AffineTransform::rotation(mappedAngle, centerX, centerY));
 
-        // 🔴 Draw rotated needle in RED (highly visible)
         g.setColour(juce::Colours::red);
         g.strokePath(needle, juce::PathStrokeType(3.0f));
     }

@@ -114,9 +114,11 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     *lowPassL_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 250.0f, 0.707f);
     *lowPassR_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 250.0f, 0.707f);
 
-    // MID band: Butterworth Band-pass 250Hz - 2kHz
-    *bandPassL_250_2k.coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate, 1000.0f, 2.0f);
-    *bandPassR_250_2k.coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate, 1000.0f, 2.0f);
+    // MID band: HP @ 250Hz cascaded with LP @ 2kHz (flat summing crossover)
+    *midHpL_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 250.0f, 0.707f);
+    *midHpR_250Hz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 250.0f, 0.707f);
+    *midLpL_2kHz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 2000.0f, 0.707f);
+    *midLpR_2kHz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 2000.0f, 0.707f);
 
     // HIGH band: Butterworth High-pass @ 2kHz (4th order)
     *highPassL_2kHz.coefficients = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 2000.0f, 0.707f);
@@ -124,8 +126,10 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
 
     lowPassL_250Hz.prepare(spec);
     lowPassR_250Hz.prepare(spec);
-    bandPassL_250_2k.prepare(spec);
-    bandPassR_250_2k.prepare(spec);
+    midHpL_250Hz.prepare(spec);
+    midHpR_250Hz.prepare(spec);
+    midLpL_2kHz.prepare(spec);
+    midLpR_2kHz.prepare(spec);
     highPassL_2kHz.prepare(spec);
     highPassR_2kHz.prepare(spec);
 
@@ -135,8 +139,10 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
 
     lowPassL_250Hz.reset();
     lowPassR_250Hz.reset();
-    bandPassL_250_2k.reset();
-    bandPassR_250_2k.reset();
+    midHpL_250Hz.reset();
+    midHpR_250Hz.reset();
+    midLpL_2kHz.reset();
+    midLpR_2kHz.reset();
     highPassL_2kHz.reset();
     highPassR_2kHz.reset();
 
@@ -550,8 +556,8 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         // Apply band filters
         const float lowL = lowPassL_250Hz.processSample(sampleL);
         const float lowR = lowPassR_250Hz.processSample(sampleR);
-        const float midL = bandPassL_250_2k.processSample(sampleL);
-        const float midR = bandPassR_250_2k.processSample(sampleR);
+        const float midL = midLpL_2kHz.processSample(midHpL_250Hz.processSample(sampleL));
+        const float midR = midLpR_2kHz.processSample(midHpR_250Hz.processSample(sampleR));
         const float highL = highPassL_2kHz.processSample(sampleL);
         const float highR = highPassR_2kHz.processSample(sampleR);
 

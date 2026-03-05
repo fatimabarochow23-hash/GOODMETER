@@ -146,12 +146,23 @@ public:
 
         // Heavy-damped interpolation (slow — for stable numeric text readout)
         const float textSmoothing = 0.08f;
-        textPeakL += (currentPeakL - textPeakL) * textSmoothing;
-        textPeakR += (currentPeakR - textPeakR) * textSmoothing;
+        const float peakTextSmoothing = 0.03f;  // Extra slow for true peak
+        textPeakL += (currentPeakL - textPeakL) * peakTextSmoothing;
+        textPeakR += (currentPeakR - textPeakR) * peakTextSmoothing;
         textLUFS += (currentLUFS - textLUFS) * textSmoothing;
         textShortTerm += (currentShortTerm - textShortTerm) * textSmoothing;
         textIntegrated += (currentIntegrated - textIntegrated) * textSmoothing;
         textLURange += (currentLURange - textLURange) * 0.06f;
+
+        // Quantized true peak display: only update when change > 0.4 dB
+        if (std::abs(textPeakL - shownPeakL) > 0.4f) shownPeakL = textPeakL;
+        if (std::abs(textPeakR - shownPeakR) > 0.4f) shownPeakR = textPeakR;
+
+        // Smooth highlight transitions for true peak color (avoids flickering)
+        float targetHL = (currentPeakL > -1.0f) ? 1.0f : 0.0f;
+        float targetHR = (currentPeakR > -1.0f) ? 1.0f : 0.0f;
+        peakHighlightL += (targetHL - peakHighlightL) * 0.06f;
+        peakHighlightR += (targetHR - peakHighlightR) * 0.06f;
 
         // Update peak holds (logic from Levels.tsx lines 41-56)
         auto now = juce::Time::getMillisecondCounterHiRes();
@@ -263,6 +274,13 @@ private:
     float textIntegrated = -70.0f;
     float textLURange = 0.0f;
 
+    // Quantized display values for true peak (only update when delta > threshold)
+    float shownPeakL = -90.0f;
+    float shownPeakR = -90.0f;
+    // Smoothed highlight state for true peak color (avoids rapid color flickering)
+    float peakHighlightL = 0.0f;
+    float peakHighlightR = 0.0f;
+
     // Peak hold state (Levels.tsx lines 25-28)
     float peakHoldL = -60.0f;
     float peakHoldR = -60.0f;
@@ -300,7 +318,9 @@ private:
     float dbToX(float db, float width) const
     {
         const float clamped = juce::jlimit(minDb, maxDb, db);
-        return ((clamped - minDb) / (maxDb - minDb)) * width;
+        const float linearNorm = (clamped - minDb) / (maxDb - minDb);
+        // Perceptual pseudo-log: sqrt expands high-level detail
+        return std::pow(linearNorm, 0.5f) * width;
     }
 
     //==========================================================================
@@ -642,9 +662,9 @@ private:
         const float valueFontByW = static_cast<float>(colWidth) * 0.35f;
         const float valueFontSize = juce::jlimit(13.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW));
 
-        const float labelFontByH = static_cast<float>(rowHeight) * 0.2f;
-        const float labelFontByW = static_cast<float>(colWidth) * 0.12f;
-        const float labelFontSize = juce::jlimit(6.0f, 12.0f, juce::jmin(labelFontByH, labelFontByW));
+        const float labelFontByH = static_cast<float>(rowHeight) * 0.22f;
+        const float labelFontByW = static_cast<float>(colWidth) * 0.14f;
+        const float labelFontSize = juce::jlimit(8.0f, 13.0f, juce::jmin(labelFontByH, labelFontByW));
 
         const float labelRatio = (colWidth < 120) ? 0.25f : 0.4f;
         const bool showUnit = colWidth > 180;
@@ -652,7 +672,7 @@ private:
         juce::Font labelFont(labelFontSize, juce::Font::bold);
         juce::Font valueFont(valueFontSize, juce::Font::bold);
 
-        auto drawMetric = [&](int col, int row, const juce::String& label, float value, const juce::String& unit, bool highlight)
+        auto drawMetric = [&](int col, int row, const juce::String& label, float value, const juce::String& unit, float highlightAmount)
         {
             auto cellBounds = juce::Rectangle<int>(
                 gridBounds.getX() + col * colWidth,
@@ -667,9 +687,9 @@ private:
             auto labelArea = cellBounds.removeFromLeft(static_cast<int>(cellBounds.getWidth() * labelRatio));
             auto valueArea = cellBounds;
 
-            g.setColour(GoodMeterLookAndFeel::textMuted);
+            g.setColour(GoodMeterLookAndFeel::textMain.withAlpha(0.55f));
             g.setFont(labelFont);
-            g.drawText(label.toLowerCase(), labelArea,
+            g.drawText(label, labelArea,
                       juce::Justification::centredLeft, false);
 
             juce::String valueStr;
@@ -682,7 +702,8 @@ private:
 
             if (showUnit) valueStr += " " + unit;
 
-            g.setColour(highlight ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::textMain);
+            g.setColour(GoodMeterLookAndFeel::textMain.interpolatedWith(
+                GoodMeterLookAndFeel::accentPink, juce::jlimit(0.0f, 1.0f, highlightAmount)));
             g.setFont(valueFont);
             g.drawText(valueStr, valueArea,
                       juce::Justification::centredLeft, false);
@@ -694,22 +715,22 @@ private:
             // Row 0: momentary | short-term
             // Row 1: integrated | lu range
             // Row 2: true peak l | true peak r
-            drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
-            drawMetric(1, 0, "short-t", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS);
-            drawMetric(0, 1, "integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS);
-            drawMetric(1, 1, "lu range", textLURange, "LU", false);
-            drawMetric(0, 2, "true pk l", textPeakL, "dBTP", currentPeakL > -1.0f);
-            drawMetric(1, 2, "true pk r", textPeakR, "dBTP", currentPeakR > -1.0f);
+            drawMetric(0, 0, "Momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(1, 0, "Short-T", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(0, 1, "Integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(1, 1, "LU Range", textLURange, "LU", 0.0f);
+            drawMetric(0, 2, "True Pk L", shownPeakL, "dBTP", peakHighlightL);
+            drawMetric(1, 2, "True Pk R", shownPeakR, "dBTP", peakHighlightR);
         }
         else
         {
             // 3 cols × 2 rows layout (original):
-            drawMetric(0, 0, "momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS);
-            drawMetric(0, 1, "true peak l", textPeakL, "dBTP", currentPeakL > -1.0f);
-            drawMetric(1, 0, "short-term", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS);
-            drawMetric(1, 1, "true peak r", textPeakR, "dBTP", currentPeakR > -1.0f);
-            drawMetric(2, 0, "integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS);
-            drawMetric(2, 1, "lu range", textLURange, "LU", false);
+            drawMetric(0, 0, "Momentary", textLUFS, "LUFS", currentLUFS > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(0, 1, "True Peak L", shownPeakL, "dBTP", peakHighlightL);
+            drawMetric(1, 0, "Short-Term", textShortTerm, "LUFS", currentShortTerm > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(1, 1, "True Peak R", shownPeakR, "dBTP", peakHighlightR);
+            drawMetric(2, 0, "Integrated", textIntegrated, "LUFS", currentIntegrated > currentTargetLUFS ? 1.0f : 0.0f);
+            drawMetric(2, 1, "LU Range", textLURange, "LU", 0.0f);
         }
     }
 
