@@ -125,6 +125,14 @@ public:
                 triggerSettledRecall();
         };
 
+        // Ear-pinch flip back: reset UI state when Nono returns from back/analysis
+        holoNono->onEarFlipBack = [this]()
+        {
+            // Nothing heavy to reset in standalone mode — the flip animation
+            // handles hiding the back face. Just repaint to sync.
+            repaint();
+        };
+
         // Wire hover button callbacks
         holoNono->onBodyHoverEnter = [this]()
         {
@@ -456,6 +464,7 @@ private:
 
     // Settled layout
     static constexpr int settledPadding = 10;
+    static constexpr int shatterOverflow = 80;  // extra margin when particles are flying
     static constexpr int settledGap     = 20;   // gap between shelf and Nono
     static constexpr int shelfGap       = 4;    // gap between stacked cards
 
@@ -969,6 +978,8 @@ private:
         // If nothing was eligible but some are stowed, do selective recall instead
         if (!anyEligible)
             triggerSelectiveRecall();
+        else
+            expandWindowForShatter();  // give particles room to fly
 
         // Dismiss hover buttons
         hoverBtnState = HoverButtonState::retracting;
@@ -1029,6 +1040,74 @@ private:
         anyShatterActive = true;
     }
 
+    /** Expand the window by shatterOverflow px in all directions so particles
+     *  don't get clipped. The extra area is transparent → invisible.
+     *  All child positions shift by +overflow to compensate. */
+    bool shatterExpanded = false;
+
+    void expandWindowForShatter()
+    {
+        if (shatterExpanded) return;
+
+        auto* topLevel = getTopLevelComponent();
+        if (!topLevel) return;
+
+        shatterExpanded = true;
+
+        // Remember pre-expansion window position
+        auto pos = topLevel->getScreenPosition();
+        int oldW = topLevel->getWidth();
+        int oldH = topLevel->getHeight();
+
+        // Expand window: add overflow on all 4 sides
+        topLevel->setTopLeftPosition(pos.x - shatterOverflow, pos.y - shatterOverflow);
+        topLevel->setSize(oldW + shatterOverflow * 2, oldH + shatterOverflow * 2);
+
+        // Shift all children by +overflow so they stay in the same screen position
+        for (int i = getNumChildComponents() - 1; i >= 0; --i)
+        {
+            auto* child = getChildComponent(i);
+            auto cb = child->getBounds();
+            child->setBounds(cb.translated(shatterOverflow, shatterOverflow));
+        }
+
+        // Also shift shatter origins that are already set
+        for (int i = 0; i < numCards; ++i)
+        {
+            if (cardShatterStates[i].active)
+            {
+                cardShatterStates[i].originX += static_cast<float>(shatterOverflow);
+                cardShatterStates[i].originY += static_cast<float>(shatterOverflow);
+            }
+        }
+    }
+
+    void shrinkWindowAfterShatter()
+    {
+        if (!shatterExpanded) return;
+
+        auto* topLevel = getTopLevelComponent();
+        if (!topLevel) return;
+
+        shatterExpanded = false;
+
+        auto pos = topLevel->getScreenPosition();
+        int oldW = topLevel->getWidth();
+        int oldH = topLevel->getHeight();
+
+        // Shift children back
+        for (int i = getNumChildComponents() - 1; i >= 0; --i)
+        {
+            auto* child = getChildComponent(i);
+            auto cb = child->getBounds();
+            child->setBounds(cb.translated(-shatterOverflow, -shatterOverflow));
+        }
+
+        // Shrink window
+        topLevel->setTopLeftPosition(pos.x + shatterOverflow, pos.y + shatterOverflow);
+        topLevel->setSize(oldW - shatterOverflow * 2, oldH - shatterOverflow * 2);
+    }
+
     /** Tick shatter physics — called from timerCallback */
     void tickShatterEffects()
     {
@@ -1070,6 +1149,11 @@ private:
         }
 
         anyShatterActive = stillActive;
+
+        // When all particles are done, shrink window back to normal
+        if (!stillActive)
+            shrinkWindowAfterShatter();
+
         repaint();
     }
 
@@ -1265,21 +1349,32 @@ private:
 
                 if (result == 900)
                 {
-                    // Show JUCE's built-in audio settings dialog
+                    // Show Audio Settings — INPUT ONLY (output channels = 0,0)
                     if (auto* devMgr = getDeviceManager())
                     {
                         auto* dialogContent = new juce::AudioDeviceSelectorComponent(
-                            *devMgr, 0, 256, 0, 256, true, false, true, false);
-                        dialogContent->setSize(500, 400);
+                            *devMgr,
+                            0, 256,   // minInputChannels, maxInputChannels
+                            0, 0,     // minOutputChannels, maxOutputChannels = 0 → hides Output
+                            true,     // showMidiInputOptions
+                            false,    // showMidiOutputSelector
+                            true,     // showChannelsAsStereoPairs
+                            false);   // hideAdvancedOptions
+                        dialogContent->setSize(450, 300);
+                        dialogContent->setLookAndFeel(&customLookAndFeel);
 
                         juce::DialogWindow::LaunchOptions opts;
                         opts.content.setOwned(dialogContent);
-                        opts.dialogTitle = "Audio Settings";
-                        opts.dialogBackgroundColour = juce::Colour(0xFF1E1E2A);
+                        opts.dialogTitle = "AUDIO SETTINGS";
+                        opts.dialogBackgroundColour = GoodMeterLookAndFeel::bgPanel;
                         opts.escapeKeyTriggersCloseButton = true;
-                        opts.useNativeTitleBar = true;
+                        opts.useNativeTitleBar = false;  // use JUCE title bar so LookAndFeel applies
                         opts.resizable = false;
-                        opts.launchAsync();
+                        opts.componentToCentreAround = this;
+
+                        auto* dialog = opts.launchAsync();
+                        if (dialog != nullptr)
+                            dialog->setLookAndFeel(&customLookAndFeel);
                     }
                     return;
                 }
@@ -1399,7 +1494,13 @@ private:
         if (phase != AnimPhase::compact) return;
 
         auto* topLevel = getTopLevelComponent();
-        if (!topLevel) return;
+        if (!topLevel)
+        {
+            // Safety: if window not available, force Nono's orbit to cancel
+            // so the user can click again and retry
+            holoNono->cancelOrbit();
+            return;
+        }
 
         // Record Nono's screen position BEFORE expansion
         auto nonoScreenPos = holoNono->getScreenPosition();

@@ -22,6 +22,7 @@
 
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #include "PluginProcessor.h"
+#include "GoodMeterLookAndFeel.h"
 
 #if JUCE_MAC
  #include <objc/message.h>
@@ -256,6 +257,10 @@ public:
         if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
             return;
 
+        // Set Neo-Brutalism LookAndFeel as the global default
+        // so ALL windows, dialogs, and popups inherit it
+        juce::LookAndFeel::setDefaultLookAndFeel(&appLookAndFeel);
+
         auto pluginHolder = std::make_unique<juce::StandalonePluginHolder>(
             appProperties.getUserSettings(),
             false,          // don't take ownership of settings
@@ -282,6 +287,7 @@ public:
 #endif
         mainWindow = nullptr;
         appProperties.saveIfNeeded();
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     }
 
     void systemRequestedQuit() override
@@ -424,6 +430,7 @@ public:
 
 private:
     juce::ApplicationProperties appProperties;
+    GoodMeterLookAndFeel appLookAndFeel;
     std::unique_ptr<DesktopPetWindow> mainWindow;
 
     /** Safely get our processor from the plugin holder */

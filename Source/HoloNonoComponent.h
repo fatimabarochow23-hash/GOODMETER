@@ -85,6 +85,20 @@ public:
     std::function<void()> onBodyHoverEnter;
     std::function<void()> onBodyHoverExit;
 
+    // Callback: ear-pinch flip back from analysis/back state
+    std::function<void()> onEarFlipBack;
+
+    /** Force-cancel an orbit in progress (called when animation launch fails) */
+    void cancelOrbit()
+    {
+        isOrbiting = false;
+        isOrbitLocked = false;
+        isSmiling = false;
+        orbitProgress = 0.0f;
+        smileFramesLeft = 0;
+        orbitLockFramesLeft = 0;
+    }
+
     // Callback: local drag in floating phase (instead of moving the window)
     // dx, dy are screen-space deltas from drag start
     std::function<void(int dx, int dy)> onLocalDrag;
@@ -316,6 +330,20 @@ public:
 
         hScale = juce::jmax(0.02f, hScale);
 
+        // Ear hit rects — computed after hScale is known
+        {
+            const float sphereTop = cy - radius;
+            float earSpecs[2][2] = { {-0.72f, -0.18f}, {0.72f, -0.18f} };
+            for (int i = 0; i < 2; ++i)
+            {
+                float eax = cx + radius * earSpecs[i][0] * hScale;
+                float eay = sphereTop + radius * earSpecs[i][1] + earBobOffset;
+                float earW = radius * 0.35f * hScale;
+                float earH = radius * 0.75f;
+                earHitRect[i] = { eax - earW * 0.5f, eay - earH * 0.5f, earW, earH };
+            }
+        }
+
         // Draw layers
         drawAntiGravityGlow(g, cx, cy, radius);
         drawShadow(g, cx, cy, radius);
@@ -384,6 +412,11 @@ public:
         if (!tubeHitRect.isEmpty() && tubeHitRect.contains(pt))
             return true;
 
+        // Ear regions (clickable when in Back/Analyzing/ShowingResults for flip-back)
+        for (int i = 0; i < 2; ++i)
+            if (!earHitRect[i].isEmpty() && earHitRect[i].contains(pt))
+                return true;
+
         // Results bubble area (approximate: bottom 38% when showing results)
         if (nonoState == NonoState::ShowingResults || nonoState == NonoState::ClearingData)
         {
@@ -407,6 +440,21 @@ public:
         // Record drag start position for all clicks
         dragStartPos = e.getScreenPosition();
         isDraggingWindow = false;
+
+        // ===== Ear-pinch flip back =====
+        // When Nono is showing back face or results, clicking an ear flips back to front
+        if (nonoState == NonoState::Back || nonoState == NonoState::ShowingResults
+            || nonoState == NonoState::Analyzing)
+        {
+            for (int i = 0; i < 2; ++i)
+            {
+                if (!earHitRect[i].isEmpty() && earHitRect[i].contains(e.position))
+                {
+                    triggerEarFlipBack();
+                    return;
+                }
+            }
+        }
 
         // Front-face body single-click → pending smile (300ms delay to distinguish from double-click)
         if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
@@ -940,6 +988,8 @@ private:
 
     // Smile + orbit animation state
     bool isSmiling = false;
+    bool isShy = false;              // shy expression: >< eyes after ear-pinch
+    int shyFramesLeft = 0;           // shy duration countdown (1.5s = 90 frames at 60Hz)
     bool isOrbiting = false;
     bool isOrbitLocked = false;       // all mouse interactions disabled during orbit
     float orbitProgress = 0.0f;       // 0→1 during orbit (1.2s)
@@ -951,6 +1001,7 @@ private:
     // Hit test regions (computed in paint, used in mouse handlers)
     juce::Rectangle<float> bodyHitRect;
     juce::Rectangle<float> tubeHitRect;
+    juce::Rectangle<float> earHitRect[2];  // [0] = left ear, [1] = right ear
 
     // Edit mode transition (0=normal, 1=editMode → color/bubble change)
     float editModeTransition = 0.0f;
@@ -1237,6 +1288,14 @@ private:
                 isSmiling = false;
         }
 
+        // Shy countdown (1.5s = 90 frames)
+        if (shyFramesLeft > 0)
+        {
+            shyFramesLeft--;
+            if (shyFramesLeft <= 0)
+                isShy = false;
+        }
+
         // Orbit lock countdown (1.5s = 90 frames from orbit start)
         if (orbitLockFramesLeft > 0)
         {
@@ -1335,6 +1394,34 @@ private:
 
         if (onSmileOrbitTriggered)
             onSmileOrbitTriggered();
+    }
+
+    void triggerEarFlipBack()
+    {
+        // Stop any running analysis
+        if (analysisThread)
+        {
+            analysisThread->stopThread(500);
+            analysisThread.reset();
+        }
+
+        // Activate shy expression
+        isShy = true;
+        shyFramesLeft = 90;  // 1.5 seconds at 60Hz
+
+        // Flip back to front
+        flipTarget = 0.0f;
+        nonoState = NonoState::Flipping;
+        flipDestination = NonoState::Front;
+
+        // Reset analysis visuals
+        hasResults = false;
+        ripplePhase = 0.0f;
+        bubbleFadeAlpha = 1.0f;
+
+        // Notify editor
+        if (onEarFlipBack)
+            onEarFlipBack();
     }
 
     //==========================================================================
@@ -1655,6 +1742,52 @@ private:
             { cx - spacing, ew, ew * 0.4f },   // left eye
             { cx + spacing, ew, ew * 0.4f }    // right eye
         };
+
+        // ===== Shy: >< squinting eyes (after ear-pinch) =====
+        if (isShy)
+        {
+            for (int idx = 0; idx < 2; ++idx)
+            {
+                float ex = eyes[idx].x;
+                float chevW = spacing * 0.5f;
+                float chevH = eh * 1.4f;
+
+                // Soft bloom behind
+                float bloomR = chevH * 0.5f;
+                juce::ColourGradient bloom(
+                    magicPink.withAlpha(0.25f), ex, vcy,
+                    magicPink.withAlpha(0.0f), ex + bloomR, vcy, true);
+                g.setGradientFill(bloom);
+                g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                // Left eye: ">" — chevron pointing right
+                // Right eye: "<" — chevron pointing left
+                juce::Path shyPath;
+                if (idx == 0)
+                {
+                    // > shape
+                    shyPath.startNewSubPath(ex - chevW * 0.4f, vcy - chevH * 0.35f);
+                    shyPath.lineTo(ex + chevW * 0.4f, vcy);
+                    shyPath.lineTo(ex - chevW * 0.4f, vcy + chevH * 0.35f);
+                }
+                else
+                {
+                    // < shape
+                    shyPath.startNewSubPath(ex + chevW * 0.4f, vcy - chevH * 0.35f);
+                    shyPath.lineTo(ex - chevW * 0.4f, vcy);
+                    shyPath.lineTo(ex + chevW * 0.4f, vcy + chevH * 0.35f);
+                }
+
+                // Thin neon strokes — user insists: NOT too thick!
+                g.setColour(magicPink.withAlpha(0.08f));
+                g.strokePath(shyPath, juce::PathStrokeType(5.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(magicPink.withAlpha(0.25f));
+                g.strokePath(shyPath, juce::PathStrokeType(2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                g.setColour(magicPink.withAlpha(0.9f));
+                g.strokePath(shyPath, juce::PathStrokeType(1.2f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+            }
+            return;  // Skip normal eye rendering
+        }
 
         // ===== Smile: upward "∧" chevron eyes =====
         if (isSmiling)

@@ -28,6 +28,7 @@ public:
         : audioProcessor(processor)
     {
         psrHistory.resize(historySize, 0.0f);
+        recHistory.resize(historySize, 0);
         setSize(100, 200);
         startTimerHz(60);
     }
@@ -59,13 +60,16 @@ public:
         // 2. Danger zone
         drawDangerZone(g, waveBounds);
 
-        // 3. Mirror waveform
+        // 3. Mirror waveform (segmented red/green)
         drawMirrorWaveform(g, waveBounds);
 
         // 4. Center line (0 axis)
         drawCenterLine(g, waveBounds);
 
-        // 5. Readout
+        // 5. REC indicator (if any recorded samples visible in history)
+        drawRecIndicator(g, waveBounds);
+
+        // 6. Readout
         drawReadout(g, readoutBounds);
     }
 
@@ -78,6 +82,7 @@ private:
     // History ring buffer
     static constexpr int historySize = 400;
     std::vector<float> psrHistory;
+    std::vector<uint8_t> recHistory;   // 0 = not recording, 1 = recording at this sample
     int historyWriteIndex = 0;
 
     // Current smoothed PSR value
@@ -98,6 +103,10 @@ private:
 
     // Electro-cyan palette
     static inline const juce::Colour techCyan = juce::Colour(0xFF20C997);
+    static inline const juce::Colour recRed   = juce::Colour(0xFFFF0040);  // Neon Punch Red — solid, no alpha
+
+    // REC indicator breathing state
+    float recBreathPhase = 0.0f;
 
     //==========================================================================
     void timerCallback() override
@@ -137,9 +146,15 @@ private:
         if (lastShownPsr < 0.0f || std::abs(textPsr - lastShownPsr) > 0.3f)
             lastShownPsr = textPsr;
 
-        // Push to history ring buffer
+        // Push to history ring buffer (PSR value + recording state)
         psrHistory[historyWriteIndex] = currentPsr;
+        recHistory[historyWriteIndex] = audioProcessor.audioRecorder.getIsRecording() ? 1 : 0;
         historyWriteIndex = (historyWriteIndex + 1) % historySize;
+
+        // REC breathing phase (always tick — cheap)
+        recBreathPhase += 0.06f;
+        if (recBreathPhase > juce::MathConstants<float>::twoPi * 100.0f)
+            recBreathPhase -= juce::MathConstants<float>::twoPi * 100.0f;
 
         // Pre-render readout text (moves drawText out of paint/CATransaction)
         {
@@ -162,6 +177,11 @@ private:
     {
         // historyWriteIndex points to the NEXT write position = oldest data
         return psrHistory[(historyWriteIndex + index) % historySize];
+    }
+
+    bool getRecAt(int index) const
+    {
+        return recHistory[(historyWriteIndex + index) % historySize] != 0;
     }
 
     //==========================================================================
@@ -253,7 +273,9 @@ private:
     //==========================================================================
     /**
      * Mirror waveform: symmetrical closed path from PSR history
-     * Top half = positive, bottom half = mirrored negative
+     * Segmented coloring: solid cyan for normal, solid neon-red for recording.
+     * Red segments get a Neo-Brutalism hard drop shadow.
+     * Black vertical cut lines at every rec/normal boundary.
      */
     void drawMirrorWaveform(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
@@ -261,42 +283,87 @@ private:
         const float halfH = bounds.getHeight() / 2.0f;
         const float stepX = bounds.getWidth() / static_cast<float>(historySize - 1);
 
-        juce::Path psrPath;
+        auto mapY = [&](float val) -> float {
+            return juce::jmap(juce::jmin(val, maxPsrDisplay), 0.0f, maxPsrDisplay, 0.0f, halfH);
+        };
 
-        // Pass 1: top half (left to right)
-        for (int i = 0; i < historySize; ++i)
+        // Collect boundary X positions for cut lines (drawn after all segments)
+        std::vector<float> cutXPositions;
+
+        // --- Walk history, find contiguous segments of same rec state ---
+        int segStart = 0;
+        while (segStart < historySize)
         {
-            float x = bounds.getX() + (i * stepX);
-            float val = getHistoryAt(i);
-            float mappedY = juce::jmap(juce::jmin(val, maxPsrDisplay), 0.0f, maxPsrDisplay, 0.0f, halfH);
-            float yTop = centerY - mappedY;
+            bool isRec = getRecAt(segStart);
+            int segEnd = segStart + 1;
+            while (segEnd < historySize && getRecAt(segEnd) == isRec)
+                ++segEnd;
 
-            if (i == 0)
-                psrPath.startNewSubPath(x, yTop);
+            // Record boundary positions (skip first and last edge)
+            if (segStart > 0)
+                cutXPositions.push_back(bounds.getX() + segStart * stepX);
+
+            // Build closed mirror path for this segment
+            juce::Path segPath;
+
+            // Top half: left to right
+            for (int i = segStart; i < segEnd; ++i)
+            {
+                float x = bounds.getX() + (i * stepX);
+                float yTop = centerY - mapY(getHistoryAt(i));
+                if (i == segStart)
+                    segPath.startNewSubPath(x, yTop);
+                else
+                    segPath.lineTo(x, yTop);
+            }
+
+            // Bottom half: right to left (mirror)
+            for (int i = segEnd - 1; i >= segStart; --i)
+            {
+                float x = bounds.getX() + (i * stepX);
+                float yBot = centerY + mapY(getHistoryAt(i));
+                segPath.lineTo(x, yBot);
+            }
+
+            segPath.closeSubPath();
+
+            if (isRec)
+            {
+                // --- Hard drop shadow: solid ink, offset down+right ---
+                {
+                    juce::Path shadowPath(segPath);
+                    shadowPath.applyTransform(juce::AffineTransform::translation(1.5f, 2.5f));
+                    g.setColour(juce::Colour(0xFF1A1A24));
+                    g.fillPath(shadowPath);
+                }
+
+                // --- Solid red fill: 100% opaque, no alpha ---
+                g.setColour(recRed);
+                g.fillPath(segPath);
+
+                // --- Crisp dark edge stroke ---
+                g.setColour(juce::Colour(0xFF1A1A24));
+                g.strokePath(segPath, juce::PathStrokeType(1.0f));
+            }
             else
-                psrPath.lineTo(x, yTop);
+            {
+                // --- Normal segment: solid cyan fill + stroke ---
+                g.setColour(techCyan.withAlpha(0.25f));
+                g.fillPath(segPath);
+
+                g.setColour(techCyan);
+                g.strokePath(segPath, juce::PathStrokeType(1.0f));
+            }
+
+            segStart = segEnd;
         }
 
-        // Pass 2: bottom half (right to left, mirrored)
-        for (int i = historySize - 1; i >= 0; --i)
+        // --- Black vertical cut lines at every rec↔normal boundary ---
+        g.setColour(juce::Colour(0xFF1A1A24));
+        for (float cutX : cutXPositions)
         {
-            float x = bounds.getX() + (i * stepX);
-            float val = getHistoryAt(i);
-            float mappedY = juce::jmap(juce::jmin(val, maxPsrDisplay), 0.0f, maxPsrDisplay, 0.0f, halfH);
-            float yBottom = centerY + mappedY;
-
-            psrPath.lineTo(x, yBottom);
+            g.drawLine(cutX, bounds.getY(), cutX, bounds.getBottom(), 1.5f);
         }
-
-        psrPath.closeSubPath();
-
-        // Fill: semi-transparent electro-cyan
-        g.setColour(techCyan.withAlpha(0.25f));
-        g.fillPath(psrPath);
-
-        // Stroke: sharp laser edge
-        g.setColour(techCyan);
-        g.strokePath(psrPath, juce::PathStrokeType(1.0f));
     }
 
     //==========================================================================
@@ -308,6 +375,46 @@ private:
         const float centerY = bounds.getCentreY();
         g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.25f));
         g.drawHorizontalLine(static_cast<int>(centerY), bounds.getX(), bounds.getRight());
+    }
+
+    //==========================================================================
+    /**
+     * REC breathing indicator: shown when recording is active.
+     * Red dot + "REC" text in mono font, upper-right corner.
+     */
+    void drawRecIndicator(juce::Graphics& g, const juce::Rectangle<float>& bounds)
+    {
+        // Only show if currently recording
+        if (!audioProcessor.audioRecorder.getIsRecording())
+            return;
+
+        float breathAlpha = 0.55f + 0.45f * std::sin(recBreathPhase);
+
+        float dotR = 4.0f;
+        float textH = 11.0f;
+        float margin = 5.0f;
+
+        float rx = bounds.getRight() - margin;
+        float ry = bounds.getY() + margin;
+
+        // "REC" text
+        g.setColour(recRed.withAlpha(breathAlpha));
+        g.setFont(juce::Font(textH, juce::Font::bold));
+        float textW = g.getCurrentFont().getStringWidthFloat("REC");
+        g.drawText("REC",
+                   juce::Rectangle<float>(rx - textW - dotR * 2.0f - 4.0f, ry, textW, textH),
+                   juce::Justification::centredRight, false);
+
+        // Red dot
+        float dotX = rx - dotR * 2.0f;
+        float dotY = ry + (textH - dotR * 2.0f) * 0.5f;
+
+        // Outer glow
+        g.setColour(recRed.withAlpha(breathAlpha * 0.3f));
+        g.fillEllipse(dotX - 2.0f, dotY - 2.0f, dotR * 2.0f + 4.0f, dotR * 2.0f + 4.0f);
+        // Core dot
+        g.setColour(recRed.withAlpha(breathAlpha));
+        g.fillEllipse(dotX, dotY, dotR * 2.0f, dotR * 2.0f);
     }
 
     //==========================================================================
