@@ -21,6 +21,12 @@
 #if JucePlugin_Build_Standalone
 
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#include "PluginProcessor.h"
+
+#if JUCE_MAC
+ #include <objc/message.h>
+ #include <objc/runtime.h>
+#endif
 
 namespace goodmeter
 {
@@ -35,7 +41,8 @@ namespace goodmeter
  *
  * Audio I/O is managed by StandalonePluginHolder, which is independent of the window.
  */
-class DesktopPetWindow : public juce::Component
+class DesktopPetWindow : public juce::Component,
+                         public juce::Timer
 {
 public:
     std::unique_ptr<juce::StandalonePluginHolder> pluginHolder;
@@ -48,6 +55,9 @@ public:
 
         setOpaque(false);
         setSize(280, 360);
+
+        // Don't intercept mouse clicks — pass through to editor/HoloNono
+        setInterceptsMouseClicks(false, true);
 
         // Create and add the editor
         if (auto* processor = pluginHolder->processor.get())
@@ -72,10 +82,14 @@ public:
 
         // Position at bottom-right of primary display
         positionAtBottomRight();
+
+        // Start click-through management timer (60Hz polling)
+        startTimerHz(60);
     }
 
     ~DesktopPetWindow() override
     {
+        stopTimer();
         if (editor != nullptr)
         {
             if (auto* processor = pluginHolder->processor.get())
@@ -84,9 +98,9 @@ public:
         }
     }
 
-    void paint(juce::Graphics&) override
+    void paint(juce::Graphics& g) override
     {
-        // Fully transparent — only the editor draws
+        g.fillAll(juce::Colours::transparentBlack);
     }
 
     void resized() override
@@ -100,8 +114,104 @@ public:
         juce::JUCEApplication::getInstance()->systemRequestedQuit();
     }
 
+    //==========================================================================
+    // Hit test: THE OS-level gate for click-through.
+    // If this returns false, macOS passes the click to whatever is behind.
+    // Delegates to editor's pure-geometry hitTest — no child component
+    // delegation anywhere in the chain.
+    //==========================================================================
+    bool hitTest(int x, int y) override
+    {
+        if (editor != nullptr)
+        {
+            auto localPoint = juce::Point<int>(x, y) - editor->getPosition();
+            if (editor->getLocalBounds().contains(localPoint))
+                return editor->hitTest(localPoint.x, localPoint.y);
+        }
+        return false;
+    }
+
+    //==========================================================================
+    // Dynamic click-through engine (macOS native NSWindow integration)
+    //
+    // macOS Window Server uses pixel alpha to route clicks — any alpha > 0
+    // pixel (glow, shadow, anti-alias fringe) makes the OS assign the click
+    // to our window BEFORE hitTest is ever called. If hitTest then returns
+    // false, the click is silently dropped ("click black hole").
+    //
+    // Fix: toggle [NSWindow setIgnoresMouseEvents:] based on whether the
+    // mouse cursor is currently over a clickable region. When ignoring,
+    // macOS skips our window entirely and delivers clicks to the desktop.
+    //==========================================================================
+    void timerCallback() override
+    {
+        updateClickThrough();
+    }
+
 private:
     std::unique_ptr<juce::AudioProcessorEditor> editor;
+    bool windowIgnoringMouse = false;
+
+    //==========================================================================
+    // 60Hz global mouse poll → hitTest → toggle ignoresMouseEvents
+    //==========================================================================
+    void updateClickThrough()
+    {
+#if JUCE_MAC
+        // Guard: don't switch to ignore while a drag is active — that would
+        // interrupt the drag if the cursor leaves the clickable region.
+        if (!windowIgnoringMouse
+            && juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+            return;
+
+        auto screenPos = juce::Desktop::getMousePosition();
+        auto localPos  = getLocalPoint(nullptr, screenPos);
+
+        bool wantsMouse = false;
+
+        if (getLocalBounds().contains(localPos) && editor != nullptr)
+        {
+            auto ep = localPos - editor->getPosition();
+            if (editor->getLocalBounds().contains(ep))
+                wantsMouse = editor->hitTest(ep.x, ep.y);
+        }
+
+        // Toggle only when state actually needs to change
+        if (wantsMouse && windowIgnoringMouse)
+        {
+            setNativeIgnoreMouse(false);
+            windowIgnoringMouse = false;
+        }
+        else if (!wantsMouse && !windowIgnoringMouse)
+        {
+            setNativeIgnoreMouse(true);
+            windowIgnoringMouse = true;
+        }
+#endif
+    }
+
+    //==========================================================================
+    // Native bridge: [NSWindow setIgnoresMouseEvents:] via ObjC runtime
+    //
+    // Uses objc_msgSend directly so we stay in a .cpp file — no need to
+    // rename to .mm or change build settings.
+    //==========================================================================
+    void setNativeIgnoreMouse([[maybe_unused]] bool shouldIgnore)
+    {
+#if JUCE_MAC
+        if (auto* peer = getPeer())
+        {
+            auto nsView = reinterpret_cast<id>(peer->getNativeHandle());
+            auto nsWindow = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+                nsView, sel_registerName("window"));
+
+            if (nsWindow != nullptr)
+                reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
+                    nsWindow, sel_registerName("setIgnoresMouseEvents:"),
+                    static_cast<BOOL>(shouldIgnore));
+        }
+#endif
+    }
 
     void positionAtBottomRight()
     {
@@ -121,8 +231,10 @@ private:
 //==============================================================================
 /**
  * Custom standalone application for GOODMETER desktop pet mode.
+ * Implements MenuBarModel for native macOS menu bar.
  */
-class GoodMeterStandaloneApp : public juce::JUCEApplication
+class GoodMeterStandaloneApp : public juce::JUCEApplication,
+                                public juce::MenuBarModel
 {
 public:
     GoodMeterStandaloneApp()
@@ -157,10 +269,17 @@ public:
             getApplicationName(),
             std::move(pluginHolder)
         );
+
+#if JUCE_MAC
+        juce::MenuBarModel::setMacMainMenu(this);
+#endif
     }
 
     void shutdown() override
     {
+#if JUCE_MAC
+        juce::MenuBarModel::setMacMainMenu(nullptr);
+#endif
         mainWindow = nullptr;
         appProperties.saveIfNeeded();
     }
@@ -184,9 +303,136 @@ public:
         }
     }
 
+    //==========================================================================
+    // MenuBarModel implementation — "Recording" dedicated menu
+    //==========================================================================
+    juce::StringArray getMenuBarNames() override
+    {
+        return { "Recording" };
+    }
+
+    juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
+    {
+        juce::PopupMenu menu;
+        if (menuIndex != 0) return menu;
+
+        // ── 1. Start / Stop Recording toggle ──
+        auto* proc = getProcessor();
+        bool recording = (proc != nullptr && proc->audioRecorder.getIsRecording());
+        menu.addItem(1, recording ? "Stop Recording" : "Start Recording", true, recording);
+
+        menu.addSeparator();
+
+        // ── 2. Recent Recordings sub-menu (scan ~/Desktop/GOODMETER_*.wav) ──
+        juce::PopupMenu recentMenu;
+        auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+        auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+
+        // Sort by modification time (newest first)
+        wavFiles.sort();
+        std::reverse(wavFiles.begin(), wavFiles.end());
+
+        // Show up to 10 most recent
+        int recentID = 100;
+        int shown = 0;
+        for (auto& f : wavFiles)
+        {
+            if (shown >= 10) break;
+            recentMenu.addItem(recentID, f.getFileName());
+            recentID++;
+            shown++;
+        }
+
+        if (shown == 0)
+            recentMenu.addItem(-1, "(No recordings yet)", false);
+
+        menu.addSubMenu("Recent Recordings", recentMenu);
+
+        // ── 3. Reveal in Finder ──
+        juce::File lastFile;
+        if (proc != nullptr && proc->audioRecorder.getIsRecording())
+            lastFile = proc->audioRecorder.getRecordingFile();
+        else if (!wavFiles.isEmpty())
+            lastFile = wavFiles.getFirst();
+
+        menu.addItem(50, "Reveal in Finder", lastFile.existsAsFile());
+
+        return menu;
+    }
+
+    void menuItemSelected(int menuItemID, int) override
+    {
+        if (menuItemID == 1)
+        {
+            // Toggle recording
+            auto* proc = getProcessor();
+            if (proc == nullptr) return;
+
+            if (proc->audioRecorder.getIsRecording())
+            {
+                proc->audioRecorder.stop();
+            }
+            else
+            {
+                auto now = juce::Time::getCurrentTime();
+                auto filename = "GOODMETER_" + now.formatted("%Y%m%d_%H%M%S") + ".wav";
+                auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+                auto file = desktop.getChildFile(filename);
+
+                double sr = 48000.0;
+                if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
+                {
+                    if (auto* device = mainWindow->pluginHolder->deviceManager.getCurrentAudioDevice())
+                        sr = device->getCurrentSampleRate();
+                }
+
+                proc->audioRecorder.start(file, sr, 2);
+            }
+        }
+        else if (menuItemID == 50)
+        {
+            // Reveal in Finder
+            auto* proc = getProcessor();
+            juce::File target;
+            if (proc != nullptr && proc->audioRecorder.getIsRecording())
+                target = proc->audioRecorder.getRecordingFile();
+            else
+            {
+                auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+                auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+                wavFiles.sort();
+                if (!wavFiles.isEmpty())
+                    target = wavFiles.getLast();
+            }
+
+            if (target.existsAsFile())
+                target.revealToUser();
+        }
+        else if (menuItemID >= 100 && menuItemID < 200)
+        {
+            // Recent Recordings — reveal the clicked file
+            auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+            auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+            wavFiles.sort();
+            std::reverse(wavFiles.begin(), wavFiles.end());
+
+            int idx = menuItemID - 100;
+            if (idx >= 0 && idx < wavFiles.size())
+                wavFiles[idx].revealToUser();
+        }
+    }
+
 private:
     juce::ApplicationProperties appProperties;
     std::unique_ptr<DesktopPetWindow> mainWindow;
+
+    /** Safely get our processor from the plugin holder */
+    GOODMETERAudioProcessor* getProcessor() const
+    {
+        if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
+            return dynamic_cast<GOODMETERAudioProcessor*>(mainWindow->pluginHolder->processor.get());
+        return nullptr;
+    }
 };
 
 } // namespace goodmeter

@@ -31,8 +31,27 @@ public:
     // Jiggle mode: suppress expand/collapse clicks during drag-sort
     bool inJiggleMode = false;
 
+    // Docked mode: card is in read-only shelf, no interaction allowed
+    bool isDocked = false;
+
     // Mini mode: compact layout with aggressive space squeezing
     bool isMiniMode = false;
+
+    // Floating mode callbacks (wired by StandaloneNonoEditor for undock/drag)
+    std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onUndockDragStarted;
+    std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onFloatingDragging;
+    std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onFloatingDragEnded;
+    std::function<void(MeterCardComponent*)> onDetachRequested;
+
+    // Show detach button (×) when card is in a snap group
+    bool showDetachButton = false;
+
+    // Resize callback (notifies editor when card is resized by user drag)
+    std::function<void(MeterCardComponent*, int newW, int newH)> onResized;
+
+    // Custom card width/height (set by resize drag; -1 = default)
+    int customWidth = -1;
+    int customContentHeight = -1;
 
     //==========================================================================
     MeterCardComponent(const juce::String& title,
@@ -102,13 +121,15 @@ public:
             bool needsRebuild = headerTextCache.isNull() ||
                                 lastHeaderCacheW != cacheW ||
                                 lastHeaderCacheMini != isMiniMode ||
-                                lastHeaderCacheExpanded != isExpanded;
+                                lastHeaderCacheExpanded != isExpanded ||
+                                lastHeaderCacheDocked != isDocked;
 
             if (needsRebuild)
             {
                 lastHeaderCacheW = cacheW;
                 lastHeaderCacheMini = isMiniMode;
                 lastHeaderCacheExpanded = isExpanded;
+                lastHeaderCacheDocked = isDocked;
                 headerTextCache = juce::Image(juce::Image::ARGB, cacheW, hh, true, juce::SoftwareImageType());
                 juce::Graphics tg(headerTextCache);
 
@@ -119,23 +140,97 @@ public:
                 auto textArea = juce::Rectangle<int>(
                     static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
                     cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
-                tg.setColour(GoodMeterLookAndFeel::textMain);
+                tg.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
                 tg.setFont(juce::Font(titleFont, juce::Font::bold));
                 tg.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
 
-                // Expand/collapse arrow
-                float localArrowW = isMiniMode ? 20.0f : 40.0f;
-                auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
-                                                       static_cast<int>(localArrowW), hh);
-                float arrowFont = isMiniMode ? 9.0f : 14.0f;
-                tg.setFont(juce::Font(arrowFont, juce::Font::bold));
-                tg.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
-                                       : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
-                            arrowArea, juce::Justification::centred, false);
+                // Expand/collapse arrow — hidden when docked; grip icon shown instead
+                if (!isDocked)
+                {
+                    float localArrowW = isMiniMode ? 20.0f : 40.0f;
+                    auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
+                                                           static_cast<int>(localArrowW), hh);
+                    float arrowFont = isMiniMode ? 9.0f : 14.0f;
+                    tg.setFont(juce::Font(arrowFont, juce::Font::bold));
+                    tg.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
+                                           : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
+                                arrowArea, juce::Justification::centred, false);
+                }
+                else
+                {
+                    // ⋮⋮ Grip icon: 2×3 dot grid — visual drag handle hint
+                    float localArrowW = isMiniMode ? 20.0f : 40.0f;
+                    float gripCX = static_cast<float>(cacheW) - localArrowW * 0.5f;
+                    float gripCY = static_cast<float>(hh) * 0.5f;
+                    float dotR = isMiniMode ? 1.5f : 2.5f;
+                    float gapX = isMiniMode ? 4.0f : 6.0f;
+                    float gapY = isMiniMode ? 3.5f : 5.0f;
+                    tg.setColour(GoodMeterLookAndFeel::textMuted);
+                    for (int row = -1; row <= 1; ++row)
+                        for (int col = 0; col < 2; ++col)
+                            tg.fillEllipse(gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
+                                           gripCY + static_cast<float>(row) * gapY - dotR,
+                                           dotR * 2.0f, dotR * 2.0f);
+                }
             }
             g.drawImageAt(headerTextCache,
                           static_cast<int>(headerBounds.getX()),
                           static_cast<int>(headerBounds.getY()));
+        }
+
+        // Detach button (×) — drawn OVER the header cache, only when showDetachButton
+        if (showDetachButton && !isDocked)
+        {
+            auto cr = getCardRect();
+            float btnSz = isMiniMode ? 14.0f : 20.0f;
+            float btnX = cr.getRight() - btnSz - 4.0f;
+            float btnY = cr.getY() + (static_cast<float>(hh) - btnSz) * 0.5f;
+
+            // Store for hit testing
+            detachButtonRect = juce::Rectangle<float>(btnX, btnY, btnSz, btnSz);
+
+            // Background circle
+            bool hovered = isDetachHovered;
+            g.setColour(hovered ? juce::Colour(0xFFE6335F).withAlpha(0.9f)
+                                : juce::Colour(0xFF2A2A35).withAlpha(0.6f));
+            g.fillEllipse(btnX, btnY, btnSz, btnSz);
+
+            // × cross
+            g.setColour(juce::Colours::white.withAlpha(hovered ? 1.0f : 0.8f));
+            float m = btnSz * 0.3f;
+            g.drawLine(btnX + m, btnY + m, btnX + btnSz - m, btnY + btnSz - m, 2.0f);
+            g.drawLine(btnX + btnSz - m, btnY + m, btnX + m, btnY + btnSz - m, 2.0f);
+        }
+        else
+        {
+            detachButtonRect = {};
+        }
+
+        // Resize grip triangle (bottom-right corner, only when expanded + floating)
+        if (isExpanded && !isDocked)
+        {
+            auto cr2 = getCardRect();
+            float gripSz = isMiniMode ? 10.0f : 14.0f;
+            float gx = cr2.getRight() - gripSz - 2.0f;
+            float gy = cr2.getBottom() - gripSz - 2.0f;
+
+            // Store rect for hit testing
+            resizeGripRect = juce::Rectangle<float>(gx - 4.0f, gy - 4.0f,
+                                                      gripSz + 6.0f, gripSz + 6.0f);
+
+            // Draw 3 diagonal lines (classic resize grip)
+            float alpha = isResizeHovered ? 0.7f : 0.35f;
+            g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(alpha));
+            for (int ln = 0; ln < 3; ++ln)
+            {
+                float off = static_cast<float>(ln) * (gripSz / 3.0f);
+                g.drawLine(gx + gripSz - off, gy + gripSz,
+                           gx + gripSz, gy + gripSz - off, 1.5f);
+            }
+        }
+        else
+        {
+            resizeGripRect = {};
         }
 
         // Position header widget inside card body
@@ -187,53 +282,188 @@ public:
 
     //==========================================================================
     /**
-     * Mouse handling for header clicks (replaces juce::TextButton)
-     * Skip toggle if click is on the header widget (ComboBox)
+     * Mouse handling: unified drag-or-click system
+     * - Docked: drag → undock; click → nothing (locked)
+     * - Floating: drag → reposition; click → expand/collapse toggle
+     * Distinguished by 4px threshold (same pattern as HoloNono window drag)
      */
     void mouseDown(const juce::MouseEvent& event) override
     {
         if (inJiggleMode) return;
 
-        // Check if click is within card body's header area
+        // Check resize grip hit (highest priority — only when expanded + floating)
+        if (isExpanded && !isDocked && !resizeGripRect.isEmpty())
+        {
+            if (resizeGripRect.contains(static_cast<float>(event.x),
+                                          static_cast<float>(event.y)))
+            {
+                isResizeDragging = true;
+                resizeDragStart = event.getScreenPosition();
+                resizeStartW = getWidth();
+                resizeStartH = getHeight();
+                return;
+            }
+        }
+
         auto cr = getCardRect();
         const int hh = getActiveHeaderHeight();
         float localY = static_cast<float>(event.y) - cr.getY();
-        if (localY >= 0 && localY <= static_cast<float>(hh))
+
+        // Only handle clicks in the header area
+        if (localY < 0 || localY > static_cast<float>(hh)) return;
+
+        // Check detach button hit (highest priority)
+        if (showDetachButton && !isDocked && !detachButtonRect.isEmpty())
         {
-            // Don't toggle if clicking on the header widget
-            if (headerWidget != nullptr)
+            if (detachButtonRect.contains(static_cast<float>(event.x),
+                                           static_cast<float>(event.y)))
             {
-                auto widgetBounds = headerWidget->getBounds();
-                if (widgetBounds.contains(event.x, event.y))
-                    return;
+                if (onDetachRequested)
+                    onDetachRequested(this);
+                return;
             }
+        }
+
+        if (isDocked)
+        {
+            // Start tracking for potential undock drag
+            isDragTracking = true;
+            isDragActivated = false;
+            dragScreenStart = event.getScreenPosition();
+            return;
+        }
+
+        // Not docked: skip if clicking on header widget (ComboBox)
+        if (headerWidget != nullptr)
+        {
+            auto widgetBounds = headerWidget->getBounds();
+            if (widgetBounds.contains(event.x, event.y))
+                return;
+        }
+
+        // Start tracking for floating drag OR click-to-toggle
+        isDragTracking = true;
+        isDragActivated = false;
+        dragScreenStart = event.getScreenPosition();
+    }
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        // Resize drag takes priority
+        if (isResizeDragging)
+        {
+            auto delta = event.getScreenPosition() - resizeDragStart;
+            int newW = juce::jmax(minResizeW, resizeStartW + delta.x);
+            int newH = juce::jmax(getActiveHeaderHeight() + minResizeContentH, resizeStartH + delta.y);
+
+            customWidth = newW - static_cast<int>(maxShadowOffset);  // store without shadow
+            customContentHeight = newH - getActiveHeaderHeight() - static_cast<int>(maxShadowOffset);
+
+            // Update target height to match new content height
+            targetHeight = static_cast<float>(newH);
+            currentHeight = targetHeight;
+            setSize(newW, newH);
+
+            if (contentComponent != nullptr)
+            {
+                contentComponent->setVisible(true);
+                resized();
+            }
+
+            if (onResized)
+                onResized(this, newW, newH);
+            if (onHeightChanged)
+                onHeightChanged();
+
+            repaint();
+            return;
+        }
+
+        if (!isDragTracking) return;
+
+        auto delta = event.getScreenPosition() - dragScreenStart;
+
+        if (!isDragActivated && delta.getDistanceFromOrigin() > 4)
+        {
+            isDragActivated = true;
+            // Fire undock/drag-start for BOTH docked and floating cards
+            if (onUndockDragStarted)
+                onUndockDragStarted(this, event);
+        }
+
+        if (isDragActivated && onFloatingDragging)
+            onFloatingDragging(this, event);
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        if (isResizeDragging)
+        {
+            isResizeDragging = false;
+            return;
+        }
+
+        if (!isDragTracking) return;
+
+        bool wasDragActivated = isDragActivated;
+        isDragTracking = false;
+        isDragActivated = false;
+
+        if (wasDragActivated)
+        {
+            // Drag ended — notify parent
+            if (onFloatingDragEnded)
+                onFloatingDragEnded(this, event);
+        }
+        else if (!isDocked)
+        {
+            // Click without drag — toggle expand/collapse
             setExpanded(!isExpanded, true);
         }
     }
 
     void mouseMove(const juce::MouseEvent& event) override
     {
+        if (isDocked) return;
+
         bool wasHovered = isHeaderHovered;
+        bool wasDetachHovered = isDetachHovered;
+        bool wasResizeHovered = isResizeHovered;
         auto cr = getCardRect();
         const int hh = getActiveHeaderHeight();
         float localY = static_cast<float>(event.y) - cr.getY();
         isHeaderHovered = (localY >= 0 && localY <= static_cast<float>(hh)
                           && cr.contains(static_cast<float>(event.x), static_cast<float>(event.y)));
 
-        if (wasHovered != isHeaderHovered)
+        // Track detach button hover
+        isDetachHovered = showDetachButton && !detachButtonRect.isEmpty()
+                          && detachButtonRect.contains(static_cast<float>(event.x),
+                                                        static_cast<float>(event.y));
+
+        // Track resize grip hover
+        isResizeHovered = isExpanded && !resizeGripRect.isEmpty()
+                          && resizeGripRect.contains(static_cast<float>(event.x),
+                                                      static_cast<float>(event.y));
+
+        if (wasHovered != isHeaderHovered || wasDetachHovered != isDetachHovered
+            || wasResizeHovered != isResizeHovered)
             repaint();
     }
 
     void mouseEnter(const juce::MouseEvent&) override
     {
+        if (isDocked) return;
         isCardHovered = true;
         ensureTimerRunning();
     }
 
     void mouseExit(const juce::MouseEvent&) override
     {
+        if (isDocked) return;
         isCardHovered = false;
         isHeaderHovered = false;
+        isDetachHovered = false;
+        isResizeHovered = false;
         ensureTimerRunning();
         repaint();
     }
@@ -332,7 +562,11 @@ public:
         int contentHeight = 0;
         if (contentComponent != nullptr)
         {
-            contentHeight = contentComponent->getHeight();
+            // Use custom content height if set by resize drag
+            if (customContentHeight > 0)
+                contentHeight = customContentHeight;
+            else
+                contentHeight = contentComponent->getHeight();
 
             // Defensive fallback: if content has no height, use default
             if (contentHeight <= 0)
@@ -417,17 +651,35 @@ private:
     bool isAnimating = false;
     bool isHeaderHovered = false;
     bool isCardHovered = false;
+    bool isDetachHovered = false;
+
+    // Detach button rect (computed in paint, used for hit testing)
+    mutable juce::Rectangle<float> detachButtonRect;
+
+    // Resize grip rect (computed in paint, used for hit testing)
+    mutable juce::Rectangle<float> resizeGripRect;
+    bool isResizeHovered = false;
+    bool isResizeDragging = false;
+    juce::Point<int> resizeDragStart;
+    int resizeStartW = 0;
+    int resizeStartH = 0;
+
+    // Drag tracking state (unified for undock-drag and floating-drag)
+    bool isDragTracking = false;
+    bool isDragActivated = false;
+    juce::Point<int> dragScreenStart;
 
     std::unique_ptr<juce::Component> contentComponent;
 
     // Optional header widget (e.g. ComboBox for Levels card)
     juce::Component* headerWidget = nullptr;  // Non-owning pointer
 
-    // === Offscreen header text cache (STATIC — only rebuild on resize/mode/expand change) ===
+    // === Offscreen header text cache (STATIC — only rebuild on resize/mode/expand/dock change) ===
     juce::Image headerTextCache;
     int lastHeaderCacheW = 0;
     bool lastHeaderCacheMini = false;
     bool lastHeaderCacheExpanded = false;
+    bool lastHeaderCacheDocked = false;
 
     // Animation state
     float currentHeight = 0.0f;
@@ -442,6 +694,8 @@ private:
     static constexpr float dotDiameter = 14.0f;
     static constexpr int defaultContentHeight = 150;
     static constexpr float maxShadowOffset = 8.0f;
+    static constexpr int minResizeW = 180;            // minimum width during resize
+    static constexpr int minResizeContentH = 80;      // minimum content height during resize
 
     int getActiveHeaderHeight() const { return isMiniMode ? miniHeaderHeight : normalHeaderHeight; }
 

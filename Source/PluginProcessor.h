@@ -14,6 +14,7 @@
 
 #include <JuceHeader.h>
 #include <atomic>
+#include "AudioRecorder.h"
 #include <array>
 #include <vector>
 #include <algorithm>
@@ -184,6 +185,9 @@ public:
     std::atomic<float> rmsLevelLow { -90.0f };   // 20-250Hz
     std::atomic<float> rmsLevelMid3Band { -90.0f };  // 250-2kHz (renamed to avoid conflict)
     std::atomic<float> rmsLevelHigh { -90.0f };  // 2k-20kHz
+
+    // Audio recorder (public — GUI thread starts/stops, audio thread pushes samples)
+    AudioRecorder audioRecorder;
 
     // FFT Data (lock-free FIFOs — separate channels for Spectrum and Spectrogram)
     LockFreeFIFO<float, 256> fftFifoL;            // Spectrum analyzer

@@ -78,6 +78,20 @@ public:
     // Callback: right-double-click → toggle Mini Mode
     std::function<void()> onRightDoubleClick;
 
+    // Callback: smile orbit triggered → editor launches card fly-out
+    std::function<void()> onSmileOrbitTriggered;
+
+    // Callback: mouse hover enters/exits Nono body region
+    std::function<void()> onBodyHoverEnter;
+    std::function<void()> onBodyHoverExit;
+
+    // Callback: local drag in floating phase (instead of moving the window)
+    // dx, dy are screen-space deltas from drag start
+    std::function<void(int dx, int dy)> onLocalDrag;
+
+    // Flag: when true, dragging Nono moves its local bounds (not the window)
+    bool useLocalDrag = false;
+
     // Edit mode flag (set by PluginEditor)
     bool isEditMode = false;
 
@@ -174,22 +188,6 @@ public:
 
             default: break;
         }
-    }
-
-    void mouseDown(const juce::MouseEvent& e) override
-    {
-        if (isOrbitLocked) return;
-
-        // Front-face body single-click → pending smile (300ms delay to distinguish from double-click)
-        if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
-            && bodyHitRect.contains(e.position) && !isEditMode && !e.mods.isRightButtonDown())
-        {
-            pendingSmileClick = true;
-            pendingSmileClickTime = juce::Time::getMillisecondCounter();
-        }
-
-        if (nonoState == NonoState::Back && bodyHitRect.contains(e.position))
-            openFileChooser();
     }
 
     //==========================================================================
@@ -358,7 +356,156 @@ public:
 
     void resized() override {}
 
+    //==========================================================================
+    // Hit test: only return true for Nono's visible body/tube regions.
+    // Transparent areas return false → macOS passes clicks through to desktop.
+    //==========================================================================
+    bool hitTest(int x, int y) override
+    {
+        auto pt = juce::Point<float>(static_cast<float>(x), static_cast<float>(y));
+
+        // Body: elliptical check (more accurate than rectangle)
+        if (!bodyHitRect.isEmpty())
+        {
+            float bcx = bodyHitRect.getCentreX();
+            float bcy = bodyHitRect.getCentreY();
+            float rx = bodyHitRect.getWidth() * 0.5f;
+            float ry = bodyHitRect.getHeight() * 0.5f;
+            if (rx > 0.0f && ry > 0.0f)
+            {
+                float dx = (pt.x - bcx) / rx;
+                float dy = (pt.y - bcy) / ry;
+                if (dx * dx + dy * dy <= 1.0f)
+                    return true;
+            }
+        }
+
+        // Test tube region (rectangle check is fine for this shape)
+        if (!tubeHitRect.isEmpty() && tubeHitRect.contains(pt))
+            return true;
+
+        // Results bubble area (approximate: bottom 38% when showing results)
+        if (nonoState == NonoState::ShowingResults || nonoState == NonoState::ClearingData)
+        {
+            auto bounds = getLocalBounds().toFloat();
+            auto bubbleArea = bounds.removeFromBottom(bounds.getHeight() * 0.38f);
+            if (bubbleArea.contains(pt))
+                return true;
+        }
+
+        return false;
+    }
+
+    //==========================================================================
+    // Window drag: in standalone mode, drag Nono's body to move the window.
+    // Click vs drag is distinguished by a 4px distance threshold.
+    //==========================================================================
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (isOrbitLocked) return;
+
+        // Record drag start position for all clicks
+        dragStartPos = e.getScreenPosition();
+        isDraggingWindow = false;
+
+        // Front-face body single-click → pending smile (300ms delay to distinguish from double-click)
+        if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
+            && bodyHitRect.contains(e.position) && !isEditMode && !e.mods.isRightButtonDown())
+        {
+            pendingSmileClick = true;
+            pendingSmileClickTime = juce::Time::getMillisecondCounter();
+        }
+
+        if (nonoState == NonoState::Back && bodyHitRect.contains(e.position))
+            openFileChooser();
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (isOrbitLocked) return;
+
+        auto currentScreenPos = e.getScreenPosition();
+        auto delta = currentScreenPos - dragStartPos;
+
+        // 4px threshold to distinguish click from drag
+        if (!isDraggingWindow && delta.getDistanceFromOrigin() > 4)
+        {
+            isDraggingWindow = true;
+            // Cancel pending smile since this is a drag, not a click
+            pendingSmileClick = false;
+
+            if (useLocalDrag)
+            {
+                // Record Nono's local position at drag start
+                nonoPosAtDragStart = getPosition();
+            }
+            else
+            {
+                // Record the window's position at drag start
+                if (auto* topLevel = getTopLevelComponent())
+                    windowPosAtDragStart = topLevel->getScreenPosition();
+            }
+        }
+
+        if (isDraggingWindow)
+        {
+            if (useLocalDrag)
+            {
+                // Floating phase: move Nono within the editor canvas
+                setTopLeftPosition(nonoPosAtDragStart.x + delta.x,
+                                   nonoPosAtDragStart.y + delta.y);
+                if (onLocalDrag)
+                    onLocalDrag(delta.x, delta.y);
+            }
+            else
+            {
+                // Normal: move the entire window
+                if (auto* topLevel = getTopLevelComponent())
+                {
+                    topLevel->setTopLeftPosition(windowPosAtDragStart.x + delta.x,
+                                                 windowPosAtDragStart.y + delta.y);
+                }
+            }
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        isDraggingWindow = false;
+    }
+
+    void mouseMove(const juce::MouseEvent& e) override
+    {
+        // Track body hover for hover-button system
+        bool nowOverBody = !bodyHitRect.isEmpty() && bodyHitRect.contains(e.position);
+        if (nowOverBody && !isBodyHovered)
+        {
+            isBodyHovered = true;
+            if (onBodyHoverEnter) onBodyHoverEnter();
+        }
+        else if (!nowOverBody && isBodyHovered)
+        {
+            isBodyHovered = false;
+            if (onBodyHoverExit) onBodyHoverExit();
+        }
+    }
+
+    void mouseExit(const juce::MouseEvent&) override
+    {
+        if (isBodyHovered)
+        {
+            isBodyHovered = false;
+            if (onBodyHoverExit) onBodyHoverExit();
+        }
+    }
+
 private:
+    // Window drag state
+    juce::Point<int> dragStartPos;
+    juce::Point<int> windowPosAtDragStart;
+    juce::Point<int> nonoPosAtDragStart;  // local position at drag start (for useLocalDrag mode)
+    bool isDraggingWindow = false;
+    bool isBodyHovered = false;           // body hover tracking for hover buttons
     //==========================================================================
     // Dizzy: nausea accumulator state
     //==========================================================================
@@ -1185,6 +1332,9 @@ private:
         orbitProgress = 0.0f;
         smileFramesLeft = 120;       // 2 seconds at 60Hz
         orbitLockFramesLeft = 90;    // 1.5 seconds at 60Hz
+
+        if (onSmileOrbitTriggered)
+            onSmileOrbitTriggered();
     }
 
     //==========================================================================

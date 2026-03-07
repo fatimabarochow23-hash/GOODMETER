@@ -1,143 +1,156 @@
-# GOODMETER Professional Audio Metering Plugin
+# GOODMETER - Professional Audio Metering Plugin & Desktop Pet
 
 **Company**: Solaris
 **Version**: 1.0.0
-**Format**: VST3/AU
-**Framework**: JUCE
+**Formats**: VST3, AU, Standalone (macOS)
+**Framework**: JUCE 8 / C++17
+**Platform**: macOS ARM64 (Apple Silicon native)
+**Bundle ID**: com.solaris.GOODMETER
 
 ---
 
-## 📊 Project Overview
+## What Is GOODMETER?
 
-GOODMETER is a professional audio metering plugin inspired by Mini Meter and iZotope Insight 2. It provides comprehensive loudness and frequency analysis tools for audio production, post-production, and mastering.
+A professional audio metering suite that operates in two modes:
 
-### Key Features
+**Plugin Mode** (AU/VST3): Runs inside DAWs (REAPER, Logic, etc.). Meters audio flowing through the plugin chain. Scrollable multi-card UI with 8 meter modules.
 
-- **Multiple Loudness Standards**:
-  - EBU R128 (-23 LUFS) - European Broadcasting Union
-  - ATSC A/85 (-24 LKFS) - US Television
-  - ITU-R BS.1770-4 - International Telecommunications Union
-  - AES Streaming (-16 LUFS) - Spotify/Apple Music
-  - Custom user-defined targets
-
-- **Metering Modules**:
-  - **LEVELS**: Momentary, Short-term, Integrated LUFS + True Peak
-  - **CLASSIC VU METER**: Analog-style VU meter with proper ballistics (300ms)
-  - **3-BAND METER**: Low (20-250Hz), Mid (250-4kHz), High (4-20kHz)
-  - **SPECTRUM ANALYZER**: Real-time FFT frequency analysis (20Hz - 20kHz)
-  - **PHASE CORRELATION**: Stereo phase relationship (-1.0 to +1.0)
-  - **STEREO IMAGE**: M/L/R/S channel meters + Polar field analyzer
-  - **SPECTROGRAM**: Time-frequency waterfall display
+**Standalone Mode** (Desktop Pet): A transparent, borderless, always-on-top macOS desktop pet. An animated character ("Nono") sits on the desktop. Click Nono to reveal 8 meter cards that orbit out and dock as a bookshelf. Cards can be dragged, snapped into groups, stowed with a "Thanos snap" VFX, and recalled.
 
 ---
 
-## 🎨 Design Philosophy
+## Metering Modules (8 Cards)
 
-Following professional audio industry aesthetics (Goodhertz, iZotope, FabFilter):
-- Deep black backgrounds (#0B0B0D)
-- Desaturated professional colors
-- Minimal visual clutter
-- Maximum data clarity
+| Module | Description |
+|--------|-------------|
+| **LEVELS** | Momentary, Short-term, Integrated LUFS (BS.1770-4) + True Peak + LRA |
+| **CLASSIC VU** | Analog-style needle meter with AffineTransform rotation, 300ms ballistics |
+| **3-BAND** | Low (20-250Hz), Mid (250-2kHz), High (2k-20kHz) frequency analysis |
+| **SPECTRUM** | Real-time FFT spectrum analyzer (4096-point, log frequency, smooth polygon) |
+| **PHASE** | Stereo phase correlation condenser tube (-1.0 to +1.0) |
+| **STEREO IMAGE** | Goniometer/Lissajous display + M/S level meters |
+| **SPECTROGRAM** | Time-frequency waterfall display (ring buffer rendering) |
+| **PSR** | Peak-to-Short-Term Ratio meter |
 
 ---
 
-## 📁 Project Structure
+## Source File Map
 
 ```
-GOODMETER/
-├── Source/              # JUCE C++ source code
-│   ├── PluginProcessor.h/.cpp
-│   ├── PluginEditor.h/.cpp
-│   ├── DSP/            # DSP algorithms
-│   │   ├── LUFSMeter.h/.cpp
-│   │   ├── TruePeak.h/.cpp
-│   │   ├── VUMeter.h/.cpp
-│   │   ├── SpectrumAnalyzer.h/.cpp
-│   │   ├── PhaseCorrelation.h/.cpp
-│   │   └── Spectrogram.h/.cpp
-│   └── GUI/            # Custom GUI components
-│       ├── MeterCard.h/.cpp
-│       ├── LevelsModule.h/.cpp
-│       ├── VUMeterModule.h/.cpp
-│       └── ...
-├── Builds/             # Platform-specific build files
-├── docs/               # Documentation
-└── reference-ui/       # Gemini's React/TypeScript UI reference
-    ├── src/
-    │   ├── components/
-    │   ├── lib/
-    │   └── App.tsx
-    └── package.json
+Source/
+  PluginProcessor.h/.cpp       DSP engine (shared by plugin + standalone)
+  PluginEditor.h/.cpp          Plugin UI (DAW mode, scrollable card layout)
+  StandaloneNonoEditor.h       Standalone UI (desktop pet, 2800 lines)
+  StandaloneApp.cpp            Custom JUCEApplication + MenuBarModel
+  GoodMeterLookAndFeel.h       Shared colors, fonts, drawStatusDot
+  HoloNonoComponent.h          Animated Nono character (holographic pet)
+  MeterCardComponent.h         Collapsible card (header + content + shadow)
+  AudioRecorder.h              Lock-free WAV recorder (FIFO + background thread)
+  LevelsMeterComponent.h       LUFS/Peak/RMS/LRA meter
+  VUMeterComponent.h           Classic analog VU needle meter
+  Band3Component.h             3-band frequency meter
+  SpectrumAnalyzerComponent.h  FFT spectrum analyzer
+  PhaseCorrelationComponent.h  Stereo phase correlation meter
+  StereoImageComponent.h       Goniometer/Lissajous + M/S meters
+  SpectrogramComponent.h       Time-frequency waterfall display
+  PsrMeterComponent.h          Peak-to-Short-Term Ratio meter
+
+Assets/
+  btn_settings.png             Gear icon for hover button
+  btn_record.png               Tape/record icon for hover button
+  btn_stow.png                 Shard/stow icon for hover button
 ```
 
 ---
 
-## 🚀 Development Status
+## Build Instructions
 
-### Phase 1: UI Design ✅ COMPLETE
-- [x] Gemini designed professional UI in React/TypeScript
-- [x] All 7 metering modules designed
-- [x] Professional color scheme established
+### Prerequisites
 
-### Phase 2: JUCE Migration 🔄 IN PROGRESS
-- [ ] Set up JUCE project
-- [ ] Implement DSP algorithms
-- [ ] Migrate UI to JUCE C++
-- [ ] Connect parameters (APVTS)
+- macOS 15.x (ARM64 / Apple Silicon)
+- Xcode 16.3+
+- JUCE 8 (with Projucer)
 
-### Phase 3: Audio Integration 📅 PLANNED
-- [ ] Core Audio system monitoring (macOS)
-- [ ] Plugin audio input processing
-- [ ] Real-time metering updates
+### Build Standalone
 
-### Phase 4: Polish & Release 📅 PLANNED
-- [ ] Code signing & notarization
-- [ ] DMG installer creation
-- [ ] User manual
-- [ ] Beta testing
+```bash
+/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+  -project Builds/MacOSX/GOODMETER.xcodeproj \
+  -scheme "GOODMETER - Standalone Plugin" \
+  -configuration Release build
+```
 
----
+### Build VST3
 
-## 🛠 Technical Requirements
+```bash
+/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+  -project Builds/MacOSX/GOODMETER.xcodeproj \
+  -scheme "GOODMETER - VST3" \
+  -configuration Release build
+```
 
-- **JUCE Framework**: 7.0.12+
-- **C++ Standard**: C++17
-- **macOS**: 10.13+
-- **Xcode**: 15.0+
-- **Audio Standards**: ITU-R BS.1770-4 for LUFS measurement
+### Build AU
 
----
+```bash
+/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
+  -project Builds/MacOSX/GOODMETER.xcodeproj \
+  -scheme "GOODMETER - AU" \
+  -configuration Release build
+```
 
-## 📖 Metering Standards Reference
+### After editing .jucer file
 
-### LUFS (Loudness Units relative to Full Scale)
-- **Momentary**: 400ms window, updated every 100ms
-- **Short-term**: 3 second window
-- **Integrated**: Entire program duration (gated at -70 LUFS)
-
-### True Peak
-- 4x oversampling ITU-R BS.1770-4 algorithm
-- Detects inter-sample peaks
-
-### VU Meter
-- 300ms attack/release time (classic analog ballistics)
-- 0 VU = -18 dBFS (broadcast standard)
+**Always re-save with Projucer:**
+```bash
+"/path/to/JUCE/Projucer.app/Contents/MacOS/Projucer" --resave "GOODMETER.jucer"
+```
+This regenerates Xcode project files, Info.plist templates, and BinaryData.
 
 ---
 
-## 📝 License
+## Documentation (For AI Assistants)
 
-Copyright © 2026 Solaris Audio
-All rights reserved.
+This project includes comprehensive documentation designed for AI code assistants:
+
+| Document | Purpose |
+|----------|---------|
+| `ARCHITECTURE.md` | Complete technical map: file structure, DSP pipeline, standalone architecture, state machine, build system |
+| `DEVELOPMENT_HISTORY.md` | Chronological record: 45 commits, bugs, fixes, battle plan vs reality, JUCE lessons |
+| `LESSONS_LEARNED.md` | Deep dive: 6-round drag-freeze debugging saga, paint() path rules, performance emergency |
+
+**Reading order for a new AI assistant:**
+1. `ARCHITECTURE.md` - understand the dual-mode architecture
+2. `DEVELOPMENT_HISTORY.md` - understand history and pitfalls
+3. `LESSONS_LEARNED.md` - the performance debugging saga
 
 ---
 
-## 🔗 Related Projects
+## Key Technical Decisions
+
+- **Standalone output mute**: `buffer.clear()` in processBlock (guarded by `#if JucePlugin_Build_Standalone`) prevents mic-speaker feedback loop
+- **No OpenGL**: MessageManagerLock deadlocks with NSEventTrackingRunLoopMode on macOS
+- **No drawText in paint()**: JUCE 8 HarfBuzz creates CTFont every call. All text pre-rendered to offline Images
+- **Custom standalone app**: `JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1` enables our StandaloneApp.cpp
+- **Click-through**: macOS `[NSWindow setIgnoresMouseEvents:]` toggled at 60Hz via ObjC runtime bridge
+- **Microphone only**: Currently captures hardware mic input. System audio capture (ScreenCaptureKit) is a V2.0 feature
+
+---
+
+## Known Limitations
+
+1. Standalone captures microphone only (no system audio capture yet)
+2. Recording saves to ~/Desktop only (no configurable output directory)
+3. Recording format is WAV 16-bit only
+4. macOS only (no Windows support yet)
+
+---
+
+## Related Projects
 
 - **SPLENTA**: Low-frequency enhancement plugin
 - **SOLARIS-8**: Organismic synthesizer (LYRA-8 inspired)
 
 ---
 
-**Last Updated**: 2026-01-27
-**Bundle ID**: com.solaris.GOODMETER
+Copyright 2026 Solaris Audio. All rights reserved.
+**Last Updated**: 2026-03-07

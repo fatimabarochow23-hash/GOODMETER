@@ -258,6 +258,13 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     const float* channelDataL = buffer.getReadPointer(0);
     const float* channelDataR = numChannels > 1 ? buffer.getReadPointer(1) : channelDataL;
 
+    // Recording tap — push raw samples to lock-free FIFO (real-time safe)
+    if (audioRecorder.getIsRecording())
+    {
+        const float* recChannels[2] = { channelDataL, channelDataR };
+        audioRecorder.pushSamples(recChannels, numSamples);
+    }
+
     //==========================================================================
     // Local accumulators (stack-allocated, real-time safe)
     //==========================================================================
@@ -607,6 +614,16 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
             tempStereoIndex = 0;
         }
     }
+
+    //==========================================================================
+    // Standalone mode: mute output to prevent feedback loop.
+    // All metering data has already been extracted from the input above.
+    // Without this, input passes straight to output → speakers → mic → howl.
+    //==========================================================================
+#if JucePlugin_Build_Standalone
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        buffer.clear(ch, 0, numSamples);
+#endif
 }
 
 //==============================================================================

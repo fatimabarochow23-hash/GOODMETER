@@ -50,6 +50,8 @@ public:
     static inline const juce::Colour accentGreen  = juce::Colour(0xFF00D084);  // #00D084
     static inline const juce::Colour accentYellow = juce::Colour(0xFFFFD166);  // #FFD166
     static inline const juce::Colour accentCyan   = juce::Colour(0xFF06D6A0);  // #06D6A0
+    static inline const juce::Colour accentBlue    = juce::Colour(0xFF22D3EE);  // #22D3EE (SPLENTA Blue)
+    static inline const juce::Colour accentSoftPink= juce::Colour(0xFFf0a5c2);  // #f0a5c2 (SPLENTA Pink)
 
     // Scrollbar colors
     static inline const juce::Colour scrollTrack = bgMain;
@@ -219,6 +221,10 @@ public:
         auto b = bounds.toFloat();
         const float cr = cornerRadius;
         const float maxShadow = 8.0f;
+
+        // Guard: skip drawing if bounds are too small for the shadow offset
+        if (b.getWidth() <= maxShadow || b.getHeight() <= maxShadow)
+            return;
 
         // Card body shifts upper-left as hoverOffset grows
         float cardX = b.getX() + (maxShadow - hoverOffset);

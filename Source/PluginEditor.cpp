@@ -75,7 +75,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
 
     phaseCard = std::make_unique<MeterCardComponent>(
         "PHASE",
-        GoodMeterLookAndFeel::accentGreen,
+        GoodMeterLookAndFeel::accentBlue,
         true  // Expanded for testing
     );
 
@@ -85,7 +85,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
 
     stereoImageCard = std::make_unique<MeterCardComponent>(
         "STEREO",
-        GoodMeterLookAndFeel::accentPink,
+        GoodMeterLookAndFeel::accentSoftPink,
         true  // ✅ Expanded to show stereo field visualization
     );
 
