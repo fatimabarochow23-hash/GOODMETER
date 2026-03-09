@@ -54,6 +54,7 @@ public:
         // 0: LEVELS
         levelsCard = std::make_unique<MeterCardComponent>(
             "LEVELS", GoodMeterLookAndFeel::accentPink, false);
+        levelsCard->preferredContentHeight = 200;
         levelsMeter = new LevelsMeterComponent(audioProcessor);
         levelsMeter->setupTargetMenu();
         levelsCard->setContentComponent(std::unique_ptr<juce::Component>(levelsMeter));
@@ -63,6 +64,7 @@ public:
         // 1: VU METER
         vuMeterCard = std::make_unique<MeterCardComponent>(
             "VU METER", GoodMeterLookAndFeel::accentYellow, false);
+        vuMeterCard->preferredContentHeight = 120;
         vuMeter = new VUMeterComponent();
         vuMeterCard->setContentComponent(std::unique_ptr<juce::Component>(vuMeter));
         addChildComponent(vuMeterCard.get());
@@ -70,6 +72,7 @@ public:
         // 2: 3-BAND
         threeBandCard = std::make_unique<MeterCardComponent>(
             "3-BAND", GoodMeterLookAndFeel::accentPurple, false);
+        threeBandCard->preferredContentHeight = 160;
         band3Meter = new Band3Component(audioProcessor);
         threeBandCard->setContentComponent(std::unique_ptr<juce::Component>(band3Meter));
         addChildComponent(threeBandCard.get());
@@ -77,6 +80,7 @@ public:
         // 3: SPECTRUM
         spectrumCard = std::make_unique<MeterCardComponent>(
             "SPECTRUM", GoodMeterLookAndFeel::accentCyan, false);
+        spectrumCard->preferredContentHeight = 220;
         spectrumAnalyzer = new SpectrumAnalyzerComponent(audioProcessor);
         spectrumCard->setContentComponent(std::unique_ptr<juce::Component>(spectrumAnalyzer));
         addChildComponent(spectrumCard.get());
@@ -84,6 +88,7 @@ public:
         // 4: PHASE
         phaseCard = std::make_unique<MeterCardComponent>(
             "PHASE", GoodMeterLookAndFeel::accentBlue, false);
+        phaseCard->preferredContentHeight = 200;
         phaseMeter = new PhaseCorrelationComponent();
         phaseCard->setContentComponent(std::unique_ptr<juce::Component>(phaseMeter));
         addChildComponent(phaseCard.get());
@@ -91,6 +96,7 @@ public:
         // 5: STEREO
         stereoImageCard = std::make_unique<MeterCardComponent>(
             "STEREO", GoodMeterLookAndFeel::accentSoftPink, false);
+        stereoImageCard->preferredContentHeight = 200;
         stereoImageMeter = new StereoImageComponent(audioProcessor);
         stereoImageCard->setContentComponent(std::unique_ptr<juce::Component>(stereoImageMeter));
         addChildComponent(stereoImageCard.get());
@@ -98,6 +104,7 @@ public:
         // 6: SPECTROGRAM
         spectrogramCard = std::make_unique<MeterCardComponent>(
             "SPECTROGRAM", GoodMeterLookAndFeel::accentYellow, false);
+        spectrogramCard->preferredContentHeight = 220;
         spectrogramMeter = new SpectrogramComponent(audioProcessor);
         spectrogramCard->setContentComponent(std::unique_ptr<juce::Component>(spectrogramMeter));
         addChildComponent(spectrogramCard.get());
@@ -105,6 +112,7 @@ public:
         // 7: PSR
         psrCard = std::make_unique<MeterCardComponent>(
             "PSR", juce::Colour(0xFF20C997), false);
+        psrCard->preferredContentHeight = 160;
         psrMeter = new PsrMeterComponent(audioProcessor);
         psrCard->setContentComponent(std::unique_ptr<juce::Component>(psrMeter));
         addChildComponent(psrCard.get());
@@ -181,8 +189,11 @@ public:
             };
             card->onHeightChanged = [this, i]()
             {
-                if (phase == AnimPhase::floating)
+                if (phase == AnimPhase::floating && !isSystemStowing)
+                {
+                    clampCardHeightToAvoidCollision(i);
                     relayoutGroupForCard(i);
+                }
             };
         }
 
@@ -234,6 +245,29 @@ public:
 
         // Draw shatter effects (Thanos snap VFX)
         drawShatterEffects(g);
+
+        // Draw collision warning flash (red border on overlap region)
+        if (collisionWarning.active && collisionWarning.alpha > 0.01f)
+        {
+            auto& cw = collisionWarning;
+            auto warningColour = juce::Colour(0xFFE6335F);  // red
+
+            // Outer glow
+            g.setColour(warningColour.withAlpha(0.15f * cw.alpha));
+            g.fillRect(cw.overlapRect.expanded(6.0f));
+
+            // Mid glow
+            g.setColour(warningColour.withAlpha(0.35f * cw.alpha));
+            g.fillRect(cw.overlapRect.expanded(3.0f));
+
+            // Core border (2px)
+            g.setColour(warningColour.withAlpha(0.85f * cw.alpha));
+            g.drawRect(cw.overlapRect, 2.0f);
+
+            // Translucent fill
+            g.setColour(warningColour.withAlpha(0.12f * cw.alpha));
+            g.fillRect(cw.overlapRect);
+        }
 
         // Draw hover buttons (on top of everything except snap guides)
         drawHoverButtons(g);
@@ -417,6 +451,18 @@ public:
 
         // Thanos snap shatter physics (runs in ALL phases)
         tickShatterEffects();
+
+        // Collision warning fade-out (runs in ALL phases)
+        if (collisionWarning.active)
+        {
+            collisionWarning.alpha -= 1.0f / 30.0f;  // ~0.5s fade at 60Hz
+            if (collisionWarning.alpha <= 0.0f)
+            {
+                collisionWarning.active = false;
+                collisionWarning.alpha = 0.0f;
+            }
+            repaint();
+        }
     }
 
 private:
@@ -586,6 +632,15 @@ private:
     };
     PendingSnap pendingSnap;
 
+    // Collision warning (red flash when snap is rejected due to expansion forecast)
+    struct CollisionWarning
+    {
+        bool active = false;
+        float alpha = 0.0f;
+        juce::Rectangle<float> overlapRect;
+    };
+    CollisionWarning collisionWarning;
+
     // Snap constants
     static constexpr int snapThreshold = 14;         // pixels for snap detection
     static constexpr int snapOverlapMin = 10;         // perpendicular overlap minimum
@@ -653,6 +708,9 @@ private:
     };
     CardShatterState cardShatterStates[numCards] = {};
     bool anyShatterActive = false;
+
+    // System animation flag: when true, onHeightChanged skips collision/relayout
+    bool isSystemStowing = false;
 
     //==========================================================================
     // Easing functions
@@ -959,16 +1017,40 @@ private:
             return;
         }
 
+        // ★ Bypass collision/relayout during system stow
+        isSystemStowing = true;
+
+        // ★ Force-collapse all expanded floating cards first
+        for (int i = 0; i < numCards; ++i)
+        {
+            if (cardStowed[i]) continue;
+            auto* card = getCard(i);
+            if (!card) continue;
+            if (card->getExpanded())
+                card->setExpanded(false, false);  // instant collapse, no animation
+        }
+
+        // ★ Dissolve all snap groups (shatter is a global operation)
+        for (auto& group : snapGroups)
+        {
+            for (int idx : group.members)
+            {
+                cardFloatState[idx].snapGroupID = -1;
+                auto* mc = getCard(idx);
+                if (mc) mc->showDetachButton = false;
+            }
+        }
+        snapGroups.clear();
+
+        isSystemStowing = false;
+
+        // Now all cards are collapsed — stow everything
         bool anyEligible = false;
         for (int i = 0; i < numCards; ++i)
         {
             if (cardStowed[i]) continue;
             auto* card = getCard(i);
             if (!card) continue;
-
-            // Stow criteria: docked (on shelf) OR floating but collapsed
-            bool eligible = card->isDocked || !card->getExpanded();
-            if (!eligible) continue;
 
             anyEligible = true;
             cardStowed[i] = true;
@@ -1686,10 +1768,17 @@ private:
                 float orbitCX = centerX + arcRadius * std::cos(currOrbitAngle);
                 float orbitCY = centerY + arcRadius * std::sin(currOrbitAngle);
 
-                float shelfCX = shelfTargetX + foldedCardW / 2.0f;
+                // Target: status dot center inside the card header
+                // Card body offset from bounds = maxShadow(8) - restHover(4) = 4
+                // Dot center X = bodyOffset + cardPadding(16) + dotDiameter(14)/2 = 27
+                // Dot center Y = bodyOffset + headerHeight(48)/2 = 28
+                static constexpr float dotOffsetX = 4.0f + 16.0f + 7.0f;  // 27
+                static constexpr float dotOffsetY = 4.0f + 24.0f;         // 28
+
+                float shelfCX = shelfTargetX + dotOffsetX;
                 float shelfCY = shelfTargetStartY
                               + static_cast<float>(i) * (foldedCardH + shelfGap)
-                              + foldedCardH / 2.0f;
+                              + dotOffsetY;
 
                 cx = orbitCX + (shelfCX - orbitCX) * t;
                 cy = orbitCY + (shelfCY - orbitCY) * t;
@@ -1987,21 +2076,32 @@ private:
         int newX = localPos.x - floatingDragOffset.x;
         int newY = localPos.y - floatingDragOffset.y;
 
-        // If card is in a group, move ALL group members by same delta
+        // If card is in a group, use stored offsets for rigid body positioning.
+        // This is more robust than per-frame delta propagation, which can drift
+        // if any other code (hover animation, height relayout) modifies positions
+        // between frames.
         int groupID = cardFloatState[floatingDragCardIndex].snapGroupID;
         if (groupID >= 0)
         {
-            auto oldPos = dragCard->getPosition();
-            int dx = newX - oldPos.x;
-            int dy = newY - oldPos.y;
-
             for (auto& group : snapGroups)
             {
                 if (group.groupID != groupID) continue;
+
+                // Compute anchor position from drag card's desired position
+                auto dragOffsetIt = group.offsets.find(floatingDragCardIndex);
+                if (dragOffsetIt == group.offsets.end()) break;
+
+                int anchorX = newX - dragOffsetIt->second.x;
+                int anchorY = newY - dragOffsetIt->second.y;
+
+                // Position ALL members at anchor + their stored offset
                 for (int memberIdx : group.members)
                 {
                     auto* mc = getCard(memberIdx);
-                    if (mc) mc->setTopLeftPosition(mc->getX() + dx, mc->getY() + dy);
+                    if (!mc) continue;
+                    auto it = group.offsets.find(memberIdx);
+                    if (it == group.offsets.end()) continue;
+                    mc->setTopLeftPosition(anchorX + it->second.x, anchorY + it->second.y);
                 }
                 break;
             }
@@ -2013,6 +2113,40 @@ private:
 
         // Snap detection
         pendingSnap = findBestSnap(floatingDragCardIndex);
+
+        // Real-time snap preview: if snap detected, move card (and group) to
+        // snap position NOW. This eliminates the jarring teleport on mouseUp.
+        // When snap loses range next frame, card returns to mouse position naturally.
+        if (pendingSnap.valid)
+        {
+            auto* dc = getCard(floatingDragCardIndex);
+            if (dc)
+            {
+                int gid = cardFloatState[floatingDragCardIndex].snapGroupID;
+                if (gid >= 0)
+                {
+                    for (auto& group : snapGroups)
+                    {
+                        if (group.groupID != gid) continue;
+                        for (int memberIdx : group.members)
+                        {
+                            auto* mc = getCard(memberIdx);
+                            if (mc) mc->setTopLeftPosition(
+                                mc->getX() + pendingSnap.snapDelta.x,
+                                mc->getY() + pendingSnap.snapDelta.y);
+                        }
+                        break;
+                    }
+                }
+                else
+                {
+                    dc->setTopLeftPosition(
+                        dc->getX() + pendingSnap.snapDelta.x,
+                        dc->getY() + pendingSnap.snapDelta.y);
+                }
+            }
+        }
+
         repaint();
     }
 
@@ -2020,23 +2154,52 @@ private:
     {
         juce::ignoreUnused(card, event);
 
-        // Commit snap if pending
+        // Commit snap if pending (with expansion collision check)
         if (pendingSnap.valid && floatingDragCardIndex >= 0)
         {
-            int dragIdx = floatingDragCardIndex;
-            commitSnap(pendingSnap);
+            // Check if snap would cause collision when cards expand
+            auto overlapRect = checkExpansionCollision(pendingSnap);
+            if (!overlapRect.isEmpty())
+            {
+                // Reject snap — trigger red flash warning
+                collisionWarning.active = true;
+                collisionWarning.alpha = 1.0f;
+                collisionWarning.overlapRect = overlapRect.toFloat();
+                pendingSnap.valid = false;
+            }
+            else
+            {
+                int dragIdx = floatingDragCardIndex;
+                // skipMove=true: position already applied by real-time snap preview
+                commitSnap(pendingSnap, true);
 
-            // ============================================================
-            // Two-step L-shape snap: after first snap commits, the card
-            // is now in a group. Check if a SECOND snap edge exists
-            // (e.g. snapped right edge, now also close to a bottom edge).
-            // This allows forming 2×2 rectangle groups in one drag.
-            // allowSameGroup=true so we can find edges within the group.
-            // ============================================================
-            auto secondSnap = findBestSnap(dragIdx, true);
-            if (secondSnap.valid)
-                commitSnap(secondSnap);
+                // ============================================================
+                // Two-step L-shape snap: after first snap commits, the card
+                // is now in a group. Check if a SECOND snap edge exists
+                // (e.g. snapped right edge, now also close to a bottom edge).
+                // This allows forming 2×2 rectangle groups in one drag.
+                // allowSameGroup=true so we can find edges within the group.
+                // ============================================================
+                auto secondSnap = findBestSnap(dragIdx, true);
+                if (secondSnap.valid)
+                {
+                    auto secondOverlap = checkExpansionCollision(secondSnap);
+                    if (secondOverlap.isEmpty())
+                        commitSnap(secondSnap, false);  // 2nd snap was NOT previewed
+                }
+            }
         }
+
+        // Recalculate group offsets after drag (ensures consistency even without snap)
+        if (floatingDragCardIndex >= 0)
+        {
+            int gid = cardFloatState[floatingDragCardIndex].snapGroupID;
+            if (gid >= 0)
+                recalcGroupOffsets(gid);
+        }
+
+        // Alignment Divorce: detach any members that lost alignment during drag
+        validateGroupAlignments();
 
         pendingSnap.valid = false;
         floatingDragCardIndex = -1;
@@ -2055,6 +2218,234 @@ private:
         auto b = card->getBounds();
         return juce::Rectangle<int>(b.getX() + 8, b.getY() + 8,
                                      b.getWidth() - 8, b.getHeight() - 8);
+    }
+
+    /** Full-volume overlap check: given a drag card index and its would-be
+     *  visual rect after snap delta, check if it intersects ANY other visible
+     *  floating card on screen (regardless of group ID).
+     *  Handles group drag: all group members shift by snapDelta.
+     *  targetIdx is excluded from collision checks (it's the snap partner).
+     *  Returns true if there's an overlap → snap should be rejected. */
+    bool wouldSnapCauseOverlap(int dragIdx, int targetIdx, juce::Point<int> snapDelta) const
+    {
+        // Collect all cards that are MOVING (drag card + its group members)
+        int movingCards[numCards];
+        int numMoving = 0;
+        int dragGroup = cardFloatState[dragIdx].snapGroupID;
+
+        if (dragGroup >= 0)
+        {
+            for (const auto& g : snapGroups)
+            {
+                if (g.groupID != dragGroup) continue;
+                for (int idx : g.members)
+                    movingCards[numMoving++] = idx;
+                break;
+            }
+        }
+        else
+        {
+            movingCards[numMoving++] = dragIdx;
+        }
+
+        // For each moving card, check post-snap rect against all non-moving visible cards
+        for (int m = 0; m < numMoving; ++m)
+        {
+            int movIdx = movingCards[m];
+            auto movRect = getCardVisualRect(movIdx);
+            if (movRect.isEmpty()) continue;
+            auto postSnapRect = movRect.translated(snapDelta.x, snapDelta.y);
+
+            for (int i = 0; i < numCards; ++i)
+            {
+                // Skip self
+                if (i == movIdx) continue;
+                // Skip the snap target (edge-to-edge is expected)
+                if (i == targetIdx) continue;
+                // Skip other moving cards (they move together)
+                bool isMoving = false;
+                for (int j = 0; j < numMoving; ++j)
+                    if (movingCards[j] == i) { isMoving = true; break; }
+                if (isMoving) continue;
+
+                if (cardStowed[i]) continue;
+                auto* card = getCard(i);
+                if (!card || !card->isVisible()) continue;
+                if (!cardFloatState[i].isFloating && phase == AnimPhase::floating) continue;
+
+                auto otherRect = getCardVisualRect(i);
+                if (otherRect.isEmpty()) continue;
+
+                if (postSnapRect.intersects(otherRect))
+                    return true;  // overlap detected → reject snap
+            }
+        }
+
+        return false;  // no overlap
+    }
+
+    /** Compute expanded visual rect for a card (simulating full expansion).
+     *  Uses preferredContentHeight if set, else customContentHeight, else 150 fallback. */
+    juce::Rectangle<int> getExpandedVisualRect(int cardIndex) const
+    {
+        auto* card = getCard(cardIndex);
+        if (!card) return {};
+        auto b = card->getBounds();
+
+        // Expanded height: priority chain matches MeterCardComponent::getDesiredHeight()
+        int headerH = card->isMiniMode ? 24 : 48;
+        int contentH;
+        if (card->customContentHeight > 0)
+            contentH = card->customContentHeight;
+        else if (card->preferredContentHeight > 0)
+            contentH = card->preferredContentHeight;
+        else
+            contentH = 150;  // fallback
+        int pad = card->isMiniMode ? 2 : 16;
+        int expandedH = headerH + contentH + pad * 2 + 8;  // +8 for shadow
+
+        // Width stays the same (or use customWidth if set)
+        int expandedW = b.getWidth();
+
+        // Visual rect excludes shadow: offset by +8, size minus 8
+        return juce::Rectangle<int>(b.getX() + 8, b.getY() + 8,
+                                     expandedW - 8, expandedH - 8);
+    }
+
+    /** Check if committing a snap would cause collision when cards expand.
+     *  Simulates all cards in the would-be group at expanded size,
+     *  propagating vertical relayout, then checks:
+     *  1. Intra-group: any pair of expanded group members still overlap after relayout
+     *  2. Extra-group: expanded group union vs all non-group floating cards
+     *  Returns the overlap rect if collision found, or empty rect if safe. */
+    juce::Rectangle<int> checkExpansionCollision(const PendingSnap& snap) const
+    {
+        // Determine the would-be group members after this snap
+        int dragGroup = cardFloatState[snap.dragCardIndex].snapGroupID;
+        int targetGroup = cardFloatState[snap.targetCardIndex].snapGroupID;
+
+        // Collect all members of the would-be merged group
+        int groupMembers[numCards];
+        int numMembers = 0;
+
+        // Add drag card's group (or just drag card)
+        if (dragGroup >= 0)
+        {
+            for (const auto& g : snapGroups)
+            {
+                if (g.groupID != dragGroup) continue;
+                for (int idx : g.members)
+                    groupMembers[numMembers++] = idx;
+                break;
+            }
+        }
+        else
+        {
+            groupMembers[numMembers++] = snap.dragCardIndex;
+        }
+
+        // Add target card's group (or just target card)
+        if (targetGroup >= 0 && targetGroup != dragGroup)
+        {
+            for (const auto& g : snapGroups)
+            {
+                if (g.groupID != targetGroup) continue;
+                for (int idx : g.members)
+                    groupMembers[numMembers++] = idx;
+                break;
+            }
+        }
+        else if (targetGroup < 0)
+        {
+            // Only add if not already in the list
+            bool already = false;
+            for (int j = 0; j < numMembers; ++j)
+                if (groupMembers[j] == snap.targetCardIndex) { already = true; break; }
+            if (!already)
+                groupMembers[numMembers++] = snap.targetCardIndex;
+        }
+
+        // Compute expanded visual rects for all group members
+        // (after snap delta is applied to drag card's group)
+        juce::Rectangle<int> expandedRects[numCards];
+        for (int j = 0; j < numMembers; ++j)
+        {
+            int idx = groupMembers[j];
+            expandedRects[j] = getExpandedVisualRect(idx);
+
+            // Apply snap delta to drag card (and its group members)
+            bool inDragGroup = (dragGroup >= 0 && cardFloatState[idx].snapGroupID == dragGroup)
+                               || idx == snap.dragCardIndex;
+            if (inDragGroup)
+                expandedRects[j] = expandedRects[j].translated(snap.snapDelta.x, snap.snapDelta.y);
+        }
+
+        // Simulate vertical relayout: for stacked cards, push lower ones down
+        for (int pass = 0; pass < numMembers; ++pass)
+        {
+            for (int a = 0; a < numMembers; ++a)
+            {
+                for (int b = a + 1; b < numMembers; ++b)
+                {
+                    auto& ra = expandedRects[a];
+                    auto& rb = expandedRects[b];
+                    auto intersection = ra.getIntersection(rb);
+                    if (!intersection.isEmpty())
+                    {
+                        // Push the lower one down
+                        if (ra.getY() <= rb.getY())
+                            rb = rb.translated(0, intersection.getHeight());
+                        else
+                            ra = ra.translated(0, intersection.getHeight());
+                    }
+                }
+            }
+        }
+
+        // ── Intra-group check: after relayout, verify no members still overlap ──
+        for (int a = 0; a < numMembers; ++a)
+        {
+            for (int b = a + 1; b < numMembers; ++b)
+            {
+                auto overlap = expandedRects[a].getIntersection(expandedRects[b]);
+                if (!overlap.isEmpty())
+                    return overlap;  // intra-group collision after expansion
+            }
+        }
+
+        // Compute union of all expanded group rects
+        juce::Rectangle<int> groupUnion;
+        for (int j = 0; j < numMembers; ++j)
+        {
+            if (j == 0)
+                groupUnion = expandedRects[j];
+            else
+                groupUnion = groupUnion.getUnion(expandedRects[j]);
+        }
+
+        // ── Extra-group check: against all non-group floating cards ──
+        for (int i = 0; i < numCards; ++i)
+        {
+            // Skip group members
+            bool isMember = false;
+            for (int j = 0; j < numMembers; ++j)
+                if (groupMembers[j] == i) { isMember = true; break; }
+            if (isMember) continue;
+
+            if (!cardFloatState[i].isFloating) continue;
+            if (cardStowed[i]) continue;
+            auto* card = getCard(i);
+            if (!card || !card->isVisible()) continue;
+
+            auto cardRect = getCardVisualRect(i);
+            if (cardRect.isEmpty()) continue;
+
+            auto overlap = groupUnion.getIntersection(cardRect);
+            if (!overlap.isEmpty())
+                return overlap;  // collision found
+        }
+
+        return {};  // no collision
     }
 
     /** Find best snap candidate for dragged card.
@@ -2114,21 +2505,17 @@ private:
 
             std::vector<EdgeCandidate> candidates;
 
-            // Helper: compute near-edge alignment delta for the secondary axis
-            // FORCE absolute alignment — no threshold guard. If primary axis
-            // triggers a snap, secondary axis ALWAYS aligns to nearest edge.
+            // Strict alignment: top/left edges must always be flush.
+            // Horizontal snap (side-by-side) → top edges flush.
+            // Vertical snap (stacking) → left edges flush.
             auto nearEdgeAlignY = [&]() -> int
             {
-                int topDiff = tRect.getY() - dragRect.getY();
-                int bottomDiff = tRect.getBottom() - dragRect.getBottom();
-                return (std::abs(topDiff) <= std::abs(bottomDiff)) ? topDiff : bottomDiff;
+                return tRect.getY() - dragRect.getY();  // force top-edge flush
             };
 
             auto nearEdgeAlignX = [&]() -> int
             {
-                int leftDiff = tRect.getX() - dragRect.getX();
-                int rightDiff = tRect.getRight() - dragRect.getRight();
-                return (std::abs(leftDiff) <= std::abs(rightDiff)) ? leftDiff : rightDiff;
+                return tRect.getX() - dragRect.getX();  // force left-edge flush
             };
 
             // Helper: build edge rects covering union of both cards (after snap)
@@ -2183,7 +2570,7 @@ private:
                 return std::make_pair(de, te);
             };
 
-            // A.right ↔ B.left
+            // A.right ↔ B.left (drag's right edge meets target's left edge)
             {
                 int gap = tRect.getX() - dragRect.getRight();
                 int overlapY = juce::jmin(dragRect.getBottom(), tRect.getBottom())
@@ -2191,14 +2578,18 @@ private:
                 if (std::abs(gap) <= snapThreshold && overlapY >= snapOverlapMin)
                 {
                     int dy = nearEdgeAlignY();
-                    auto [de, te] = buildHorizEdgeRects(dragRect, tRect, gap, dy, true);
-                    candidates.push_back({
-                        static_cast<float>(std::abs(gap)), { gap, dy }, false, de, te
-                    });
+                    // Full-volume collision check: would post-snap position overlap anyone?
+                    if (!wouldSnapCauseOverlap(dragIdx, i, { gap, dy }))
+                    {
+                        auto [de, te] = buildHorizEdgeRects(dragRect, tRect, gap, dy, true);
+                        candidates.push_back({
+                            static_cast<float>(std::abs(gap)), { gap, dy }, false, de, te
+                        });
+                    }
                 }
             }
 
-            // A.left ↔ B.right
+            // A.left ↔ B.right (drag's left edge meets target's right edge)
             {
                 int gap = dragRect.getX() - tRect.getRight();
                 int overlapY = juce::jmin(dragRect.getBottom(), tRect.getBottom())
@@ -2206,14 +2597,18 @@ private:
                 if (std::abs(gap) <= snapThreshold && overlapY >= snapOverlapMin)
                 {
                     int dy = nearEdgeAlignY();
-                    auto [de, te] = buildHorizEdgeRects(dragRect, tRect, -gap, dy, false);
-                    candidates.push_back({
-                        static_cast<float>(std::abs(gap)), { -gap, dy }, false, de, te
-                    });
+                    // Full-volume collision check: would post-snap position overlap anyone?
+                    if (!wouldSnapCauseOverlap(dragIdx, i, { -gap, dy }))
+                    {
+                        auto [de, te] = buildHorizEdgeRects(dragRect, tRect, -gap, dy, false);
+                        candidates.push_back({
+                            static_cast<float>(std::abs(gap)), { -gap, dy }, false, de, te
+                        });
+                    }
                 }
             }
 
-            // A.bottom ↔ B.top
+            // A.bottom ↔ B.top (drag's bottom edge meets target's top edge)
             {
                 int gap = tRect.getY() - dragRect.getBottom();
                 int overlapX = juce::jmin(dragRect.getRight(), tRect.getRight())
@@ -2221,14 +2616,18 @@ private:
                 if (std::abs(gap) <= snapThreshold && overlapX >= snapOverlapMin)
                 {
                     int dx = nearEdgeAlignX();
-                    auto [de, te] = buildVertEdgeRects(dragRect, tRect, dx, gap, true);
-                    candidates.push_back({
-                        static_cast<float>(std::abs(gap)), { dx, gap }, true, de, te
-                    });
+                    // Full-volume collision check: would post-snap position overlap anyone?
+                    if (!wouldSnapCauseOverlap(dragIdx, i, { dx, gap }))
+                    {
+                        auto [de, te] = buildVertEdgeRects(dragRect, tRect, dx, gap, true);
+                        candidates.push_back({
+                            static_cast<float>(std::abs(gap)), { dx, gap }, true, de, te
+                        });
+                    }
                 }
             }
 
-            // A.top ↔ B.bottom
+            // A.top ↔ B.bottom (drag's top edge meets target's bottom edge)
             {
                 int gap = dragRect.getY() - tRect.getBottom();
                 int overlapX = juce::jmin(dragRect.getRight(), tRect.getRight())
@@ -2236,10 +2635,14 @@ private:
                 if (std::abs(gap) <= snapThreshold && overlapX >= snapOverlapMin)
                 {
                     int dx = nearEdgeAlignX();
-                    auto [de, te] = buildVertEdgeRects(dragRect, tRect, dx, -gap, false);
-                    candidates.push_back({
-                        static_cast<float>(std::abs(gap)), { dx, -gap }, true, de, te
-                    });
+                    // Full-volume collision check: would post-snap position overlap anyone?
+                    if (!wouldSnapCauseOverlap(dragIdx, i, { dx, -gap }))
+                    {
+                        auto [de, te] = buildVertEdgeRects(dragRect, tRect, dx, -gap, false);
+                        candidates.push_back({
+                            static_cast<float>(std::abs(gap)), { dx, -gap }, true, de, te
+                        });
+                    }
                 }
             }
 
@@ -2262,32 +2665,36 @@ private:
         return best;
     }
 
-    /** Commit a snap: move card into position and form/merge groups */
-    void commitSnap(const PendingSnap& snap)
+    /** Commit a snap: move card into position and form/merge groups.
+     *  skipMove: if true, skip the position adjustment (already done by real-time preview). */
+    void commitSnap(const PendingSnap& snap, bool skipMove = false)
     {
         auto* dragCard = getCard(snap.dragCardIndex);
         if (!dragCard) return;
 
         // Move the drag card (and its group) by snapDelta
-        int groupID = cardFloatState[snap.dragCardIndex].snapGroupID;
-        if (groupID >= 0)
+        if (!skipMove)
         {
-            for (auto& group : snapGroups)
+            int groupID = cardFloatState[snap.dragCardIndex].snapGroupID;
+            if (groupID >= 0)
             {
-                if (group.groupID != groupID) continue;
-                for (int memberIdx : group.members)
+                for (auto& group : snapGroups)
                 {
-                    auto* mc = getCard(memberIdx);
-                    if (mc) mc->setTopLeftPosition(mc->getX() + snap.snapDelta.x,
-                                                    mc->getY() + snap.snapDelta.y);
+                    if (group.groupID != groupID) continue;
+                    for (int memberIdx : group.members)
+                    {
+                        auto* mc = getCard(memberIdx);
+                        if (mc) mc->setTopLeftPosition(mc->getX() + snap.snapDelta.x,
+                                                        mc->getY() + snap.snapDelta.y);
+                    }
+                    break;
                 }
-                break;
             }
-        }
-        else
-        {
-            dragCard->setTopLeftPosition(dragCard->getX() + snap.snapDelta.x,
-                                          dragCard->getY() + snap.snapDelta.y);
+            else
+            {
+                dragCard->setTopLeftPosition(dragCard->getX() + snap.snapDelta.x,
+                                              dragCard->getY() + snap.snapDelta.y);
+            }
         }
 
         // Form or merge groups
@@ -2348,6 +2755,9 @@ private:
                     dragGroup->members.push_back(idx);
                     cardFloatState[idx].snapGroupID = dragGroupID;
                 }
+                // Preserve edge relations from target group (prevents broken chains)
+                for (const auto& rel : targetGroup->edgeRelations)
+                    dragGroup->edgeRelations.push_back(rel);
                 // Remove the target group
                 snapGroups.erase(std::remove_if(snapGroups.begin(), snapGroups.end(),
                     [targetGroupID](const SnapGroup& g) { return g.groupID == targetGroupID; }),
@@ -2511,150 +2921,7 @@ private:
             }
             else
             {
-                // ============================================================
-                // BFS Connected Components: detect disconnected subgraphs
-                // ============================================================
-
-                // Build adjacency from remaining edgeRelations
-                // visited[cardIdx] = component index (0-based), -1 = unvisited
-                int componentOf[numCards];
-                for (int i = 0; i < numCards; ++i) componentOf[i] = -1;
-
-                // Collect components via BFS
-                std::vector<std::vector<int>> components;
-                for (int seed : it->members)
-                {
-                    if (componentOf[seed] >= 0) continue;  // already visited
-
-                    int compIdx = static_cast<int>(components.size());
-                    components.push_back({});
-
-                    // BFS queue (max 8 cards, simple array is fine)
-                    int queue[numCards];
-                    int qHead = 0, qTail = 0;
-                    queue[qTail++] = seed;
-                    componentOf[seed] = compIdx;
-
-                    while (qHead < qTail)
-                    {
-                        int cur = queue[qHead++];
-                        components[compIdx].push_back(cur);
-
-                        // Find all neighbors via edgeRelations
-                        for (const auto& rel : it->edgeRelations)
-                        {
-                            int neighbor = -1;
-                            if (rel.cardA == cur) neighbor = rel.cardB;
-                            else if (rel.cardB == cur) neighbor = rel.cardA;
-
-                            if (neighbor >= 0 && componentOf[neighbor] < 0)
-                            {
-                                componentOf[neighbor] = compIdx;
-                                queue[qTail++] = neighbor;
-                            }
-                        }
-                    }
-                }
-
-                // ============================================================
-                // Apply split results
-                // ============================================================
-                if (components.size() <= 1)
-                {
-                    // Still fully connected — simple case
-                    if (it->members.size() <= 1)
-                    {
-                        // Only 1 member left → dissolve
-                        for (int idx : it->members)
-                        {
-                            cardFloatState[idx].snapGroupID = -1;
-                            auto* mc = getCard(idx);
-                            if (mc) mc->showDetachButton = false;
-                        }
-                        snapGroups.erase(it);
-                    }
-                    else
-                    {
-                        updateShowDetachButtons(groupID);
-                        recalcGroupOffsets(groupID);
-                    }
-                }
-                else
-                {
-                    // Multiple components — need to split.
-                    // Save full edgeRelations BEFORE modifying the group,
-                    // so we can distribute them to new component groups.
-                    auto allRelations = it->edgeRelations;
-
-                    // Helper: filter relations for a given component
-                    auto relationsForComp = [&](const std::vector<int>& comp)
-                    {
-                        std::vector<EdgeRelation> result;
-                        for (const auto& rel : allRelations)
-                        {
-                            bool aIn = std::find(comp.begin(), comp.end(), rel.cardA) != comp.end();
-                            bool bIn = std::find(comp.begin(), comp.end(), rel.cardB) != comp.end();
-                            if (aIn && bIn)
-                                result.push_back(rel);
-                        }
-                        return result;
-                    };
-
-                    // Component 0 keeps the original group
-                    auto& comp0 = components[0];
-                    it->members = comp0;
-                    it->edgeRelations = relationsForComp(comp0);
-
-                    if (comp0.size() <= 1)
-                    {
-                        // Component 0 is solo → dissolve original group
-                        for (int idx : comp0)
-                        {
-                            cardFloatState[idx].snapGroupID = -1;
-                            auto* mc = getCard(idx);
-                            if (mc) mc->showDetachButton = false;
-                        }
-                        snapGroups.erase(it);
-                    }
-                    else
-                    {
-                        updateShowDetachButtons(groupID);
-                        recalcGroupOffsets(groupID);
-                    }
-
-                    // Process remaining components (1, 2, ...)
-                    for (size_t ci = 1; ci < components.size(); ++ci)
-                    {
-                        auto& comp = components[ci];
-
-                        if (comp.size() <= 1)
-                        {
-                            // Solo card → release
-                            for (int idx : comp)
-                            {
-                                cardFloatState[idx].snapGroupID = -1;
-                                auto* mc = getCard(idx);
-                                if (mc) mc->showDetachButton = false;
-                            }
-                        }
-                        else
-                        {
-                            // Create new group with filtered relations
-                            SnapGroup newGroup;
-                            newGroup.groupID = nextGroupID++;
-                            newGroup.members = comp;
-                            newGroup.edgeRelations = relationsForComp(comp);
-
-                            snapGroups.push_back(newGroup);
-
-                            for (int idx : comp)
-                                cardFloatState[idx].snapGroupID = newGroup.groupID;
-
-                            updateShowDetachButtons(newGroup.groupID);
-                            recalcGroupOffsets(newGroup.groupID);
-                        }
-                    }
-                }
+                splitGroupByConnectivity(it);
             }
             break;
         }
@@ -2662,6 +2929,393 @@ private:
         // Nudge detached card 20px to the right for visual clarity
         if (card)
             card->setTopLeftPosition(card->getX() + 20, card->getY());
+    }
+
+    //==========================================================================
+    // BFS Connected Components: shared by detachCardFromGroup and
+    // validateGroupAlignments. Takes an iterator to a SnapGroup, runs BFS
+    // on its members using edgeRelations as adjacency. Splits disconnected
+    // subgraphs into separate groups (or releases solo cards).
+    // May erase/modify the group pointed to by `it`.
+    //==========================================================================
+    void splitGroupByConnectivity(std::vector<SnapGroup>::iterator it)
+    {
+        int groupID = it->groupID;
+
+        if (it->members.empty())
+        {
+            snapGroups.erase(it);
+            return;
+        }
+
+        // BFS: componentOf[cardIdx] = component index, -1 = unvisited
+        int componentOf[numCards];
+        for (int i = 0; i < numCards; ++i) componentOf[i] = -1;
+
+        std::vector<std::vector<int>> components;
+        for (int seed : it->members)
+        {
+            if (componentOf[seed] >= 0) continue;
+
+            int compIdx = static_cast<int>(components.size());
+            components.push_back({});
+
+            int queue[numCards];
+            int qHead = 0, qTail = 0;
+            queue[qTail++] = seed;
+            componentOf[seed] = compIdx;
+
+            while (qHead < qTail)
+            {
+                int cur = queue[qHead++];
+                components[compIdx].push_back(cur);
+
+                for (const auto& rel : it->edgeRelations)
+                {
+                    int neighbor = -1;
+                    if (rel.cardA == cur) neighbor = rel.cardB;
+                    else if (rel.cardB == cur) neighbor = rel.cardA;
+
+                    if (neighbor >= 0 && componentOf[neighbor] < 0)
+                    {
+                        componentOf[neighbor] = compIdx;
+                        queue[qTail++] = neighbor;
+                    }
+                }
+            }
+        }
+
+        // Apply split results
+        if (components.size() <= 1)
+        {
+            if (it->members.size() <= 1)
+            {
+                for (int idx : it->members)
+                {
+                    cardFloatState[idx].snapGroupID = -1;
+                    auto* mc = getCard(idx);
+                    if (mc) mc->showDetachButton = false;
+                }
+                snapGroups.erase(it);
+            }
+            else
+            {
+                updateShowDetachButtons(groupID);
+                recalcGroupOffsets(groupID);
+            }
+        }
+        else
+        {
+            // Multiple components — split.
+            auto allRelations = it->edgeRelations;
+
+            auto relationsForComp = [&](const std::vector<int>& comp)
+            {
+                std::vector<EdgeRelation> result;
+                for (const auto& rel : allRelations)
+                {
+                    bool aIn = std::find(comp.begin(), comp.end(), rel.cardA) != comp.end();
+                    bool bIn = std::find(comp.begin(), comp.end(), rel.cardB) != comp.end();
+                    if (aIn && bIn)
+                        result.push_back(rel);
+                }
+                return result;
+            };
+
+            // Component 0 keeps original group
+            auto& comp0 = components[0];
+            it->members = comp0;
+            it->edgeRelations = relationsForComp(comp0);
+
+            if (comp0.size() <= 1)
+            {
+                for (int idx : comp0)
+                {
+                    cardFloatState[idx].snapGroupID = -1;
+                    auto* mc = getCard(idx);
+                    if (mc) mc->showDetachButton = false;
+                }
+                snapGroups.erase(it);
+            }
+            else
+            {
+                updateShowDetachButtons(groupID);
+                recalcGroupOffsets(groupID);
+            }
+
+            // Remaining components become new groups
+            for (size_t ci = 1; ci < components.size(); ++ci)
+            {
+                auto& comp = components[ci];
+
+                if (comp.size() <= 1)
+                {
+                    for (int idx : comp)
+                    {
+                        cardFloatState[idx].snapGroupID = -1;
+                        auto* mc = getCard(idx);
+                        if (mc) mc->showDetachButton = false;
+                    }
+                }
+                else
+                {
+                    SnapGroup newGroup;
+                    newGroup.groupID = nextGroupID++;
+                    newGroup.members = comp;
+                    newGroup.edgeRelations = relationsForComp(comp);
+
+                    snapGroups.push_back(newGroup);
+
+                    for (int idx : comp)
+                        cardFloatState[idx].snapGroupID = newGroup.groupID;
+
+                    updateShowDetachButtons(newGroup.groupID);
+                    recalcGroupOffsets(newGroup.groupID);
+                }
+            }
+        }
+    }
+
+    //==========================================================================
+    // Alignment Divorce: after relayout or collision resolution, check every
+    // EdgeRelation in every group. If the alignment axis is off by > 2px,
+    // remove that relation and split the group via BFS connectivity check.
+    //==========================================================================
+    void validateGroupAlignments()
+    {
+        if (phase != AnimPhase::floating) return;
+
+        bool anyChanged = false;
+
+        for (auto groupIt = snapGroups.begin(); groupIt != snapGroups.end(); )
+        {
+            bool relationsRemoved = false;
+
+            groupIt->edgeRelations.erase(
+                std::remove_if(groupIt->edgeRelations.begin(), groupIt->edgeRelations.end(),
+                    [this, &relationsRemoved](const EdgeRelation& rel) -> bool
+                    {
+                        auto rectA = getCardVisualRect(rel.cardA);
+                        auto rectB = getCardVisualRect(rel.cardB);
+                        if (rectA.isEmpty() || rectB.isEmpty()) return false;
+
+                        bool aligned;
+                        if (rel.isVertical)
+                            aligned = std::abs(rectA.getX() - rectB.getX()) <= 2;
+                        else
+                            aligned = std::abs(rectA.getY() - rectB.getY()) <= 2;
+
+                        if (!aligned)
+                        {
+                            relationsRemoved = true;
+                            return true;
+                        }
+                        return false;
+                    }),
+                groupIt->edgeRelations.end());
+
+            if (!relationsRemoved)
+            {
+                ++groupIt;
+                continue;
+            }
+
+            anyChanged = true;
+            splitGroupByConnectivity(groupIt);
+            break;  // snapGroups modified, restart iteration
+        }
+
+        // Recurse if any changes (handles cascading splits, max numCards depth)
+        if (anyChanged)
+            validateGroupAlignments();
+    }
+
+    //==========================================================================
+    // Global collision resolution: push overlapping floating cards apart.
+    //
+    // Treats ALL card pairs as potential collisions EXCEPT pairs with a
+    // direct edge relation (those are managed by relayoutGroupForCard).
+    // Same-group cards without edge relations are treated as solid obstacles.
+    //==========================================================================
+    void resolveGlobalCollisions()
+    {
+        if (phase != AnimPhase::floating) return;
+
+        // Up to 3 passes to resolve cascading pushes
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            bool anyPushed = false;
+
+            for (int i = 0; i < numCards; ++i)
+            {
+                if (!cardFloatState[i].isFloating) continue;
+                if (cardStowed[i]) continue;
+                auto* cardA = getCard(i);
+                if (!cardA || !cardA->isVisible()) continue;
+
+                for (int j = i + 1; j < numCards; ++j)
+                {
+                    if (!cardFloatState[j].isFloating) continue;
+                    if (cardStowed[j]) continue;
+                    auto* cardB = getCard(j);
+                    if (!cardB || !cardB->isVisible()) continue;
+
+                    // Skip pairs with a direct edge relation (managed by relayout)
+                    if (hasDirectEdgeRelation(i, j)) continue;
+
+                    auto rectA = getCardVisualRect(i);
+                    auto rectB = getCardVisualRect(j);
+                    if (rectA.isEmpty() || rectB.isEmpty()) continue;
+
+                    auto overlap = rectA.getIntersection(rectB);
+                    if (overlap.isEmpty()) continue;
+
+                    int groupA = cardFloatState[i].snapGroupID;
+                    int groupB = cardFloatState[j].snapGroupID;
+
+                    // Compute push direction: push the smaller/solo card away
+                    // If same group, push the one that is NOT the source of the resize
+                    // For simplicity: always push B (the higher-index card)
+                    int pushX = 0, pushY = 0;
+                    int overlapW = overlap.getWidth();
+                    int overlapH = overlap.getHeight();
+
+                    if (overlapW <= overlapH)
+                    {
+                        int centerA = rectA.getCentreX();
+                        int centerB = rectB.getCentreX();
+                        pushX = (centerB >= centerA) ? overlapW + 4 : -(overlapW + 4);
+                    }
+                    else
+                    {
+                        int centerA = rectA.getCentreY();
+                        int centerB = rectB.getCentreY();
+                        pushY = (centerB >= centerA) ? overlapH + 4 : -(overlapH + 4);
+                    }
+
+                    // Apply push: for same-group cards, only move the individual card;
+                    // for different-group cards, move the entire group
+                    if (groupA >= 0 && groupA == groupB)
+                    {
+                        // Intra-group non-related: push just card B individually
+                        cardB->setTopLeftPosition(cardB->getX() + pushX, cardB->getY() + pushY);
+                    }
+                    else
+                    {
+                        int pushGroupID = cardFloatState[j].snapGroupID;
+                        if (pushGroupID >= 0)
+                        {
+                            // Push entire group
+                            for (auto& group : snapGroups)
+                            {
+                                if (group.groupID != pushGroupID) continue;
+                                for (int memberIdx : group.members)
+                                {
+                                    auto* mc = getCard(memberIdx);
+                                    if (mc) mc->setTopLeftPosition(mc->getX() + pushX, mc->getY() + pushY);
+                                }
+                                recalcGroupOffsets(pushGroupID);
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            cardB->setTopLeftPosition(cardB->getX() + pushX, cardB->getY() + pushY);
+                        }
+                    }
+
+                    anyPushed = true;
+                }
+            }
+
+            if (!anyPushed) break;  // no more collisions
+        }
+    }
+
+    /** Check if two cards have a direct edge relation in any group */
+    bool hasDirectEdgeRelation(int cardA, int cardB) const
+    {
+        int groupA = cardFloatState[cardA].snapGroupID;
+        int groupB = cardFloatState[cardB].snapGroupID;
+        if (groupA < 0 || groupA != groupB) return false;
+
+        for (const auto& group : snapGroups)
+        {
+            if (group.groupID != groupA) continue;
+            for (const auto& rel : group.edgeRelations)
+            {
+                if ((rel.cardA == cardA && rel.cardB == cardB) ||
+                    (rel.cardA == cardB && rel.cardB == cardA))
+                    return true;
+            }
+            break;
+        }
+        return false;
+    }
+
+    //==========================================================================
+    // Steel-plate height clamping: when a card expands, check if its new
+    // visual rect overlaps any card below it (that isn't a direct edge
+    // relation neighbor). If so, clamp the card's height to avoid overlap.
+    // This makes cards "self-adapt" to tight spaces instead of pushing.
+    //==========================================================================
+    void clampCardHeightToAvoidCollision(int cardIndex)
+    {
+        auto* card = getCard(cardIndex);
+        if (!card || !card->isVisible()) return;
+        if (!card->getExpanded()) return;  // only clamp when expanding
+
+        auto myRect = getCardVisualRect(cardIndex);
+        if (myRect.isEmpty()) return;
+
+        int minBottom = myRect.getBottom();  // current bottom edge (after expansion)
+
+        for (int i = 0; i < numCards; ++i)
+        {
+            if (i == cardIndex) continue;
+            if (cardStowed[i]) continue;
+            if (!cardFloatState[i].isFloating) continue;
+            auto* other = getCard(i);
+            if (!other || !other->isVisible()) continue;
+
+            // Skip cards with direct edge relation (they're managed by relayout)
+            if (hasDirectEdgeRelation(cardIndex, i)) continue;
+
+            auto otherRect = getCardVisualRect(i);
+            if (otherRect.isEmpty()) continue;
+
+            // Only check cards that are BELOW and laterally overlapping
+            if (otherRect.getY() <= myRect.getY()) continue;  // not below
+            int lateralOverlap = juce::jmin(myRect.getRight(), otherRect.getRight())
+                               - juce::jmax(myRect.getX(), otherRect.getX());
+            if (lateralOverlap <= 0) continue;  // no lateral overlap
+
+            // If our expanded bottom extends past this card's top, clamp
+            if (myRect.getBottom() > otherRect.getY())
+            {
+                minBottom = juce::jmin(minBottom, otherRect.getY());
+            }
+        }
+
+        // If we need to clamp, reduce the card's height
+        int clampedVisualBottom = minBottom;
+        int clampedBoundsBottom = clampedVisualBottom;  // visual rect starts at bounds+8
+        int clampedHeight = clampedBoundsBottom - card->getY();
+
+        if (clampedHeight < card->getHeight() && clampedHeight > (card->isMiniMode ? 24 : 48))
+        {
+            // Clamp: set customContentHeight to limit expansion
+            int headerH = card->isMiniMode ? 24 : 48;
+            int pad = card->isMiniMode ? 2 : 16;
+            int maxContentH = clampedHeight - headerH - pad * 2 - 8;  // -8 for shadow
+            if (maxContentH > 0)
+            {
+                card->customContentHeight = maxContentH;
+                int newH = headerH + maxContentH + pad * 2 + 8;
+                card->setSize(card->getWidth(), newH);
+                card->resized();
+            }
+        }
     }
 
     //==========================================================================
@@ -2677,6 +3331,12 @@ private:
     {
         bool visited[numCards] = {};
         relayoutGroupForCardImpl(cardIndex, visited);
+
+        // After group relayout completes, resolve global collisions
+        resolveGlobalCollisions();
+
+        // Alignment Divorce: detach any members that lost alignment
+        validateGroupAlignments();
     }
 
     void relayoutGroupForCardImpl(int cardIndex, bool* visited)
@@ -2694,27 +3354,35 @@ private:
 
             for (const auto& rel : group.edgeRelations)
             {
-                if (!rel.isVertical) continue;
+                // Single-direction only: cardA → cardB (top→bottom, left→right).
+                // Card's top-left is anchored; only right/bottom edges move on
+                // expand/collapse/resize, so only push cards on those sides.
                 if (rel.cardA != cardIndex) continue;
 
                 auto* cardB = getCard(rel.cardB);
-                if (!cardB) continue;
+                if (!cardB || visited[rel.cardB]) continue;
 
                 auto rectA = getCardVisualRect(rel.cardA);
                 auto rectB = getCardVisualRect(rel.cardB);
                 if (rectA.isEmpty() || rectB.isEmpty()) continue;
 
-                // cardB's visual top should align with cardA's visual bottom
-                int desiredVisualTopB = rectA.getBottom();
-                int currentVisualTopB = rectB.getY();
-                int deltaY = desiredVisualTopB - currentVisualTopB;
-
-                if (deltaY != 0)
+                if (rel.isVertical)
                 {
-                    cardB->setTopLeftPosition(cardB->getX(), cardB->getY() + deltaY);
-                    // Recursively propagate to cards below cardB
-                    relayoutGroupForCardImpl(rel.cardB, visited);
+                    // cardB's visual top should align with cardA's visual bottom
+                    int delta = rectA.getBottom() - rectB.getY();
+                    if (delta != 0)
+                        cardB->setTopLeftPosition(cardB->getX(), cardB->getY() + delta);
                 }
+                else
+                {
+                    // cardB's visual left should align with cardA's visual right
+                    int delta = rectA.getRight() - rectB.getX();
+                    if (delta != 0)
+                        cardB->setTopLeftPosition(cardB->getX() + delta, cardB->getY());
+                }
+
+                // Recursively propagate to cardB's downstream neighbors
+                relayoutGroupForCardImpl(rel.cardB, visited);
             }
 
             recalcGroupOffsets(groupID);

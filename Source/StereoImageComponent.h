@@ -3,9 +3,10 @@
     StereoImageComponent.h
     GOODMETER - Stereo Field Visualization (LRMS Cylinders + Goniometer)
 
-    🎨 混合架构 (Hybrid Architecture):
-    - Left (40%): Zero-overflow clipping for LRMS cylinders
-    - Right (60%): Offscreen ghosting buffer for high-performance Goniometer
+    Responsive Layout:
+    - Normal Mode: Left ~40% LRMS cylinders, Right ~60% Lissajous goniometer
+    - Compact Mode: Lissajous hidden, LRMS tubes fill full width
+    - Mode switch: when Lissajous max diameter < tube render height, or width < 250px
   ==============================================================================
 */
 
@@ -18,8 +19,8 @@
 //==============================================================================
 /**
  * Stereo Field Visualization Component
- * Left (40%): LRMS Cylinder Meters with zero-overflow clipping
- * Right (60%): Goniometer/Lissajous Plot with offscreen ghosting
+ * Normal mode: Left ~40% LRMS cylinders, Right ~60% Lissajous goniometer
+ * Compact mode: Lissajous hidden, LRMS tubes fill full width (saves CPU)
  */
 class StereoImageComponent : public juce::Component,
                               public juce::Timer
@@ -48,29 +49,16 @@ public:
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
-        auto bounds = getLocalBounds();
-
-        // Safety check
-        if (bounds.isEmpty())
+        if (getLocalBounds().isEmpty())
             return;
 
-        // 左侧切出 35px 用于标准 dB 刻度尺
-        auto scaleBounds = bounds.removeFromLeft(scaleWidth);
+        // Draw LRMS Cylinders (uses cached layoutTubeBounds)
+        drawLRMSCylinders(g, layoutTubeBounds);
 
-        // Adaptive split: tubes get minimum guaranteed width
-        const int minTubeWidth = juce::jmin(120, bounds.getWidth() / 2);
-        const int spacing = juce::jlimit(5, 15, static_cast<int>(bounds.getWidth() * 0.03f));
-        const int leftWidth = juce::jmax(minTubeWidth, static_cast<int>(bounds.getWidth() * 0.35f));
-
-        auto leftBounds = bounds.removeFromLeft(leftWidth);
-        bounds.removeFromLeft(spacing);  // Gap
-        auto rightBounds = bounds;
-
-        // Draw left panel: LRMS Cylinders (zero-overflow clipping)
-        drawLRMSCylinders(g, leftBounds);
-
-        // Goniometer: diamond fill + single cached image blit + lightweight grid
+        // Goniometer: only in normal mode
+        if (!compactMode && !layoutGonBounds.isEmpty())
         {
+            auto rightBounds = layoutGonBounds;
             const float gonPad = juce::jmin(8.0f, rightBounds.getHeight() * 0.03f);
             auto gonLocal = rightBounds.toFloat().reduced(gonPad, gonPad);
             const float cx = gonLocal.getCentreX();
@@ -101,13 +89,67 @@ public:
         }
 
         // 最顶层：悬浮 dB 刻度尺（与 LRMS 试管高度对齐）
-        drawDbScale(g, scaleBounds, leftBounds);
+        drawDbScale(g, layoutScaleBounds, layoutTubeBounds);
     }
 
     void resized() override
     {
-        // Recreate offscreen buffer on resize
-        goniometerImage = juce::Image();
+        // =================================================================
+        // Dimension Sniffing: compute layout rects + compact mode flag
+        // =================================================================
+        auto bounds = getLocalBounds();
+        if (bounds.isEmpty()) return;
+
+        layoutScaleBounds = bounds.removeFromLeft(scaleWidth);
+
+        // Compute tube render height (approximate: area reduced by padding - label space)
+        const float padY = juce::jmin(15.0f, bounds.getHeight() * 0.05f);
+        const float labelSpace = juce::jlimit(12.0f, 22.0f, (bounds.getHeight() - padY * 2.0f) * 0.09f);
+        const float tubeRenderH = bounds.getHeight() - padY * 2.0f - labelSpace;
+
+        // Max diameter available for Lissajous if we gave tubes 40% width
+        const int tubeWidth40 = static_cast<int>(bounds.getWidth() * 0.40f);
+        const int spacing = juce::jlimit(5, 15, static_cast<int>(bounds.getWidth() * 0.03f));
+        const int gonAvailW = bounds.getWidth() - tubeWidth40 - spacing;
+        const int gonAvailH = bounds.getHeight();
+        const int gonMaxDiameter = juce::jmin(gonAvailW, gonAvailH);
+
+        // Compact mode: Lissajous too small to be useful, or total width too narrow
+        bool wasCompact = compactMode;
+        compactMode = (gonMaxDiameter < static_cast<int>(tubeRenderH))
+                   || (bounds.getWidth() + scaleWidth < 250);
+
+        if (compactMode)
+        {
+            // Tubes take full width — no goniometer
+            layoutTubeBounds = bounds;
+            layoutGonBounds = {};
+
+            // Release offscreen buffer to save memory
+            if (!goniometerImage.isNull())
+                goniometerImage = juce::Image();
+        }
+        else
+        {
+            // Normal mode: tubes 40%, gap, goniometer gets the rest
+            const int leftWidth = juce::jmax(
+                juce::jmin(120, bounds.getWidth() / 2),
+                static_cast<int>(bounds.getWidth() * 0.35f));
+
+            auto work = bounds;
+            layoutTubeBounds = work.removeFromLeft(leftWidth);
+            work.removeFromLeft(spacing);
+            layoutGonBounds = work;
+
+            // Recreate offscreen buffer if size changed
+            if (wasCompact || goniometerImage.isNull())
+                goniometerImage = juce::Image();
+        }
+
+        // Invalidate text caches on any resize
+        lrmsTextCache = juce::Image();
+        gonGridTextCache = juce::Image();
+        dbScaleTextCache = juce::Image();
     }
 
 private:
@@ -136,6 +178,12 @@ private:
     juce::Image goniometerImage;
     float lastGoniometerWidth = 0.0f;
     float lastGoniometerHeight = 0.0f;
+
+    // Responsive layout: cached rects computed in resized()
+    bool compactMode = false;                   // true = Lissajous hidden, tubes fill width
+    juce::Rectangle<int> layoutScaleBounds;     // dB scale (left 35px)
+    juce::Rectangle<int> layoutTubeBounds;      // LRMS cylinder area
+    juce::Rectangle<int> layoutGonBounds;       // Goniometer area (empty in compact mode)
 
     // 左侧刻度尺宽度
     static constexpr int scaleWidth = 35;
@@ -299,16 +347,15 @@ private:
                 g.strokePath(tubePath, juce::PathStrokeType(5.0f));
             }
 
-            // === Glass outline ===
-            g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
+            // === Glass outline (Neo-Brutalism: solid visible border) ===
+            g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.55f));
             g.strokePath(tubePath, juce::PathStrokeType(1.5f));
 
-            // === Glass highlight ===
-            g.setColour(juce::Colours::white.withAlpha(0.20f));
+            // === Glass highlight (subtle but present) ===
+            g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.strokePath(tubePath, juce::PathStrokeType(0.8f));
 
             // === Tick marks (synced with pow(0.5) mapping) ===
-            g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.10f));
             const float tickDbs[] = { -45.0f, -30.0f, -15.0f };
             for (float tdb : tickDbs)
             {
@@ -316,8 +363,9 @@ private:
                 tn = std::pow(tn, 0.5f);
                 float tickY = ty + th - tn * th;
                 bool isMajor = (static_cast<int>(tdb) == -30);
-                float tickLen = isMajor ? tw * 0.4f : tw * 0.25f;
-                float tickStroke = isMajor ? 1.0f : 0.6f;
+                float tickLen = isMajor ? tw * 0.5f : tw * 0.3f;
+                float tickStroke = isMajor ? 1.5f : 1.0f;
+                g.setColour(juce::Colour(0xFF2A2A35).withAlpha(isMajor ? 0.50f : 0.35f));
                 g.drawLine(tx + tw - tickLen, tickY, tx + tw, tickY, tickStroke);
             }
         }
@@ -334,17 +382,11 @@ private:
      */
     void renderGoniometerOffscreen()
     {
-        // Compute goniometer bounds (same layout logic as paint)
-        auto bounds = getLocalBounds();
-        if (bounds.isEmpty()) return;
-        bounds.removeFromLeft(scaleWidth);
-        const int minTubeWidth = juce::jmin(120, bounds.getWidth() / 2);
-        const int spacing = juce::jlimit(5, 15, static_cast<int>(bounds.getWidth() * 0.03f));
-        const int leftWidth = juce::jmax(minTubeWidth, static_cast<int>(bounds.getWidth() * 0.35f));
-        bounds.removeFromLeft(leftWidth);
-        bounds.removeFromLeft(spacing);
-        auto rightBounds = bounds;
+        // Skip entirely in compact mode (no Lissajous to render)
+        if (compactMode || layoutGonBounds.isEmpty())
+            return;
 
+        auto rightBounds = layoutGonBounds;
         int w = rightBounds.getWidth();
         int h = rightBounds.getHeight();
         if (w < 2 || h < 2) return;
@@ -474,18 +516,17 @@ private:
      */
     void drawGoniometerGrid(juce::Graphics& g, float cx, float cy, float r)
     {
-        g.setColour(juce::Colours::white.withAlpha(0.25f));
-
-        // Outer diamond
+        // Outer diamond (bold Neo-Brutalism border)
         juce::Path outerDiamond;
         outerDiamond.startNewSubPath(cx, cy - r);
         outerDiamond.lineTo(cx + r, cy);
         outerDiamond.lineTo(cx, cy + r);
         outerDiamond.lineTo(cx - r, cy);
         outerDiamond.closeSubPath();
-        g.strokePath(outerDiamond, juce::PathStrokeType(1.0f));
+        g.setColour(juce::Colours::white.withAlpha(0.55f));
+        g.strokePath(outerDiamond, juce::PathStrokeType(1.5f));
 
-        // Inner diamond
+        // Inner diamond (reference grid — visible but secondary)
         const float innerR = r * 0.5f;
         juce::Path innerDiamond;
         innerDiamond.startNewSubPath(cx, cy - innerR);
@@ -493,9 +534,11 @@ private:
         innerDiamond.lineTo(cx, cy + innerR);
         innerDiamond.lineTo(cx - innerR, cy);
         innerDiamond.closeSubPath();
-        g.strokePath(innerDiamond, juce::PathStrokeType(0.8f));
+        g.setColour(juce::Colours::white.withAlpha(0.30f));
+        g.strokePath(innerDiamond, juce::PathStrokeType(1.0f));
 
-        // Cross lines
+        // Cross lines (axis indicators — bold)
+        g.setColour(juce::Colours::white.withAlpha(0.40f));
         g.drawLine(cx, cy - r, cx, cy + r, 1.0f);
         g.drawLine(cx - r, cy, cx + r, cy, 1.0f);
 
@@ -515,7 +558,7 @@ private:
             float lcy = static_cast<float>(cacheH) / 2.0f;
             const float gridFontSize = juce::jlimit(8.0f, 11.0f, r * 0.1f);
             const float labelOff = juce::jmin(18.0f, r * 0.15f);
-            tg.setColour(juce::Colour(0xff6a6a75));
+            tg.setColour(juce::Colours::white.withAlpha(0.75f));
             tg.setFont(juce::Font(gridFontSize, juce::Font::bold));
 
             tg.drawFittedText("M", static_cast<int>(lcx - 15), static_cast<int>(lcy - r - labelOff), 30, 20, juce::Justification::centred, 1);
@@ -562,7 +605,7 @@ private:
             const float dbMax = 0.0f;
             const float rightX = static_cast<float>(sw);
 
-            tg.setColour(juce::Colours::black.withAlpha(0.85f));
+            tg.setColour(juce::Colours::black);
             tg.setFont(juce::Font(9.0f, juce::Font::bold));
 
             for (float db : tickDbs)
@@ -571,7 +614,7 @@ private:
                 // Sync with perceptual pow(0.5) mapping used in normLevel
                 norm = std::pow(norm, 0.5f);
                 float y = tubeTop + tubeH - norm * tubeH;
-                tg.drawLine(rightX - 4.0f, y, rightX, y, 1.2f);
+                tg.drawLine(rightX - 6.0f, y, rightX, y, 1.5f);
                 juce::String text = juce::String(static_cast<int>(db));
                 tg.drawText(text, 0, static_cast<int>(y - 6.0f), static_cast<int>(rightX) - 6, 12, juce::Justification::right, false);
             }
