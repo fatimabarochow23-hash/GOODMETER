@@ -3,6 +3,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist>
   <dict>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>GOODMETER needs System Audio Recording permission to capture and analyze system audio in real-time.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>GOODMETER needs microphone access to analyze audio in real-time.</string>
     <key>CFBundleExecutable</key>

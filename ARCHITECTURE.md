@@ -3,7 +3,7 @@
 > **Purpose**: Complete technical map for any AI assistant (Claude Code, Cursor, Codex)
 > picking up this project. Read this FIRST before touching any code.
 >
-> **Last updated**: 2026-03-10 (v1.1.0 — State machine hardening + Recording grid + Eye tracking)
+> **Last updated**: 2026-03-10 (v1.2.0 — CoreAudio Tap system audio capture, SCK removed)
 
 ---
 
@@ -37,6 +37,7 @@ Source/
 ├── HoloNonoComponent.h         — Animated Nono character (~2200 lines, holographic pet)
 ├── MeterCardComponent.h        — Collapsible card wrapper (header + content + shadow)
 ├── AudioRecorder.h             — Lock-free WAV recorder (FIFO + background writer)
+├── SystemAudioCapture.h/.mm    — CoreAudio Process Tap system audio capture (PIMPL, macOS 14.2+)
 ├── LevelsMeterComponent.h      — LUFS/Peak/RMS/LRA meter
 ├── VUMeterComponent.h          — Classic analog VU needle meter
 ├── Band3Component.h            — 3-band frequency meter (LOW/MID/HIGH)
@@ -324,11 +325,295 @@ Visual properties:
 
 ---
 
-## 6. macOS Permissions (CRITICAL)
+## 6. System Audio Capture — CoreAudio Process Tap
+
+### 6.1 Decision Background: Why We Abandoned ScreenCaptureKit
+
+GOODMETER initially used Apple's `ScreenCaptureKit` (SCK, macOS 13+) to capture system audio.
+This was the wrong approach. Here's what happened and why we switched:
+
+**SCK's Fatal Flaws:**
+
+1. **Wrong permission category.** SCK triggers **"录屏与系统录音 (Screen & System Audio Recording)"**
+   permission — the orange dot in the menu bar. Users see a scary "screen recording" dialog
+   even though GOODMETER only needs audio. MiniMeters (our reference app) shows up in the
+   much friendlier **"仅系统录音 (System Audio Recording Only)"** category — purple dot.
+
+2. **Zombie permission state.** After granting SCK permission, the app must be **restarted**
+   before the stream actually works. The permission dialog returns success, but
+   `SCStream.startCapture` silently fails until relaunch. No API exists to detect this state.
+
+3. **Mandatory video overhead.** SCK is fundamentally a screen capture API. Even with a
+   1x1 pixel config and 1 FPS minimum, it still creates a video pipeline. We only need audio.
+
+4. **`SCContentFilter` forces display selection.** Creating a filter requires enumerating
+   displays via `SCShareableContent`, which triggers the screen recording permission.
+   There's no audio-only content filter.
+
+**The Solution: CoreAudio Process Tap (macOS 14.2+)**
+
+Apple introduced `AudioHardwareCreateProcessTap` in macOS 14.2 (Sonoma). This is a
+pure audio API that:
+- Appears in **"仅系统录音 (System Audio Recording Only)"** permission list
+- Shows a **purple dot** (not the scary orange recording dot)
+- Has zero video overhead
+- Works immediately after permission grant (no restart needed)
+- Is the same API that MiniMeters uses
+
+**Trade-off:** Deployment target moves from macOS 13.0 to 14.2. This excludes
+macOS 13.0–14.1 users. This is Apple's hard limitation — there is no workaround.
+
+---
+
+### 6.2 Architecture: The 7-Step CoreAudio Tap Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    macOS Audio System                        │
+│  All apps → system audio output → hardware speakers         │
+└──────────────┬──────────────────────────────────────────────┘
+               │
+    ┌──────────▼──────────┐
+    │   CATapDescription  │  Step 1-2: Define a stereo global tap
+    │   (Obj-C object)    │           excluding our own process
+    └──────────┬──────────┘
+               │ AudioHardwareCreateProcessTap()
+    ┌──────────▼──────────┐
+    │   Process Tap       │  Step 3: System creates tap object
+    │   (AudioObjectID)   │          with kAudioTapPropertyFormat
+    └──────────┬──────────┘
+               │ Read format (Step 4)
+    ┌──────────▼──────────┐
+    │  Aggregate Device   │  Step 5: Virtual device wrapping the tap
+    │  (AudioObjectID)    │          as its input source
+    └──────────┬──────────┘
+               │ AudioDeviceCreateIOProcID() + AudioDeviceStart()
+    ┌──────────▼──────────┐
+    │   IOProc Callback   │  Step 6-7: Hardware audio thread callback
+    │ (real-time thread)  │           receives Float32 PCM data
+    └──────────┬──────────┘
+               │ lock-free write
+    ┌──────────▼──────────┐
+    │  AbstractFifo Ring  │  SPSC ring buffer (131072 frames, ~2.7s)
+    │      Buffer         │  stereo interleaved [L0,R0,L1,R1,...]
+    └──────────┬──────────┘
+               │ lock-free read
+    ┌──────────▼──────────┐
+    │  processBlock()     │  JUCE audio thread reads from ring buffer
+    │ (JUCE audio thread) │  → overwrites input buffer → DSP pipeline
+    └─────────────────────┘
+```
+
+**Step-by-step breakdown:**
+
+```
+Step 1: Translate PID → AudioObjectID
+        AudioObjectGetPropertyData(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        → Gets our process's AudioObjectID to exclude from the tap
+
+Step 2: Create CATapDescription
+        initStereoGlobalTapButExcludeProcesses:@[@(myProcessObjectID)]
+        → Stereo global tap capturing ALL system audio EXCEPT our own output
+        → .privateTap = YES (only visible to us)
+        → .muteBehavior = CATapUnmuted (system audio keeps playing to speakers)
+
+Step 3: AudioHardwareCreateProcessTap(desc, &tapID)
+        → Creates the tap in the CoreAudio HAL, returns tapObjectID
+
+Step 4: Read tap format via kAudioTapPropertyFormat ('tfmt')
+        → Gets AudioStreamBasicDescription (sample rate, channels, bit depth)
+        → Typically 48kHz stereo Float32
+
+Step 5: AudioHardwareCreateAggregateDevice(aggDesc, &aggDeviceID)
+        → Creates a private virtual aggregate device
+        → Aggregate device dictionary includes kAudioAggregateDeviceTapListKey
+          with the tap's UUID as a sub-tap
+        → This is the KEY TRICK: you can't read from a tap directly.
+          You must wrap it in an aggregate device to get an IOProc callback.
+
+Step 6: AudioDeviceCreateIOProcID(aggDeviceID, callback, this, &ioProcID)
+        → Registers our C callback function on the aggregate device
+
+Step 7: AudioDeviceStart(aggDeviceID, ioProcID)
+        → Starts the audio stream. IOProc fires on every audio cycle.
+```
+
+**Teardown (reverse order):**
+```
+AudioDeviceStop(aggregateDeviceID, ioProcID)
+AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
+AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+AudioHardwareDestroyProcessTap(tapObjectID)
+```
+
+---
+
+### 6.3 PIMPL Isolation: Why processBlock Required Zero Changes
+
+The `SystemAudioCapture` class uses the PIMPL (Pointer-to-Implementation) pattern:
+
+```
+SystemAudioCapture.h (pure C++ — safe to #include from ANY .cpp)
+  │
+  │  class SystemAudioCapture {
+  │      void startAsync(double expectedSampleRate);
+  │      void stop();
+  │      bool isActive() const;
+  │      int readSamples(float* destL, float* destR, int maxSamples);
+  │      double getStreamSampleRate() const;
+  │  private:
+  │      struct Impl;
+  │      std::unique_ptr<Impl> pImpl;
+  │  };
+  │
+  └─ SystemAudioCapture.mm (Obj-C++ — all CoreAudio/CATapDescription code hidden here)
+       struct Impl {
+           AbstractFifo + ringBuffer
+           AudioObjectID tapObjectID, aggregateDeviceID
+           AudioDeviceIOProcID ioProcID
+           static OSStatus ioProcCallback(...)  // hardware thread
+           void startCaptureAsync(...)           // 7-step pipeline
+           void stopCapture()                    // teardown
+           int readSamples(...)                  // ring buffer consumer
+       };
+```
+
+**Why this matters for refactoring:**
+
+When we replaced ScreenCaptureKit with CoreAudio Tap, the ONLY files that changed were:
+- `SystemAudioCapture.mm` — completely rewritten (SCK → CoreAudio Tap)
+- `SystemAudioCapture.h` — comments updated, API identical
+- `GOODMETER.jucer` — framework + plist + deployment target
+- `StandaloneApp.cpp` — menu label text only
+- `StandaloneNonoEditor.h` — menu label text only
+
+**Files that required ZERO changes:**
+- `PluginProcessor.cpp` — processBlock's ring buffer bridge (`readSamples`) is unchanged
+- `PluginProcessor.h` — `std::unique_ptr<SystemAudioCapture>` unchanged
+- `StandaloneApp.cpp` — caller code (`startAsync()`, `stop()`) unchanged
+- All UI components — no awareness of capture backend
+
+This is the power of PIMPL: the entire CoreAudio backend was swapped without touching
+the DSP pipeline or UI layer. Future backend changes (e.g., if Apple introduces a new
+API) would follow the same pattern.
+
+---
+
+### 6.4 Deployment & Permission Configuration
+
+**macOS Version Requirement:**
+
+| API | Minimum macOS | Notes |
+|-----|---------------|-------|
+| `CATapDescription` class | 12.0 | Class exists but `CreateProcessTap` doesn't |
+| `CATapMuteBehavior` enum | 13.0 | |
+| `AudioHardwareCreateProcessTap()` | **14.2** | The critical function |
+| `AudioHardwareDestroyProcessTap()` | **14.2** | |
+
+**Runtime check in code:**
+```objc
+if (@available(macOS 14.2, *)) {
+    // CoreAudio Tap API available
+} else {
+    // Graceful fallback — log message, return without starting
+}
+```
+
+**GOODMETER.jucer configuration:**
+```xml
+<!-- Deployment target (both Debug and Release) -->
+<CONFIGURATION macOSDeploymentTarget="14.2" ... />
+
+<!-- Frameworks (ScreenCaptureKit REMOVED, CoreAudio added) -->
+extraFrameworks="CoreMedia,CoreAudio"
+
+<!-- Permission plist (NSScreenCapture REMOVED, NSAudioCapture added) -->
+customPList="...NSAudioCaptureUsageDescription..."
+```
+
+**Info.plist keys (all 4 plist files):**
+```xml
+<!-- REMOVED — this triggered "Screen Recording" permission -->
+<!-- <key>NSScreenCaptureUsageDescription</key> -->
+
+<!-- ADDED — this triggers "System Audio Recording Only" permission -->
+<key>NSAudioCaptureUsageDescription</key>
+<string>GOODMETER needs System Audio Recording permission to capture
+and analyze system audio in real-time.</string>
+
+<!-- KEPT — still needed for mic input mode -->
+<key>NSMicrophoneUsageDescription</key>
+<string>GOODMETER needs microphone access to analyze audio in real-time.</string>
+```
+
+**Permission behavior:**
+- First time user selects "System Audio" → macOS shows permission dialog
+- Dialog says "GOODMETER 想要录制此电脑上其他应用程序的音频" (wants to record audio from other apps)
+- After granting, tap starts immediately (no restart needed, unlike SCK)
+- Purple dot appears in menu bar (not orange screen recording dot)
+- If user denies, tap outputs silence — no crash, no error
+- Permission status cannot be queried programmatically (unlike mic with `AVCaptureDevice.authorizationStatus`)
+
+**Known limitations:**
+- DRM-protected audio (Apple Music, Netflix) is silenced by Apple — by design, not a bug
+- Cannot exclude specific apps from the tap (we exclude only self)
+- If the user's output device sample rate differs from tap format, CoreAudio handles resampling
+
+---
+
+### 6.5 processBlock Bridge (Ring Buffer Integration)
+
+The ring buffer bridge in `PluginProcessor.cpp` is the interface between capture and DSP:
+
+```cpp
+#if JUCE_MAC && JucePlugin_Build_Standalone
+    if (useSystemAudio.load(std::memory_order_relaxed)
+        && systemAudioCapture && systemAudioCapture->isActive())
+    {
+        float* writeL = buffer.getWritePointer(0);
+        float* writeR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+
+        int read = systemAudioCapture->readSamples(writeL, writeR, numSamples);
+
+        // Zero-fill if ring buffer didn't have enough samples
+        if (read < numSamples)
+        {
+            std::fill(writeL + read, writeL + numSamples, 0.0f);
+            if (writeR) std::fill(writeR + read, writeR + numSamples, 0.0f);
+        }
+    }
+#endif
+```
+
+This code is **identical** for both the old SCK backend and the new CoreAudio Tap backend.
+The `readSamples()` contract is the same: pull stereo samples from a lock-free ring buffer.
+
+**Thread safety model:**
+```
+IOProc callback (hardware audio thread) ──write──→ AbstractFifo ──read──→ processBlock (JUCE audio thread)
+                                                    (SPSC lock-free)
+```
+`AbstractFifo` is a single-producer single-consumer lock-free FIFO — perfect for this
+architecture. No mutexes, no locks, no allocations on the audio thread.
+
+---
+
+### 6.6 Reference Materials
+
+- [Apple: Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps)
+- [AudioCap (Swift reference implementation)](https://github.com/insidegui/AudioCap)
+- [sudara/core_audio_tap_example.m (Obj-C gist)](https://gist.github.com/sudara/34f00efad69a7e8ceafa078ea0f76f6f)
+- [AudioTee (Rust/C implementation)](https://github.com/makeusabrew/audiotee)
+- [CoreAudio Taps for Dummies (blog)](https://www.maven.de/2025/04/coreaudio-taps-for-dummies/)
+- SDK Headers: `CoreAudio/AudioHardwareTapping.h`, `CoreAudio/CATapDescription.h`
+
+---
+
+## 7. macOS Permissions
 
 ### Microphone Permission
 
-Required for standalone mode to capture audio input.
+Required for standalone mode to capture audio input (mic or loopback).
 
 ```xml
 <!-- In GOODMETER.jucer <XCODE_MAC> tag: -->
@@ -339,17 +624,13 @@ microphonePermissionsText="GOODMETER needs microphone access..."
 This generates `NSMicrophoneUsageDescription` in Info.plist. Without it, macOS
 **silently denies** microphone access — no dialog, no error, just zero-filled buffers.
 
+### System Audio Permission
+
+See Section 6.4 above for full details. Uses `NSAudioCaptureUsageDescription`
+(not `NSScreenCaptureUsageDescription`).
+
 **LESSON**: Editing .jucer alone does NOT propagate to Xcode project. You MUST
-re-save with Projucer. Or manually edit `Builds/MacOSX/Info-Standalone_Plugin.plist`.
-
-### System Audio Capture (FUTURE - V2.0)
-
-Currently GOODMETER captures microphone input only. To capture system audio output
-(like MiniMeters does), would need:
-- `ScreenCaptureKit` API (macOS 13+)
-- `NSScreenCaptureUsageDescription` permission
-- Objective-C++ bridge code
-- This is a major feature, not yet implemented
+re-save with Projucer. Or manually edit `Builds/MacOSX/Info-*.plist`.
 
 ### Feedback Loop Prevention
 
@@ -362,22 +643,30 @@ Standalone mode clears the output buffer after processing:
 ```
 Without this, mic input → speakers → mic creates howling feedback.
 
+### JUCE shouldMuteInput Gotcha
+
+`StandalonePluginHolder` defaults `shouldMuteInput` to **TRUE**, which replaces
+the input buffer with zeros in `audioDeviceIOCallback`. GOODMETER is a metering app
+that needs live input, so we force it off:
+```cpp
+pluginHolder->getMuteInputValue().setValue(false);
+```
+This is set in `GoodMeterStandaloneApp::initialise()` in StandaloneApp.cpp.
+
 ---
 
-## 7. Menu Bar (macOS Native)
+## 8. Menu Bar (macOS Native)
 
 `GoodMeterStandaloneApp` implements `juce::MenuBarModel`:
-- Single "Recording" menu
-- Start/Stop Recording toggle
-- Recent Recordings submenu (scans ~/Desktop/GOODMETER_*.wav)
-- Reveal in Finder
+- "Recording" menu: Start/Stop Recording toggle, Recent Recordings, Reveal in Finder
+- "Audio Source" menu: Microphone Input / System Audio (CoreAudio Tap) toggle
 
 Audio settings are accessed via Nono's gear hover button (popup menu with
 device list + full AudioDeviceSelectorComponent dialog).
 
 ---
 
-## 8. Recording System
+## 9. Recording System
 
 `AudioRecorder` (in AudioRecorder.h):
 - Lock-free FIFO: audio thread pushes samples, never blocks
@@ -388,7 +677,7 @@ device list + full AudioDeviceSelectorComponent dialog).
 
 ---
 
-## 9. Key Constants
+## 10. Key Constants
 
 ```cpp
 // StandaloneNonoEditor layout
@@ -410,7 +699,7 @@ recallSpeed = 1/30 (~0.5s recall)
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 - **JUCE 8** (modules: core, audio_basics, audio_devices, audio_formats,
   audio_plugin_client, audio_processors, audio_utils, data_structures,
@@ -418,4 +707,4 @@ recallSpeed = 1/30 (~0.5s recall)
 - **No external libraries** — everything is JUCE + standard C++17
 - **Projucer** — for project file management and Xcode project generation
 - **Xcode 16.3+** — macOS build toolchain
-- **macOS 15.x SDK** (ARM64 native)
+- **macOS 14.2+ SDK** (ARM64 native, required for CoreAudio Process Tap API)

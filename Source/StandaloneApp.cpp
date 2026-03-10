@@ -270,6 +270,11 @@ public:
             false           // don't auto-open MIDI devices
         );
 
+        // CRITICAL: JUCE defaults shouldMuteInput to TRUE, which silences
+        // the microphone input in audioDeviceIOCallback by replacing the
+        // input buffer with zeros. We are a metering app — we NEED live input.
+        pluginHolder->getMuteInputValue().setValue(false);
+
         mainWindow = std::make_unique<DesktopPetWindow>(
             getApplicationName(),
             std::move(pluginHolder)
@@ -314,13 +319,14 @@ public:
     //==========================================================================
     juce::StringArray getMenuBarNames() override
     {
-        return { "Recording" };
+        return { "Recording", "Audio Source" };
     }
 
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
     {
         juce::PopupMenu menu;
-        if (menuIndex != 0) return menu;
+        if (menuIndex == 0)
+        {
 
         // ── 1. Start / Stop Recording toggle ──
         auto* proc = getProcessor();
@@ -372,6 +378,20 @@ public:
 
         // Show current location as greyed-out hint
         menu.addItem(-1, juce::String(juce::CharPointer_UTF8(u8"\u2192 ")) + recDir.getFullPathName(), false);
+
+        } // end menuIndex == 0 (Recording)
+        else if (menuIndex == 1)
+        {
+            // ── Audio Source menu: Microphone / System Audio toggle ──
+#if JUCE_MAC
+            auto* proc = getProcessor();
+            bool sysActive = (proc != nullptr && proc->useSystemAudio.load(std::memory_order_relaxed));
+            menu.addItem(700, "Microphone Input", true, !sysActive);
+            menu.addItem(701, "System Audio (CoreAudio Tap)", true, sysActive);
+#else
+            menu.addItem(-1, "System audio requires macOS 14.2+", false);
+#endif
+        }
 
         return menu;
     }
@@ -466,6 +486,35 @@ public:
             if (idx >= 0 && idx < wavFiles.size())
                 wavFiles[idx].revealToUser();
         }
+#if JUCE_MAC
+        else if (menuItemID == 700)  // Microphone Input
+        {
+            auto* proc = getProcessor();
+            if (proc && proc->systemAudioCapture)
+                proc->systemAudioCapture->stop();
+            if (proc)
+                proc->useSystemAudio.store(false, std::memory_order_relaxed);
+            menuItemsChanged();
+        }
+        else if (menuItemID == 701)  // System Audio
+        {
+            auto* proc = getProcessor();
+            if (proc && proc->systemAudioCapture)
+            {
+                double sr = 48000.0;
+                if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
+                    if (auto* device = mainWindow->pluginHolder->deviceManager.getCurrentAudioDevice())
+                        sr = device->getCurrentSampleRate();
+
+                // Async start — will not block the UI.
+                // Set useSystemAudio immediately; processBlock checks isActive()
+                // before actually reading from the capture stream.
+                proc->systemAudioCapture->startAsync(sr);
+                proc->useSystemAudio.store(true, std::memory_order_relaxed);
+            }
+            menuItemsChanged();
+        }
+#endif
     }
 
 private:

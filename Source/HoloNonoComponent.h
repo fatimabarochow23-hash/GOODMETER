@@ -99,6 +99,65 @@ public:
         orbitLockFramesLeft = 0;
     }
 
+    /** Trigger shy expression (>< eyes) for 1.5 seconds — callable from editor */
+    void triggerShyExpression()
+    {
+        isShy = true;
+        shyFramesLeft = 90;  // 1.5 seconds at 60Hz
+    }
+
+    /** Trigger amber extraction face animation (runs until stopExtractExpression is called) */
+    void triggerExtractExpression()
+    {
+        isExtractingVideo = true;
+        extractFrameCounter = 0;
+
+        // Generate synthetic waveform data for the amber grid
+        if (extractSyntheticHistory.empty())
+        {
+            juce::Random rng;
+            for (int i = 0; i < 200; ++i)
+            {
+                GridColumn col;
+                col.level = 0.05f + rng.nextFloat() * 0.55f;
+                col.randomSeed = static_cast<uint32_t>(rng.nextInt());
+                extractSyntheticHistory.push_back(col);
+            }
+        }
+    }
+
+    /** Stop amber extraction face animation */
+    void stopExtractExpression()
+    {
+        isExtractingVideo = false;
+        extractFrameCounter = 0;
+        extractSyntheticHistory.clear();
+    }
+
+    /** Trigger time-rewind holographic face animation for 1.5 seconds */
+    void triggerRewindExpression()
+    {
+        isRewinding = true;
+        rewindFramesLeft = 90;  // 1.5 seconds at 60Hz
+        rewindStartMs = juce::Time::getMillisecondCounterHiRes();
+
+        // Snapshot the current gridWaveformHistory for reverse playback
+        rewindSnapshot = gridWaveformHistory;
+
+        // If snapshot is empty, generate synthetic data so the effect still looks cool
+        if (rewindSnapshot.empty())
+        {
+            juce::Random rng;
+            for (int i = 0; i < 150; ++i)
+            {
+                GridColumn col;
+                col.level = 0.1f + rng.nextFloat() * 0.6f;
+                col.randomSeed = static_cast<uint32_t>(rng.nextInt());
+                rewindSnapshot.push_back(col);
+            }
+        }
+    }
+
     // Callback: local drag in floating phase (instead of moving the window)
     // dx, dy are screen-space deltas from drag start
     std::function<void(int dx, int dy)> onLocalDrag;
@@ -1005,6 +1064,13 @@ private:
     bool isSmiling = false;
     bool isShy = false;              // shy expression: >< eyes after ear-pinch
     int shyFramesLeft = 0;           // shy duration countdown (1.5s = 90 frames at 60Hz)
+    bool isRewinding = false;        // time-rewind holographic face animation
+    int rewindFramesLeft = 0;        // rewind duration countdown (1.5s = 90 frames at 60Hz)
+    double rewindStartMs = 0.0;      // timestamp when rewind started
+    std::vector<GridColumn> rewindSnapshot;  // snapshot of gridWaveformHistory for reverse playback
+    bool isExtractingVideo = false;  // amber extraction face animation
+    int extractFrameCounter = 0;     // frame counter for extraction animation scrolling
+    std::vector<GridColumn> extractSyntheticHistory;  // synthetic waveform for amber grid
     bool isOrbiting = false;
     bool isOrbitLocked = false;       // all mouse interactions disabled during orbit
     float orbitProgress = 0.0f;       // 0→1 during orbit (1.2s)
@@ -1394,6 +1460,34 @@ private:
                 isShy = false;
         }
 
+        // Rewind countdown (1.5s = 90 frames)
+        if (rewindFramesLeft > 0)
+        {
+            rewindFramesLeft--;
+            if (rewindFramesLeft <= 0)
+            {
+                isRewinding = false;
+                rewindSnapshot.clear();
+            }
+        }
+
+        // Extraction animation: advance frame counter (continuous scrolling)
+        if (isExtractingVideo)
+        {
+            extractFrameCounter++;
+            // Continuously inject new synthetic columns to keep the grid alive
+            if (extractFrameCounter % 2 == 0 && !extractSyntheticHistory.empty())
+            {
+                juce::Random rng;
+                GridColumn col;
+                col.level = 0.05f + rng.nextFloat() * 0.55f;
+                col.randomSeed = static_cast<uint32_t>(rng.nextInt());
+                extractSyntheticHistory.push_back(col);
+                if (extractSyntheticHistory.size() > 300)
+                    extractSyntheticHistory.erase(extractSyntheticHistory.begin());
+            }
+        }
+
         // Orbit lock countdown (1.5s = 90 frames from orbit start)
         if (orbitLockFramesLeft > 0)
         {
@@ -1753,6 +1847,304 @@ private:
     }
 
     //==========================================================================
+    // Drawing: Time-Rewind face — reuses recording grid visual style
+    // Plays rewindSnapshot in REVERSE at 3× speed (data scrolls rightward)
+    //==========================================================================
+    void drawRewindFace(juce::Graphics& g, float cx, float vcy, float r, float hScale)
+    {
+        if (hScale < 0.3f) return;
+
+        // Visor geometry (identical to drawRecordingGrid)
+        float vw = r * 1.7f * hScale;
+        float vh = r * 1.4f;
+
+        float left   = cx - vw / 2.0f;
+        float top    = vcy - vh / 2.0f;
+        float right  = cx + vw / 2.0f;
+        float bottom = vcy + vh / 2.0f;
+
+        // Clip to visor ellipse
+        g.saveState();
+        juce::Path visorClip;
+        visorClip.addEllipse(left, top, vw, vh);
+        g.reduceClipRegion(visorClip);
+
+        auto holoCyan = juce::Colour(0xFF00FFFF);
+        auto glitchRed = juce::Colour(0xFFFF2A3A);
+        const float cell = 4.0f;
+
+        // ── 1. Faint grid lines (same as recording) ──
+        g.setColour(juce::Colours::white.withAlpha(0.06f));
+        for (float gx = left; gx <= right; gx += cell)
+            g.fillRect(gx, top, 0.5f, vh);
+        for (float gy = top; gy <= bottom; gy += cell)
+            g.fillRect(left, gy, vw, 0.5f);
+
+        // ── 2. Bottom baseline (raised for visor-edge clearance) ──
+        float baselineY = bottom - vh * 0.08f - 12.0f;
+        g.setColour(holoCyan.withAlpha(0.25f));
+        g.fillRect(left, baselineY - 0.5f, vw, 1.0f);
+
+        // ── 3. Reverse-scrolling histogram from rewindSnapshot ──
+        int numCols = static_cast<int>(vw / cell);
+        float maxDrawH = vh * 0.70f;
+        int maxCells = static_cast<int>(maxDrawH / cell);
+        int snapSize = static_cast<int>(rewindSnapshot.size());
+
+        if (snapSize > 0)
+        {
+            // Animation progress: 0 → 1 over 1.5s (90 frames)
+            float t = 1.0f - static_cast<float>(rewindFramesLeft) / 90.0f;
+            t = juce::jlimit(0.0f, 1.0f, t);
+
+            // 3× speed: scroll through 3× the snapshot length during the animation
+            int scrollOffset = static_cast<int>(t * static_cast<float>(snapSize) * 3.0f);
+
+            for (int col = 0; col < numCols; ++col)
+            {
+                // Same right-to-left draw position as recording grid
+                float colX = right - (static_cast<float>(col) + 1.0f) * cell;
+
+                // Reverse: shift read index backwards by scrollOffset → data scrolls right
+                int rawIdx = snapSize - 1 - col - scrollOffset;
+                int histIdx = ((rawIdx % snapSize) + snapSize) % snapSize;
+
+                const auto& colData = rewindSnapshot[static_cast<size_t>(histIdx)];
+                float amplitude = colData.level;
+                uint32_t colSeed = colData.randomSeed;
+
+                int activeCells = juce::jmax(0, static_cast<int>(amplitude * static_cast<float>(maxCells)));
+                if (activeCells == 0) continue;
+
+                for (int row = 0; row < activeCells; ++row)
+                {
+                    // Stack upward from baseline (same as recording grid)
+                    float cellY = baselineY - static_cast<float>(row + 1) * cell;
+                    float dist = static_cast<float>(row)
+                               / static_cast<float>(juce::jmax(1, activeCells));
+
+                    // Per-cell deterministic RNG (same seed scheme as recording grid)
+                    juce::Random cellRng(colSeed + static_cast<uint32_t>(row) * 7919u);
+                    bool isRedGlitch = cellRng.nextFloat() < 0.12f;
+                    bool isHollow = cellRng.nextFloat() < 0.35f;
+
+                    if (dist > 0.75f)
+                    {
+                        // Top edge — sparse: lower alpha
+                        float edgeAlpha = cellRng.nextFloat() > 0.5f ? 0.5f : 0.3f;
+
+                        if (isRedGlitch)
+                            g.setColour(glitchRed.withAlpha(edgeAlpha * 0.8f));
+                        else
+                            g.setColour(holoCyan.withAlpha(edgeAlpha));
+
+                        if (isHollow)
+                            g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                        else
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                    else
+                    {
+                        // Core pixels
+                        if (isRedGlitch)
+                        {
+                            g.setColour(glitchRed.withAlpha(0.75f));
+                            if (isHollow)
+                                g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                            else
+                                g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                        }
+                        else
+                        {
+                            g.setColour(holoCyan.withAlpha(0.8f));
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                        }
+                    }
+                }
+
+                // Scattered glitch pixels above envelope (same as recording grid)
+                juce::Random scatterRng(colSeed + 99991u);
+                if (scatterRng.nextFloat() < 0.12f)
+                {
+                    int extraRow = activeCells + 1 + scatterRng.nextInt(4);
+                    float cellY = baselineY - static_cast<float>(extraRow + 1) * cell;
+                    bool redScatter = scatterRng.nextFloat() < 0.25f;
+                    g.setColour(redScatter ? glitchRed.withAlpha(0.2f)
+                                           : holoCyan.withAlpha(0.15f));
+                    g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                }
+            }
+        }
+
+        // ── 4. Scanline interference (reversed sweep: bottom → top) ──
+        float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+        float scanY = bottom - std::fmod(ms * 0.08f, vh + 8.0f) + 4.0f;
+        g.setColour(holoCyan.withAlpha(0.08f));
+        g.fillRect(left, scanY, vw, 2.0f);
+        g.setColour(glitchRed.withAlpha(0.03f));
+        g.fillRect(left, scanY + 2.0f, vw, 1.0f);
+
+        // ── 5. Rewind indicator — pulsing cyan ◀◀ (replaces REC dot) ──
+        float blinkAlpha = 0.5f + 0.5f * std::sin(ms * 0.012f);
+        float indX = left + 18.0f;
+        float indY = top + 12.0f;
+        float triW = 4.5f, triH = 5.5f;
+
+        g.setColour(holoCyan.withAlpha(blinkAlpha * 0.9f));
+        juce::Path tri1;
+        tri1.addTriangle(indX + triW, indY, indX + triW, indY + triH,
+                          indX, indY + triH * 0.5f);
+        g.fillPath(tri1);
+        juce::Path tri2;
+        float off2 = triW * 1.1f;
+        tri2.addTriangle(indX + off2 + triW, indY, indX + off2 + triW, indY + triH,
+                          indX + off2, indY + triH * 0.5f);
+        g.fillPath(tri2);
+
+        g.restoreState();
+    }
+
+    //==========================================================================
+    // Drawing: Video Extraction face — reuses recording grid visual style
+    // Same forward scrolling as recording, but amber colored
+    //==========================================================================
+    void drawExtractFace(juce::Graphics& g, float cx, float vcy, float r, float hScale)
+    {
+        if (hScale < 0.3f) return;
+
+        // Visor geometry (identical to drawRecordingGrid)
+        float vw = r * 1.7f * hScale;
+        float vh = r * 1.4f;
+
+        float left   = cx - vw / 2.0f;
+        float top    = vcy - vh / 2.0f;
+        float right  = cx + vw / 2.0f;
+        float bottom = vcy + vh / 2.0f;
+
+        // Clip to visor ellipse
+        g.saveState();
+        juce::Path visorClip;
+        visorClip.addEllipse(left, top, vw, vh);
+        g.reduceClipRegion(visorClip);
+
+        auto amberColor = juce::Colour(0xFFD2911E);   // warm amber
+        auto glitchRed  = juce::Colour(0xFFFF2A3A);
+        const float cell = 4.0f;
+
+        // ── 1. Faint grid lines (same as recording) ──
+        g.setColour(juce::Colours::white.withAlpha(0.06f));
+        for (float gx = left; gx <= right; gx += cell)
+            g.fillRect(gx, top, 0.5f, vh);
+        for (float gy = top; gy <= bottom; gy += cell)
+            g.fillRect(left, gy, vw, 0.5f);
+
+        // ── 2. Bottom baseline (raised for visor-edge clearance) ──
+        float baselineY = bottom - vh * 0.08f - 12.0f;
+        g.setColour(amberColor.withAlpha(0.25f));
+        g.fillRect(left, baselineY - 0.5f, vw, 1.0f);
+
+        // ── 3. Forward-scrolling histogram from extractSyntheticHistory ──
+        int numCols = static_cast<int>(vw / cell);
+        float maxDrawH = vh * 0.70f;
+        int maxCells = static_cast<int>(maxDrawH / cell);
+        int histSize = static_cast<int>(extractSyntheticHistory.size());
+
+        for (int col = 0; col < numCols; ++col)
+        {
+            // Same right-to-left draw as recording: newest data on the right
+            int histIdx = histSize - 1 - col;
+            if (histIdx < 0) break;
+
+            const auto& colData = extractSyntheticHistory[static_cast<size_t>(histIdx)];
+            float amplitude = colData.level;
+            uint32_t colSeed = colData.randomSeed;
+            float colX = right - (static_cast<float>(col) + 1.0f) * cell;
+
+            int activeCells = juce::jmax(0, static_cast<int>(amplitude * static_cast<float>(maxCells)));
+            if (activeCells == 0) continue;
+
+            for (int row = 0; row < activeCells; ++row)
+            {
+                // Stack upward from baseline
+                float cellY = baselineY - static_cast<float>(row + 1) * cell;
+                float dist = static_cast<float>(row)
+                           / static_cast<float>(juce::jmax(1, activeCells));
+
+                // Per-cell deterministic RNG (same scheme as recording grid)
+                juce::Random cellRng(colSeed + static_cast<uint32_t>(row) * 7919u);
+                bool isRedGlitch = cellRng.nextFloat() < 0.12f;
+                bool isHollow = cellRng.nextFloat() < 0.35f;
+
+                if (dist > 0.75f)
+                {
+                    float edgeAlpha = cellRng.nextFloat() > 0.5f ? 0.5f : 0.3f;
+
+                    if (isRedGlitch)
+                        g.setColour(glitchRed.withAlpha(edgeAlpha * 0.8f));
+                    else
+                        g.setColour(amberColor.withAlpha(edgeAlpha));
+
+                    if (isHollow)
+                        g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                    else
+                        g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                }
+                else
+                {
+                    if (isRedGlitch)
+                    {
+                        g.setColour(glitchRed.withAlpha(0.75f));
+                        if (isHollow)
+                            g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                        else
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                    else
+                    {
+                        g.setColour(amberColor.withAlpha(0.8f));
+                        g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                }
+            }
+
+            // Scattered glitch pixels above envelope
+            juce::Random scatterRng(colSeed + 99991u);
+            if (scatterRng.nextFloat() < 0.12f)
+            {
+                int extraRow = activeCells + 1 + scatterRng.nextInt(4);
+                float cellY = baselineY - static_cast<float>(extraRow + 1) * cell;
+                bool redScatter = scatterRng.nextFloat() < 0.25f;
+                g.setColour(redScatter ? glitchRed.withAlpha(0.2f)
+                                       : amberColor.withAlpha(0.15f));
+                g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+            }
+        }
+
+        // ── 4. Scanline interference (forward sweep: top → bottom) ──
+        float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+        float scanY = top + std::fmod(ms * 0.06f, vh + 8.0f) - 4.0f;
+        g.setColour(amberColor.withAlpha(0.08f));
+        g.fillRect(left, scanY, vw, 2.0f);
+        g.setColour(glitchRed.withAlpha(0.03f));
+        g.fillRect(left, scanY + 2.0f, vw, 1.0f);
+
+        // ── 5. EXTRACT indicator — pulsing amber filmstrip icon ──
+        float blinkAlpha = 0.5f + 0.5f * std::sin(ms * 0.010f);
+        float indX = left + 18.0f;
+        float indY = top + 12.0f;
+
+        // Small filmstrip: two vertical bars with notches
+        g.setColour(amberColor.withAlpha(blinkAlpha * 0.9f));
+        g.fillRect(indX, indY, 2.0f, 6.0f);
+        g.fillRect(indX + 4.0f, indY, 2.0f, 6.0f);
+        g.fillRect(indX + 8.0f, indY, 2.0f, 6.0f);
+        // Connecting strip
+        g.fillRect(indX, indY + 2.0f, 10.0f, 2.0f);
+
+        g.restoreState();
+    }
+
+    //==========================================================================
     // Drawing: Front face
     //==========================================================================
     void drawVisor(juce::Graphics& g, float cx, float cy, float r, float hScale)
@@ -1783,6 +2175,20 @@ private:
 
         float maxH = r * 0.5f, minH = r * 0.08f;
         float eh = juce::jmap(juce::jlimit(0.2f, 1.0f, eyeOpenness), 0.2f, 1.0f, minH, maxH);
+
+        // ===== TIME-REWIND: Reverse holographic bar waveform (highest priority) =====
+        if (isRewinding)
+        {
+            drawRewindFace(g, cx, vcy, r, hScale);
+            return;
+        }
+
+        // ===== VIDEO EXTRACTION: Amber grid waveform (forward scrolling) =====
+        if (isExtractingVideo)
+        {
+            drawExtractFace(g, cx, vcy, r, hScale);
+            return;
+        }
 
         // ===== Dizzy: spinning spiral / mosquito-coil eyes =====
         if (isDizzy)

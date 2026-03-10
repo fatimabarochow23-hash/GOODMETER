@@ -33,6 +33,7 @@
 #include "StereoImageComponent.h"
 #include "SpectrogramComponent.h"
 #include "PsrMeterComponent.h"
+#include "VideoAudioExtractor.h"
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 
 //==============================================================================
@@ -159,7 +160,7 @@ public:
             {
                 hoverBtnState = HoverButtonState::appearing;
                 hoverBtnProgress = 0.0f;
-                for (int i = 0; i < 3; ++i) hoverBtnStagger[i] = 0.0f;
+                for (int i = 0; i < numHoverBtns; ++i) hoverBtnStagger[i] = 0.0f;
             }
         };
 
@@ -210,6 +211,7 @@ public:
         setSize(compactW, compactH);
         setResizable(false, false);
         setInterceptsMouseClicks(false, true);
+        setPaintingIsUnclipped(true);  // Allow glow/shadow to overflow component bounds
 
         startTimerHz(60);
     }
@@ -292,14 +294,25 @@ public:
         {
             float fx = static_cast<float>(event.x);
             float fy = static_cast<float>(event.y);
-            for (int i = 0; i < 3; ++i)
+            for (int i = 0; i < numHoverBtns; ++i)
             {
                 if (getHoverButtonRect(i).contains(fx, fy))
                 {
+                    hoverBtnPressedIndex = i;
+                    repaint();
                     handleHoverButtonClick(i);
                     return;
                 }
             }
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        if (hoverBtnPressedIndex >= 0)
+        {
+            hoverBtnPressedIndex = -1;
+            repaint();
         }
     }
 
@@ -310,7 +323,7 @@ public:
         {
             hoverBtnState = HoverButtonState::hidden;
             hoverBtnProgress = 0.0f;
-            for (int i = 0; i < 3; ++i) hoverBtnStagger[i] = 0.0f;
+            for (int i = 0; i < numHoverBtns; ++i) hoverBtnStagger[i] = 0.0f;
             hoverBtnHotIndex = -1;
             repaint();
         }
@@ -355,7 +368,7 @@ public:
         // ── 0. Hover buttons (highest priority when visible) ──
         if (hoverBtnState == HoverButtonState::visible)
         {
-            for (int i = 0; i < 3; ++i)
+            for (int i = 0; i < numHoverBtns; ++i)
                 if (getHoverButtonRect(i).contains(fx, fy))
                     return true;
         }
@@ -657,8 +670,12 @@ private:
     static constexpr int snapOverlapMin = 10;         // perpendicular overlap minimum
 
     //==========================================================================
-    // Hover button system (3 icon buttons below Nono)
+    // Hover button system (2 rows: Olympic-rings offset layout)
+    // Top row:    [0] gear   [1] tape    [2] shard
+    // Bottom row: [3] rewind (between gear & tape)  [4] video extract (between tape & shard)
     //==========================================================================
+    static constexpr int numHoverBtns = 5;  // total hover buttons
+
     enum class HoverButtonState
     {
         hidden,      // Buttons not visible
@@ -669,22 +686,28 @@ private:
 
     HoverButtonState hoverBtnState = HoverButtonState::hidden;
     float hoverBtnProgress = 0.0f;   // 0=hidden, 1=visible
-    int hoverBtnHotIndex = -1;       // -1=none, 0=gear, 1=tape, 2=shard
-    float hoverBtnStagger[3] = {};   // per-button stagger progress for appear animation
+    int hoverBtnHotIndex = -1;       // -1=none, 0=gear, 1=tape, 2=shard, 3=rewind
+    int hoverBtnPressedIndex = -1;   // tracks mouse-down for click-scale feedback
+    float hoverBtnStagger[numHoverBtns] = {};   // per-button stagger progress for appear animation
 
     // Button geometry constants
     static constexpr float hoverBtnSize = 52.0f;
     static constexpr float hoverBtnGap = 10.0f;
-    static constexpr float hoverBtnStripW = 3 * 52 + 2 * 10;  // 176px
+    static constexpr float hoverBtnTopRowW = 3 * 52 + 2 * 10;  // 176px (top row: 3 buttons)
 
     // Button icon images (loaded once from BinaryData)
     juce::Image btnSettingsImg;
     juce::Image btnRecordImg;
     juce::Image btnStowImg;
+    juce::Image btnRewindImg;
+    juce::Image btnVideoExtractImg;
     bool hoverBtnIconsLoaded = false;
 
     // Recording state (for tape button pulse)
     bool isRecording = false;
+
+    // Video extraction state
+    std::unique_ptr<juce::FileChooser> videoFileChooser;
 
     //==========================================================================
     // Thanos Snap Stow system (Phase 3)
@@ -757,6 +780,10 @@ private:
             BinaryData::btn_record_png, BinaryData::btn_record_pngSize);
         btnStowImg = juce::ImageCache::getFromMemory(
             BinaryData::btn_stow_png, BinaryData::btn_stow_pngSize);
+        btnRewindImg = juce::ImageCache::getFromMemory(
+            BinaryData::rewind_skill_icon_png, BinaryData::rewind_skill_icon_pngSize);
+        btnVideoExtractImg = juce::ImageCache::getFromMemory(
+            BinaryData::video_extract_icon_png, BinaryData::video_extract_icon_pngSize);
         hoverBtnIconsLoaded = true;
     }
 
@@ -775,26 +802,47 @@ private:
         return { cx, cy, bodyR };
     }
 
-    /** Get rect for hover button i (0=gear, 1=tape, 2=shard) at FULL visibility */
+    /** Get rect for hover button i (Olympic-rings 2-row offset layout)
+     *  Top row (0-2): evenly spaced
+     *  Bottom row (3+): centered between adjacent top-row gaps */
     juce::Rectangle<float> getHoverButtonRect(int i) const
     {
         auto [cx, cy, bodyR] = getNonoCenterAndRadius();
-        float stripX = cx - hoverBtnStripW / 2.0f;
-        float stripY = cy + bodyR * 1.5f + 8.0f;
-        float bx = stripX + static_cast<float>(i) * (hoverBtnSize + hoverBtnGap);
-        return { bx, stripY, hoverBtnSize, hoverBtnSize };
+        float topStripX = cx - hoverBtnTopRowW / 2.0f;
+        float topStripY = cy + bodyR * 1.5f + 8.0f;
+
+        if (i < 3)
+        {
+            // Top row: gear(0), tape(1), shard(2)
+            float bx = topStripX + static_cast<float>(i) * (hoverBtnSize + hoverBtnGap);
+            return { bx, topStripY, hoverBtnSize, hoverBtnSize };
+        }
+        else
+        {
+            // Bottom row: Olympic-rings offset — centered in gaps between top-row buttons
+            // Button 3 (rewind) → between button 0 (gear) and button 1 (tape)
+            // Future button 4  → between button 1 (tape) and button 2 (shard)
+            int gapIdx = (i == 3) ? 0 : 1;
+            float leftBtnX = topStripX + static_cast<float>(gapIdx) * (hoverBtnSize + hoverBtnGap);
+            float rightBtnX = topStripX + static_cast<float>(gapIdx + 1) * (hoverBtnSize + hoverBtnGap);
+            float bx = (leftBtnX + rightBtnX) * 0.5f;  // midpoint between two top buttons
+            float by = topStripY + hoverBtnSize * 0.7f + hoverBtnGap * 0.5f;  // slight overlap like Olympic rings
+            return { bx, by, hoverBtnSize, hoverBtnSize };
+        }
     }
 
-    /** Safe zone: union of Nono body bounding box + button strip */
+    /** Safe zone: union of Nono body bounding box + all button rects */
     juce::Rectangle<float> getHoverSafeZone() const
     {
         auto [cx, cy, bodyR] = getNonoCenterAndRadius();
         float hitR = bodyR * 1.5f;
         auto nonoRect = juce::Rectangle<float>(cx - hitR, cy - hitR, hitR * 2, hitR * 2);
-        float stripX = cx - hoverBtnStripW / 2.0f;
-        float stripY = cy + bodyR * 1.5f + 8.0f;
-        auto btnRect = juce::Rectangle<float>(stripX, stripY, hoverBtnStripW, hoverBtnSize);
-        return nonoRect.getUnion(btnRect);
+
+        // Union all button rects into the safe zone
+        auto safeZone = nonoRect;
+        for (int i = 0; i < numHoverBtns; ++i)
+            safeZone = safeZone.getUnion(getHoverButtonRect(i));
+        return safeZone;
     }
 
     /** Draw hover buttons in paint() */
@@ -805,16 +853,18 @@ private:
 
         auto [cx, cy, bodyR] = getNonoCenterAndRadius();
 
-        const juce::Image* icons[3] = { &btnSettingsImg, &btnRecordImg, &btnStowImg };
+        const juce::Image* icons[numHoverBtns] = { &btnSettingsImg, &btnRecordImg, &btnStowImg, &btnRewindImg, &btnVideoExtractImg };
 
         // Accent colours per button for glow effects
-        const juce::Colour glowColours[3] = {
+        const juce::Colour glowColours[numHoverBtns] = {
             GoodMeterLookAndFeel::accentCyan,     // gear — cyan
             GoodMeterLookAndFeel::accentPink,     // tape — pink
-            GoodMeterLookAndFeel::accentPurple    // shard — purple
+            GoodMeterLookAndFeel::accentPurple,   // shard — purple
+            juce::Colour(0xFF00E5FF),             // rewind — holographic cyan
+            juce::Colour(0xFFD2911E)              // video extract — amber
         };
 
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < numHoverBtns; ++i)
         {
             float t = juce::jlimit(0.0f, 1.0f, hoverBtnStagger[i]);
             if (t <= 0.001f) continue;
@@ -870,13 +920,53 @@ private:
                 g.fillEllipse(gcx - glowR, gcy - glowR, glowR * 2.0f, glowR * 2.0f);
             }
 
-            // ── Draw PNG icon at full button size (no padding, no circle) ──
+            // ── Draw icon (PNG for all buttons) ──
             if (icons[i] != nullptr && icons[i]->isValid())
             {
-                auto destRect = juce::Rectangle<float>(drawX, drawY, sz, sz);
-
                 float iconAlpha = alpha * (isHot ? 1.0f : 0.85f);
                 if (i == 1 && isRecording) iconAlpha *= pulseAlpha;
+
+                float iconCX = drawX + sz * 0.5f;
+                float iconCY = drawY + sz * 0.5f;
+
+                // Rewind button: breathing cyan RadialGradient behind icon
+                if (i == 3)
+                {
+                    float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+                    float breathe = 0.12f + 0.08f * std::sin(ms * 0.003f);
+                    float glowR = sz * 0.65f;
+
+                    juce::ColourGradient breathGlow(
+                        glowColours[3].withAlpha(breathe * alpha), iconCX, iconCY,
+                        glowColours[3].withAlpha(0.0f), iconCX + glowR, iconCY, true);
+                    g.setGradientFill(breathGlow);
+                    g.fillEllipse(iconCX - glowR, iconCY - glowR, glowR * 2.0f, glowR * 2.0f);
+                }
+
+                // Video extract button: breathing amber RadialGradient behind icon
+                if (i == 4)
+                {
+                    float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+                    float breathe = 0.10f + 0.06f * std::sin(ms * 0.004f);
+                    float glowR = sz * 0.65f;
+
+                    juce::ColourGradient breathGlow(
+                        glowColours[4].withAlpha(breathe * alpha), iconCX, iconCY,
+                        glowColours[4].withAlpha(0.0f), iconCX + glowR, iconCY, true);
+                    g.setGradientFill(breathGlow);
+                    g.fillEllipse(iconCX - glowR, iconCY - glowR, glowR * 2.0f, glowR * 2.0f);
+                }
+
+                // Click feedback: 0.95× scale when pressed
+                // Bottom-row icons (rewind, video extract): 15% smaller than top-row buttons
+                bool isPressed = (i == hoverBtnPressedIndex);
+                float baseScale = (i >= 3) ? 0.85f : 1.0f;
+                float clickScale = isPressed ? 0.95f : 1.0f;
+                float finalSz = sz * baseScale * clickScale;
+                float finalX = iconCX - finalSz * 0.5f;
+                float finalY = iconCY - finalSz * 0.5f;
+
+                auto destRect = juce::Rectangle<float>(finalX, finalY, finalSz, finalSz);
 
                 g.setOpacity(iconAlpha);
                 g.drawImage(*icons[i], destRect,
@@ -897,8 +987,8 @@ private:
             case HoverButtonState::appearing:
             {
                 hoverBtnProgress = juce::jmin(1.0f, hoverBtnProgress + 1.0f / 12.0f);
-                // Staggered appear: button 0 starts immediately, 1 after 2 frames, 2 after 4 frames
-                for (int i = 0; i < 3; ++i)
+                // Staggered appear: button 0 starts immediately, each next after 2 frames
+                for (int i = 0; i < numHoverBtns; ++i)
                 {
                     float staggerDelay = static_cast<float>(i) * (2.0f / 12.0f);
                     float localT = juce::jlimit(0.0f, 1.0f, (hoverBtnProgress - staggerDelay) / (1.0f - staggerDelay));
@@ -907,7 +997,7 @@ private:
                 if (hoverBtnProgress >= 1.0f)
                 {
                     hoverBtnState = HoverButtonState::visible;
-                    for (int i = 0; i < 3; ++i) hoverBtnStagger[i] = 1.0f;
+                    for (int i = 0; i < numHoverBtns; ++i) hoverBtnStagger[i] = 1.0f;
                 }
                 repaint();
                 break;
@@ -933,7 +1023,7 @@ private:
                 {
                     // Update hot index
                     hoverBtnHotIndex = -1;
-                    for (int i = 0; i < 3; ++i)
+                    for (int i = 0; i < numHoverBtns; ++i)
                     {
                         if (getHoverButtonRect(i).contains(fx, fy))
                         {
@@ -948,12 +1038,12 @@ private:
             case HoverButtonState::retracting:
             {
                 hoverBtnProgress = juce::jmax(0.0f, hoverBtnProgress - 1.0f / 10.0f);
-                for (int i = 0; i < 3; ++i)
+                for (int i = 0; i < numHoverBtns; ++i)
                     hoverBtnStagger[i] = hoverBtnProgress;
                 if (hoverBtnProgress <= 0.0f)
                 {
                     hoverBtnState = HoverButtonState::hidden;
-                    for (int i = 0; i < 3; ++i) hoverBtnStagger[i] = 0.0f;
+                    for (int i = 0; i < numHoverBtns; ++i) hoverBtnStagger[i] = 0.0f;
                 }
                 repaint();
                 break;
@@ -974,6 +1064,12 @@ private:
                 break;
             case 2: // Shard → Thanos snap stow
                 handleShardButtonClick();
+                break;
+            case 3: // Rewind → Export last 60s of audio
+                handleRewindButtonClick();
+                break;
+            case 4: // Video extract → Extract audio from video file
+                handleVideoExtractClick();
                 break;
         }
     }
@@ -1015,6 +1111,100 @@ private:
         hoverBtnState = HoverButtonState::retracting;
         hoverBtnProgress = 1.0f;
         hoverBtnHotIndex = -1;
+    }
+
+    //==========================================================================
+    // Rewind button: export last 60s + shy expression + reveal folder
+    //==========================================================================
+    void handleRewindButtonClick()
+    {
+        // 1. Trigger export of last 60 seconds
+        audioProcessor.exportRetrospectiveRecording(60);
+
+        // 2. Trigger Nono time-rewind holographic face animation (1 second)
+        if (holoNono != nullptr)
+        {
+            holoNono->triggerRewindExpression();
+        }
+
+        // 3. Dismiss hover buttons
+        hoverBtnState = HoverButtonState::retracting;
+        hoverBtnProgress = 1.0f;
+        hoverBtnHotIndex = -1;
+
+        // 4. Reveal the export folder after a short delay (give WAV writer time to start)
+        juce::Timer::callAfterDelay(500, [this]()
+        {
+            auto dir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                           .getChildFile("Downloads")
+                           .getChildFile("GOODMETER_Records");
+            if (dir.isDirectory())
+                dir.revealToUser();
+        });
+    }
+
+    //==========================================================================
+    // Video Extract: pick video file → amber face → AVFoundation extract → reveal
+    //==========================================================================
+    void handleVideoExtractClick()
+    {
+        // Dismiss hover buttons immediately
+        hoverBtnState = HoverButtonState::retracting;
+        hoverBtnProgress = 1.0f;
+        hoverBtnHotIndex = -1;
+
+        // Launch async FileChooser for video files
+        videoFileChooser = std::make_unique<juce::FileChooser>(
+            "Select Video File", juce::File{},
+            "*.mp4;*.mov;*.m4v");
+
+        videoFileChooser->launchAsync(
+            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [this](const juce::FileChooser& fc)
+            {
+                auto result = fc.getResult();
+                if (!result.existsAsFile())
+                    return;
+
+                // Trigger amber extraction face animation on Nono
+                if (holoNono != nullptr)
+                    holoNono->triggerExtractExpression();
+
+                // Build output path: ~/Downloads/GOODMETER_Records/<videoName>_audio.m4a
+                auto outputDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                                     .getChildFile("Downloads")
+                                     .getChildFile("GOODMETER_Records");
+                outputDir.createDirectory();
+
+                auto outputName = "Extract_" + result.getFileNameWithoutExtension() + ".wav";
+                auto outputFile = outputDir.getChildFile(outputName);
+
+                // Avoid overwriting: append timestamp if file already exists
+                if (outputFile.existsAsFile())
+                {
+                    auto now = juce::Time::getCurrentTime();
+                    outputName = "Extract_" + result.getFileNameWithoutExtension()
+                                 + "_" + now.formatted("%H%M%S") + ".wav";
+                    outputFile = outputDir.getChildFile(outputName);
+                }
+
+                // Run AVFoundation extraction asynchronously
+                auto safeThis = juce::Component::SafePointer<StandaloneNonoEditor>(this);
+                VideoAudioExtractor::extractAudio(result, outputFile,
+                    [safeThis, outputFile](bool success)
+                    {
+                        if (auto* self = safeThis.getComponent())
+                        {
+                            // Stop amber face animation
+                            if (self->holoNono != nullptr)
+                                self->holoNono->stopExtractExpression();
+
+                            // Reveal extracted file on success
+                            if (success && outputFile.existsAsFile())
+                                outputFile.revealToUser();
+                        }
+                    });
+            });
     }
 
     //==========================================================================
@@ -1615,7 +1805,20 @@ private:
 
         menu.addSeparator();
 
-        // ── Section 2: Audio Settings Dialog ──
+        // ── Section 2: Audio Source (System Audio / Microphone toggle) ──
+#if JUCE_MAC
+        menu.addSectionHeader("Audio Source");
+        {
+            bool sysAudioActive = audioProcessor.useSystemAudio.load(std::memory_order_relaxed);
+            const int micInputID = 801;
+            const int sysAudioID = 800;
+            menu.addItem(micInputID, "Microphone Input", true, !sysAudioActive);
+            menu.addItem(sysAudioID, "System Audio (CoreAudio Tap)", true, sysAudioActive);
+        }
+        menu.addSeparator();
+#endif
+
+        // ── Section 3: Audio Settings Dialog ──
         const int audioSettingsID = 900;
         menu.addItem(audioSettingsID, "Audio Settings...");
 
@@ -1636,6 +1839,33 @@ private:
             [this](int result)
             {
                 if (result == 0) return; // dismissed
+
+#if JUCE_MAC
+                // System Audio toggle
+                if (result == 800)  // System Audio ON
+                {
+                    if (audioProcessor.systemAudioCapture)
+                    {
+                        double sr = 48000.0;
+                        if (auto* devMgr = getDeviceManager())
+                            if (auto* device = devMgr->getCurrentAudioDevice())
+                                sr = device->getCurrentSampleRate();
+
+                        // Async start — will not block the UI.
+                        audioProcessor.systemAudioCapture->startAsync(sr);
+                        audioProcessor.useSystemAudio.store(true, std::memory_order_relaxed);
+                    }
+                    return;
+                }
+
+                if (result == 801)  // Microphone Input ON
+                {
+                    if (audioProcessor.systemAudioCapture)
+                        audioProcessor.systemAudioCapture->stop();
+                    audioProcessor.useSystemAudio.store(false, std::memory_order_relaxed);
+                    return;
+                }
+#endif
 
                 if (result == 999)
                 {

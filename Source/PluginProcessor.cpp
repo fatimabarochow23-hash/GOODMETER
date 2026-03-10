@@ -39,6 +39,10 @@ GOODMETERAudioProcessor::GOODMETERAudioProcessor()
     // Reserve LRA history
     lraHistory.reserve(lraMaxSamples);
     integratedBlockLufs.reserve(4096);
+
+#if JUCE_MAC && JucePlugin_Build_Standalone
+    systemAudioCapture = std::make_unique<SystemAudioCapture>();
+#endif
 }
 
 GOODMETERAudioProcessor::~GOODMETERAudioProcessor()
@@ -175,6 +179,9 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     fftRingR.fill(0.0f);
     fftRingIndex = 0;
     fftSamplesSinceLastPush = 0;
+
+    // Prepare retroactive recording history buffer
+    audioHistoryBuffer.prepare(sampleRate);
 }
 
 void GOODMETERAudioProcessor::releaseResources()
@@ -251,6 +258,26 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     }
     #endif
 
+#if JUCE_MAC && JucePlugin_Build_Standalone
+    // System audio override: replace mic input with captured system audio
+    if (useSystemAudio.load(std::memory_order_relaxed)
+        && systemAudioCapture && systemAudioCapture->isActive())
+    {
+        const int numSamplesOverride = buffer.getNumSamples();
+        float* writeL = buffer.getWritePointer(0);
+        float* writeR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+
+        int read = systemAudioCapture->readSamples(writeL, writeR, numSamplesOverride);
+
+        // Zero-fill remainder if ring buffer didn't have enough samples
+        if (read < numSamplesOverride)
+        {
+            std::fill(writeL + read, writeL + numSamplesOverride, 0.0f);
+            if (writeR) std::fill(writeR + read, writeR + numSamplesOverride, 0.0f);
+        }
+    }
+#endif
+
     // Handle mono input (duplicate to both channels)
     const int numChannels = juce::jmin(2, totalNumInputChannels);
     const int numSamples = buffer.getNumSamples();
@@ -264,6 +291,9 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         const float* recChannels[2] = { channelDataL, channelDataR };
         audioRecorder.pushSamples(recChannels, numSamples);
     }
+
+    // Retroactive recording — always push into history buffer (lock-free, ~zero cost)
+    audioHistoryBuffer.pushSamples(channelDataL, channelDataR, numSamples);
 
     //==========================================================================
     // Local accumulators (stack-allocated, real-time safe)
@@ -722,6 +752,20 @@ void GOODMETERAudioProcessor::calculateLRARealtime()
 
     float lra = gated2[idx95] - gated2[idx10];
     luRange.store(juce::jmax(0.0f, lra), std::memory_order_relaxed);
+}
+
+//==============================================================================
+void GOODMETERAudioProcessor::exportRetrospectiveRecording(int secondsToSave)
+{
+    auto dir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                   .getChildFile("Downloads")
+                   .getChildFile("GOODMETER_Records");
+
+    auto now = juce::Time::getCurrentTime();
+    auto filename = "Rewind_" + now.formatted("%Y-%m-%d_%H%M%S") + ".wav";
+    auto file = dir.getChildFile(filename);
+
+    audioHistoryBuffer.exportLastSeconds(secondsToSave, file);
 }
 
 //==============================================================================

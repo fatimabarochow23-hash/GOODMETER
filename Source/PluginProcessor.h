@@ -15,6 +15,10 @@
 #include <JuceHeader.h>
 #include <atomic>
 #include "AudioRecorder.h"
+#include "AudioHistoryBuffer.h"
+#if JUCE_MAC && JucePlugin_Build_Standalone
+#include "SystemAudioCapture.h"
+#endif
 #include <array>
 #include <vector>
 #include <algorithm>
@@ -188,6 +192,18 @@ public:
 
     // Audio recorder (public — GUI thread starts/stops, audio thread pushes samples)
     AudioRecorder audioRecorder;
+
+#if JUCE_MAC && JucePlugin_Build_Standalone
+    // System audio capture via CoreAudio Process Tap (macOS 14.2+)
+    std::unique_ptr<SystemAudioCapture> systemAudioCapture;
+    std::atomic<bool> useSystemAudio { false };
+#endif
+
+    // Retroactive recording — always-on 60s audio history buffer
+    AudioHistoryBuffer audioHistoryBuffer;
+
+    // Export last N seconds of audio to WAV file (called from GUI)
+    void exportRetrospectiveRecording(int secondsToSave = 60);
 
     // FFT Data (lock-free FIFOs — separate channels for Spectrum and Spectrogram)
     LockFreeFIFO<float, 256> fftFifoL;            // Spectrum analyzer
