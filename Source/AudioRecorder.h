@@ -14,6 +14,11 @@
 
 #include <JuceHeader.h>
 
+#if JUCE_MAC || JUCE_LINUX
+ #include <fcntl.h>
+ #include <unistd.h>
+#endif
+
 //==============================================================================
 class AudioRecorder : public juce::Thread
 {
@@ -74,7 +79,9 @@ public:
         return true;
     }
 
-    /** Stop recording. Call from GUI thread. */
+    /** Stop recording. Call from GUI thread.
+     *  Guarantees: writer is flushed, file handle is closed, OS metadata is synced.
+     *  After this returns, the file is immediately visible in Finder / file listings. */
     void stop()
     {
         isRecording.store(false);
@@ -83,12 +90,33 @@ public:
         if (isThreadRunning())
             stopThread(3000);
 
-        // Flush remaining samples
+        // Flush remaining samples and release writer (closes file handle)
         if (writer != nullptr)
         {
             drainFifo();
-            writer.reset();
+            writer->flush();   // Force WAV header + data to OS buffer
+            writer.reset();    // Close file handle (writes final WAV header chunk sizes)
         }
+
+        // Force OS-level metadata sync so Finder indexes the file immediately.
+        // Without this, macOS can delay file appearance by up to 2 minutes.
+        if (recordingFile.existsAsFile())
+        {
+            auto parentDir = recordingFile.getParentDirectory();
+            auto dirPath = parentDir.getFullPathName();
+
+#if JUCE_MAC || JUCE_LINUX
+            // fsync the directory to flush directory entry metadata
+            int fd = ::open(dirPath.toRawUTF8(), O_RDONLY);
+            if (fd >= 0)
+            {
+                ::fsync(fd);
+                ::close(fd);
+            }
+#endif
+        }
+
+        lastRecordedFile = recordingFile;
     }
 
     /** Check if currently recording */
@@ -96,6 +124,9 @@ public:
 
     /** Get the current recording file */
     const juce::File& getRecordingFile() const { return recordingFile; }
+
+    /** Get the last completed recording file (set after stop()) */
+    const juce::File& getLastRecordedFile() const { return lastRecordedFile; }
 
     /** Check if FIFO overran (audio came faster than disk could write) */
     bool didOverrun() const { return fifoOverrun; }
@@ -215,6 +246,7 @@ private:
     int numChannels = 2;
     double currentSampleRate = 48000.0;
     juce::File recordingFile;
+    juce::File lastRecordedFile;
     bool fifoOverrun = false;
 
     // FIFO: ~2 seconds at 48kHz stereo

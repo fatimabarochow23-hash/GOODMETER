@@ -353,7 +353,11 @@ public:
         if (showFront)
         {
             drawVisor(g, cx, cy, radius, hScale);
-            drawEyes(g, cx, cy, radius, hScale);
+
+            if (audioProcessor.audioRecorder.getIsRecording())
+                drawRecordingGrid(g, cx, cy, radius, hScale);
+            else
+                drawEyes(g, cx, cy, radius, hScale);
         }
         else
         {
@@ -930,6 +934,17 @@ private:
     float eyeGlow = 0.7f;
     float targetEyeGlow = 0.7f;
 
+    // Pupil mouse-tracking state
+    float pupilOffsetLX = 0.0f, pupilOffsetLY = 0.0f;  // current smoothed offset (left)
+    float pupilOffsetRX = 0.0f, pupilOffsetRY = 0.0f;  // current smoothed offset (right)
+    juce::Point<int> lastMousePos { -1, -1 };
+
+    // Recording glitch grid waveform state
+    struct GridColumn { float level; uint32_t randomSeed; };
+    std::vector<GridColumn> gridWaveformHistory;
+    bool wasRecording = false;   // edge detection for start/stop transitions
+    float prevGridLevel = 0.0f;  // previous frame level for first-order difference (HF bias)
+
     // Test tube
     float tubeAngle = 0.0f;
     float tubeLiquidWave = 0.0f;
@@ -1087,6 +1102,37 @@ private:
         float rawLevel = juce::jmap(juce::jlimit(-60.0f, 0.0f, peak), -60.0f, 0.0f, 0.0f, 1.0f);
         audioLevel += (rawLevel - audioLevel) * 0.2f;
 
+        // Recording grid waveform: push HF-biased level into scrolling history
+        // First-order difference acts as a high-pass filter: responds to transients,
+        // ignores sustained low-frequency content.
+        {
+            bool nowRecording = audioProcessor.audioRecorder.getIsRecording();
+            if (nowRecording)
+            {
+                float hfEnergy = std::abs(audioLevel - prevGridLevel);
+                prevGridLevel = audioLevel;
+                // Display gain: diff signal is tiny, amplify aggressively
+                float displayGain = 22.0f;
+                float visualLevel = hfEnergy * displayGain;
+                // Soft clipping: sqrt compresses dynamic range —
+                // quiet transients still produce visible bars, loud ones don't saturate
+                float scaledHF = std::sqrt(juce::jlimit(0.0f, 1.0f, visualLevel));
+                GridColumn col;
+                col.level = scaledHF;
+                col.randomSeed = static_cast<uint32_t>(juce::Random::getSystemRandom().nextInt());
+                gridWaveformHistory.push_back(col);
+                // Cap at 200 entries (oldest at front, newest at back)
+                if (gridWaveformHistory.size() > 200)
+                    gridWaveformHistory.erase(gridWaveformHistory.begin());
+            }
+            else if (wasRecording)
+            {
+                gridWaveformHistory.clear();
+                prevGridLevel = 0.0f;
+            }
+            wasRecording = nowRecording;
+        }
+
         targetEyeOpenness = 0.3f + audioLevel * 0.7f;
 
         // Idle figure-8
@@ -1101,6 +1147,58 @@ private:
         // Smooth lerps
         eyeOpenness += (targetEyeOpenness - eyeOpenness) * 0.15f;
         eyeGlow += (targetEyeGlow - eyeGlow) * 0.2f;
+
+        // Pupil mouse-tracking: compute target offsets per eye, then smooth
+        {
+            auto mousePos = getMouseXYRelative();
+            bool mouseChanged = (mousePos != lastMousePos);
+            lastMousePos = mousePos;
+
+            // Recompute eye centers (mirrors paint() coordinate math)
+            auto bounds = getLocalBounds().toFloat();
+            float unit = juce::jmin(bounds.getWidth(), bounds.getHeight());
+            float r = unit * 0.18f;
+            float bodyCX = bounds.getCentreX() - r * 0.6f + idleOffsetX + collisionOffsetX;
+            float bodyCY = bounds.getCentreY() - r * 0.3f + idleOffsetY + collisionOffsetY;
+            float eyeVCY = bodyCY - r * 0.1f;
+            float eyeSpacing = r * 0.30f;
+
+            float mx = static_cast<float>(mousePos.x);
+            float my = static_cast<float>(mousePos.y);
+
+            // Pupil geometry: max offset = eye half-width, sensitivity maps distance
+            float eyeW = r * 0.13f;
+            float maxOff = eyeW * 0.38f;  // stay well inside the eye shape
+            float sensitivity = 0.012f;
+
+            for (int idx = 0; idx < 2; ++idx)
+            {
+                float ecx = (idx == 0) ? (bodyCX - eyeSpacing) : (bodyCX + eyeSpacing);
+                float ecy = eyeVCY;
+                float dx = mx - ecx;
+                float dy = my - ecy;
+                float dist = std::hypot(dx, dy);
+                float angle = std::atan2(dy, dx);
+                float offset = juce::jmin(maxOff, dist * sensitivity);
+                float targetX = std::cos(angle) * offset;
+                float targetY = std::sin(angle) * offset;
+
+                // Smooth lerp (0.18 = snappy but not jarring)
+                if (idx == 0)
+                {
+                    pupilOffsetLX += (targetX - pupilOffsetLX) * 0.18f;
+                    pupilOffsetLY += (targetY - pupilOffsetLY) * 0.18f;
+                }
+                else
+                {
+                    pupilOffsetRX += (targetX - pupilOffsetRX) * 0.18f;
+                    pupilOffsetRY += (targetY - pupilOffsetRY) * 0.18f;
+                }
+            }
+
+            if (mouseChanged)
+                repaint();
+        }
 
         float collLerp = (frontAnim == FrontAnim::CollisionHit) ? 0.4f : 0.25f;
         collisionOffsetX += (targetCollisionX - collisionOffsetX) * collLerp;
@@ -1837,19 +1935,21 @@ private:
             {
                 float eggW = ew * 1.3f;                     // 1.3x wider
                 float eggH = eh * 1.8f;                     // 1.8x taller (egg shape)
-                float eggCX = eyes[0].x;                    // left eye center X
+                // Shift entire egg by mouse-tracking offset
+                float eggCX = eyes[0].x + pupilOffsetLX;
+                float eggCY = vcy + pupilOffsetLY;
                 float eggLeft = eggCX - eggW * 0.5f;
-                float eggTop = vcy - eggH * 0.5f;
+                float eggTop = eggCY - eggH * 0.5f;
 
                 // Glow bloom behind egg
                 float bloomR = eggH * 0.9f;
                 juce::ColourGradient bloom(
-                    electricBlue.withAlpha(0.35f), eggCX, vcy,
-                    electricBlue.withAlpha(0.0f), eggCX + bloomR, vcy, true);
+                    electricBlue.withAlpha(0.35f), eggCX, eggCY,
+                    electricBlue.withAlpha(0.0f), eggCX + bloomR, eggCY, true);
                 g.setGradientFill(bloom);
-                g.fillEllipse(eggCX - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+                g.fillEllipse(eggCX - bloomR, eggCY - bloomR, bloomR * 2.0f, bloomR * 2.0f);
 
-                // Core egg
+                // Core egg — single layer, full brightness
                 g.setColour(electricBlue.withAlpha(eyeGlow));
                 g.fillEllipse(eggLeft, eggTop, eggW, eggH);
 
@@ -1891,24 +1991,175 @@ private:
         {
             auto& eye = eyes[idx];
 
-            // Normal eye rendering
+            // Mouse-tracking offset: shift the ENTIRE eye entity toward the cursor
+            float pOffX = (idx == 0) ? pupilOffsetLX : pupilOffsetRX;
+            float pOffY = (idx == 0) ? pupilOffsetLY : pupilOffsetRY;
+            float ecx = eye.x + pOffX;
+            float ecy = vcy + pOffY;
+
+            // Glow bloom
             if (eyeGlow > 0.72f)
             {
                 float br = juce::jmax(eye.w, eh) * 2.0f * (eyeGlow - 0.3f);
                 juce::ColourGradient bg(
-                    electricBlue.withAlpha((eyeGlow - 0.5f) * 1.5f), eye.x, vcy,
-                    electricBlue.withAlpha(0.0f), eye.x + br, vcy, true);
+                    electricBlue.withAlpha((eyeGlow - 0.5f) * 1.5f), ecx, ecy,
+                    electricBlue.withAlpha(0.0f), ecx + br, ecy, true);
                 g.setGradientFill(bg);
-                g.fillEllipse(eye.x - br, vcy - br, br * 2.0f, br * 2.0f);
+                g.fillEllipse(ecx - br, ecy - br, br * 2.0f, br * 2.0f);
             }
 
+            // Single-layer eye body (audio-driven height, unchanged shape)
             g.setColour(electricBlue.withAlpha(eyeGlow));
-            g.fillRoundedRectangle(eye.x - eye.w / 2.0f, vcy - eh / 2.0f, eye.w, eh, eye.corner);
+            g.fillRoundedRectangle(ecx - eye.w / 2.0f, ecy - eh / 2.0f, eye.w, eh, eye.corner);
 
+            // Specular highlight
             g.setColour(juce::Colours::white.withAlpha(eyeGlow * 0.5f));
             float sw = eye.w * 0.45f, sh = eh * 0.1f;
-            g.fillRoundedRectangle(eye.x - sw / 2.0f, vcy - eh / 2.0f + eh * 0.08f, sw, sh, sw * 0.3f);
+            g.fillRoundedRectangle(ecx - sw / 2.0f, ecy - eh / 2.0f + eh * 0.08f, sw, sh, sw * 0.3f);
         }
+    }
+
+    //==========================================================================
+    // Drawing: Recording Glitch Grid Waveform (replaces eyes during recording)
+    //
+    // Fills Nono's visor with a retro transient analyzer:
+    //   - White pixel-art base + 10% random red glitch squares
+    //   - Unipolar bottom-up histogram (NOT bipolar symmetric)
+    //   - Driven by first-order difference energy (high-frequency bias)
+    //   - Sparse texture: mixed fillRect/drawRect for data-loss aesthetic
+    //   - Clipped to visor ellipse so nothing bleeds outside the face
+    //==========================================================================
+    void drawRecordingGrid(juce::Graphics& g, float cx, float cy, float r, float hScale)
+    {
+        if (hScale < 0.3f) return;
+
+        // Visor geometry (same as drawVisor)
+        float vw = r * 1.7f * hScale;
+        float vh = r * 1.4f;
+        float vcy = cy - r * 0.1f;
+
+        float left   = cx - vw / 2.0f;
+        float top    = vcy - vh / 2.0f;
+        float right  = cx + vw / 2.0f;
+        float bottom = vcy + vh / 2.0f;
+
+        // Clip to visor ellipse
+        g.saveState();
+        juce::Path visorClip;
+        visorClip.addEllipse(left, top, vw, vh);
+        g.reduceClipRegion(visorClip);
+
+        const float cell = 4.0f;
+        auto glitchRed = juce::Colour(0xFFFF2A3A);
+
+        // ── 1. Faint grid lines (white, subtle) ──
+        g.setColour(juce::Colours::white.withAlpha(0.06f));
+        for (float gx = left; gx <= right; gx += cell)
+            g.fillRect(gx, top, 0.5f, vh);
+        for (float gy = top; gy <= bottom; gy += cell)
+            g.fillRect(left, gy, vw, 0.5f);
+
+        // ── 2. Bottom baseline (brighter white) ──
+        float baselineY = bottom - vh * 0.08f - 12.0f;  // raised 12px for visor-edge clearance
+        g.setColour(juce::Colours::white.withAlpha(0.25f));
+        g.fillRect(left, baselineY - 0.5f, vw, 1.0f);
+
+        // ── 3. Unipolar bottom-up histogram ──
+        int numCols = static_cast<int>(vw / cell);
+        float maxDrawH = vh * 0.70f;  // 70% height cap
+        int maxCells = static_cast<int>(maxDrawH / cell);
+        int histSize = static_cast<int>(gridWaveformHistory.size());
+
+        for (int col = 0; col < numCols; ++col)
+        {
+            int histIdx = histSize - 1 - col;
+            if (histIdx < 0) break;
+
+            const auto& colData = gridWaveformHistory[static_cast<size_t>(histIdx)];
+            float amplitude = colData.level;
+            uint32_t colSeed = colData.randomSeed;
+            float colX = right - (static_cast<float>(col) + 1.0f) * cell;
+
+            int activeCells = juce::jmax(0, static_cast<int>(amplitude * static_cast<float>(maxCells)));
+            if (activeCells == 0) continue;
+
+            for (int row = 0; row < activeCells; ++row)
+            {
+                // Stack upward from baseline
+                float cellY = baselineY - static_cast<float>(row + 1) * cell;
+
+                float dist = static_cast<float>(row)
+                           / static_cast<float>(juce::jmax(1, activeCells));
+
+                // Per-cell deterministic random seeded from column's birth entropy + row
+                // This scrolls WITH the data — glitch pixels ride the waveform left
+                juce::Random cellRng(colSeed + static_cast<uint32_t>(row) * 7919u);
+                bool isRedGlitch = cellRng.nextFloat() < 0.12f;  // 12% red
+                bool isHollow = cellRng.nextFloat() < 0.35f;      // 35% hollow outline
+
+                if (dist > 0.75f)
+                {
+                    // Top edge — sparse: lower alpha
+                    float edgeAlpha = cellRng.nextFloat() > 0.5f ? 0.5f : 0.3f;
+
+                    if (isRedGlitch)
+                        g.setColour(glitchRed.withAlpha(edgeAlpha * 0.8f));
+                    else
+                        g.setColour(juce::Colours::white.withAlpha(edgeAlpha));
+
+                    if (isHollow)
+                        g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                    else
+                        g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                }
+                else
+                {
+                    // Core pixels
+                    if (isRedGlitch)
+                    {
+                        g.setColour(glitchRed.withAlpha(0.75f));
+                        if (isHollow)
+                            g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                        else
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                    else
+                    {
+                        g.setColour(juce::Colours::white.withAlpha(0.8f));
+                        g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                }
+            }
+
+            // Scattered glitch pixels above envelope (seeded from column data)
+            juce::Random scatterRng(colSeed + 99991u);
+            if (scatterRng.nextFloat() < 0.12f)
+            {
+                int extraRow = activeCells + 1 + scatterRng.nextInt(4);
+                float cellY = baselineY - static_cast<float>(extraRow + 1) * cell;
+                bool redScatter = scatterRng.nextFloat() < 0.25f;
+                g.setColour(redScatter ? glitchRed.withAlpha(0.2f)
+                                       : juce::Colours::white.withAlpha(0.15f));
+                g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+            }
+        }
+
+        // ── 4. Scanline interference (slow vertical sweep) ──
+        float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+        float scanY = top + std::fmod(ms * 0.06f, vh + 8.0f) - 4.0f;
+        g.setColour(juce::Colours::white.withAlpha(0.06f));
+        g.fillRect(left, scanY, vw, 2.0f);
+        g.setColour(glitchRed.withAlpha(0.03f));
+        g.fillRect(left, scanY + 2.0f, vw, 1.0f);
+
+        // ── 5. REC indicator — pulsing red dot, upper-left corner ──
+        float blinkAlpha = 0.5f + 0.5f * std::sin(ms * 0.008f);
+        float dotX = left + 8.0f;
+        float dotY = top + 8.0f;
+        g.setColour(juce::Colour(0xFFFF0030).withAlpha(blinkAlpha));
+        g.fillEllipse(dotX, dotY, 4.0f, 4.0f);
+
+        g.restoreState();
     }
 
     //==========================================================================

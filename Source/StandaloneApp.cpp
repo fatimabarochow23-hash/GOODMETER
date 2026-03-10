@@ -329,10 +329,10 @@ public:
 
         menu.addSeparator();
 
-        // ── 2. Recent Recordings sub-menu (scan ~/Desktop/GOODMETER_*.wav) ──
+        // ── 2. Recent Recordings sub-menu (dynamically scanned on EVERY open) ──
         juce::PopupMenu recentMenu;
-        auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
-        auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+        auto recDir = getRecordingDirectory();
+        auto wavFiles = recDir.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
 
         // Sort by modification time (newest first)
         wavFiles.sort();
@@ -358,10 +358,20 @@ public:
         juce::File lastFile;
         if (proc != nullptr && proc->audioRecorder.getIsRecording())
             lastFile = proc->audioRecorder.getRecordingFile();
+        else if (proc != nullptr && proc->audioRecorder.getLastRecordedFile().existsAsFile())
+            lastFile = proc->audioRecorder.getLastRecordedFile();
         else if (!wavFiles.isEmpty())
             lastFile = wavFiles.getFirst();
 
         menu.addItem(50, "Reveal in Finder", lastFile.existsAsFile());
+
+        menu.addSeparator();
+
+        // ── 4. Set Recording Location... ──
+        menu.addItem(60, "Set Recording Location...");
+
+        // Show current location as greyed-out hint
+        menu.addItem(-1, juce::String(juce::CharPointer_UTF8(u8"\u2192 ")) + recDir.getFullPathName(), false);
 
         return menu;
     }
@@ -377,13 +387,18 @@ public:
             if (proc->audioRecorder.getIsRecording())
             {
                 proc->audioRecorder.stop();
+
+                // Reveal the just-finished file in Finder immediately
+                auto lastFile = proc->audioRecorder.getLastRecordedFile();
+                if (lastFile.existsAsFile())
+                    lastFile.revealToUser();
             }
             else
             {
                 auto now = juce::Time::getCurrentTime();
                 auto filename = "GOODMETER_" + now.formatted("%Y%m%d_%H%M%S") + ".wav";
-                auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
-                auto file = desktop.getChildFile(filename);
+                auto recDir = getRecordingDirectory();
+                auto file = recDir.getChildFile(filename);
 
                 double sr = 48000.0;
                 if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
@@ -394,6 +409,9 @@ public:
 
                 proc->audioRecorder.start(file, sr, 2);
             }
+
+            // Force menu rebuild so label flips Start↔Stop and Recent Recordings refreshes
+            menuItemsChanged();
         }
         else if (menuItemID == 50)
         {
@@ -402,10 +420,12 @@ public:
             juce::File target;
             if (proc != nullptr && proc->audioRecorder.getIsRecording())
                 target = proc->audioRecorder.getRecordingFile();
+            else if (proc != nullptr && proc->audioRecorder.getLastRecordedFile().existsAsFile())
+                target = proc->audioRecorder.getLastRecordedFile();
             else
             {
-                auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
-                auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+                auto recDir = getRecordingDirectory();
+                auto wavFiles = recDir.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
                 wavFiles.sort();
                 if (!wavFiles.isEmpty())
                     target = wavFiles.getLast();
@@ -414,11 +434,31 @@ public:
             if (target.existsAsFile())
                 target.revealToUser();
         }
+        else if (menuItemID == 60)
+        {
+            // Set Recording Location...
+            chooser = std::make_unique<juce::FileChooser>(
+                "Choose Recording Location",
+                getRecordingDirectory(),
+                "",
+                true);
+
+            chooser->launchAsync(juce::FileBrowserComponent::openMode
+                               | juce::FileBrowserComponent::canSelectDirectories,
+                [this](const juce::FileChooser& fc)
+                {
+                    auto result = fc.getResult();
+                    if (result.isDirectory())
+                    {
+                        setRecordingDirectory(result);
+                    }
+                });
+        }
         else if (menuItemID >= 100 && menuItemID < 200)
         {
             // Recent Recordings — reveal the clicked file
-            auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
-            auto wavFiles = desktop.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
+            auto recDir = getRecordingDirectory();
+            auto wavFiles = recDir.findChildFiles(juce::File::findFiles, false, "GOODMETER_*.wav");
             wavFiles.sort();
             std::reverse(wavFiles.begin(), wavFiles.end());
 
@@ -432,6 +472,7 @@ private:
     juce::ApplicationProperties appProperties;
     GoodMeterLookAndFeel appLookAndFeel;
     std::unique_ptr<DesktopPetWindow> mainWindow;
+    std::unique_ptr<juce::FileChooser> chooser;
 
     /** Safely get our processor from the plugin holder */
     GOODMETERAudioProcessor* getProcessor() const
@@ -439,6 +480,35 @@ private:
         if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
             return dynamic_cast<GOODMETERAudioProcessor*>(mainWindow->pluginHolder->processor.get());
         return nullptr;
+    }
+
+    /** Get the current recording directory (persisted in PropertiesFile).
+     *  Falls back to ~/Desktop if no custom path is set or if saved path is invalid. */
+    juce::File getRecordingDirectory()
+    {
+        if (auto* props = appProperties.getUserSettings())
+        {
+            auto saved = props->getValue("recordingDirectory", "");
+            if (saved.isNotEmpty())
+            {
+                juce::File dir(saved);
+                if (dir.isDirectory())
+                    return dir;
+            }
+        }
+        return juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+    }
+
+    /** Set and persist the recording directory — immediately invalidates menu cache */
+    void setRecordingDirectory(const juce::File& dir)
+    {
+        if (auto* props = appProperties.getUserSettings())
+        {
+            props->setValue("recordingDirectory", dir.getFullPathName());
+            props->saveIfNeeded();
+        }
+        // Force macOS MenuBar to rebuild on next click (kills the 2-min stale cache)
+        menuItemsChanged();
     }
 };
 

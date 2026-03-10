@@ -3,7 +3,7 @@
 > **Purpose**: Complete technical map for any AI assistant (Claude Code, Cursor, Codex)
 > picking up this project. Read this FIRST before touching any code.
 >
-> **Last updated**: 2026-03-07 (v1.0.0 — Standalone Desktop Pet Mode complete)
+> **Last updated**: 2026-03-10 (v1.1.0 — State machine hardening + Recording grid + Eye tracking)
 
 ---
 
@@ -31,10 +31,10 @@ Built with JUCE 8 / C++17 on macOS ARM64 (M4 Max, macOS 15.x).
 Source/
 ├── PluginProcessor.h/.cpp      — DSP engine (shared by plugin + standalone)
 ├── PluginEditor.h/.cpp         — Plugin UI (DAW mode, scrollable card layout)
-├── StandaloneNonoEditor.h      — Standalone UI (desktop pet, 2800 lines, ALL-IN-ONE)
+├── StandaloneNonoEditor.h      — Standalone UI (desktop pet, ~3850 lines, ALL-IN-ONE)
 ├── StandaloneApp.cpp           — Custom JUCEApplication (replaces default standalone)
 ├── GoodMeterLookAndFeel.h      — Shared colors, drawStatusDot, fonts
-├── HoloNonoComponent.h         — Animated Nono character (holographic pet)
+├── HoloNonoComponent.h         — Animated Nono character (~2200 lines, holographic pet)
 ├── MeterCardComponent.h        — Collapsible card wrapper (header + content + shadow)
 ├── AudioRecorder.h             — Lock-free WAV recorder (FIFO + background writer)
 ├── LevelsMeterComponent.h      — LUFS/Peak/RMS/LRA meter
@@ -172,8 +172,69 @@ compact ──[click Nono]──→ orbFlyOut → orbDwell → orbWheelToShelf �
                                                                                                   │
 settled ──[drag card]──→ floating ←───────────────────────────────────────────────────────────────┘
 settled ──[click Nono]──→ floating → recalling → canvasShrink → settled  (if no stowed cards)
-settled ──[click Nono]──→ floating → recalling → canvasShrink → settled  (if stowed → selective recall)
-floating ─[click Nono]──→ recalling → canvasShrink → settled → compact transition
+settled ──[click Nono]──→ floating → selective recall (stowed only) → recalling → floating/settled
+floating ─[click Nono]──→ selective recall (if stowed) OR full recall → canvasShrink → settled
+```
+
+### Three-Stage Shard Button (Unidirectional — NO resurrection)
+
+The shard button (hover button index 2) follows a strict if-else cascade.
+It NEVER calls triggerSelectiveRecall or triggerRecall. Resurrection is Nono-exclusive.
+
+```
+handleShardButtonClick():
+  Census: count harborCount, floatingFoldedCount, floatingExpandedCount
+
+  STAGE 1: if (harbor OR floating-folded exist)
+    → Shatter them (triggerShatterVFX). Expanded floaters survive.
+    → expandWindowForShatter(). EXIT.
+
+  STAGE 2: if (floating-expanded exist, Stage 1 didn't fire)
+    → Force collapse + full dirty-data cleanup:
+      setExpanded(false,false), isDocked=true, isFloating=false,
+      snapGroupID=-1, customContentHeight=-1, customWidth=-1
+    → phase = canvasShrink (dock all back to shelf). EXIT.
+
+  STAGE 3: if (only harbor cards remain)
+    → Shatter ALL remaining harbor cards. EXIT.
+```
+
+### Nono Click Resurrection (Exclusive)
+
+```
+onSmileOrbitTriggered:
+  compact  → triggerAnimationSequence() (orbit out cards)
+  floating → if (any cardStowed) → triggerSelectiveRecall() (unshatter hidden only)
+             else → triggerRecall() (full recall, fly all docked cards home)
+  settled  → triggerSettledRecall()
+             if (any stowed) → selective recall
+             else → promote to floating → full recall
+```
+
+### Card State Terminology (CRITICAL for future maintainers)
+
+```
+"Harbor/Docked": !cardStowed[i] && card->isDocked && !cardFloatState[i].isFloating
+  → Card is on the bookshelf, visible, folded
+
+"Floating":      cardFloatState[i].isFloating && !card->isDocked
+  → Card is freely positioned on full-screen canvas, may be expanded
+
+"Shattered":     cardStowed[i] == true
+  → Card is hidden (setVisible false), only Nono click can resurrect
+```
+
+### triggerRecall Participation Logic
+
+```
+for each card:
+  if (cardStowed[i])     → recallingCard = false  (shattered: NEVER touch)
+  if (isActiveFloater)   → recallingCard = false  (floating: leave in place)
+  else                   → recallingCard = true   (docked: fly back to shelf)
+
+After allDone:
+  if (hasActiveFloater || hasStowed) → stay in floating phase
+  else → canvasShrink → settled
 ```
 
 ### Click-Through System (macOS)
@@ -201,10 +262,65 @@ Cards can be edge-snapped to form groups (like window tiling):
 
 3 PNG buttons appear when hovering Nono body:
 - Gear (cyan glow) → Audio Settings popup menu
-- Tape (pink glow) → Start/Stop WAV recording
-- Shard (purple glow) → Thanos snap stow/recall
+- Tape (pink glow) → Start/Stop WAV recording (pulse animation when recording)
+- Shard (purple glow) → Three-stage shatter (NEVER recalls — see above)
 
 Animation: staggered fly-out from Nono center, retract when cursor leaves safe zone.
+Hit testing: these are NOT JUCE Components — they're painted in `paint()` and hit-tested
+manually via `getHoverButtonRect(i).contains(fx, fy)`. They do NOT affect component bounds.
+
+---
+
+## 5.5 HoloNonoComponent (Nono Character)
+
+### Paint Order (back to front)
+
+```
+1. Anti-gravity glow (radial gradient below body)
+2. Shadow (offset dark ellipse)
+3. Holographic ears (pointed triangles, flip animation)
+4. Body (main sphere gradient)
+5. Front face: Visor (ellipse gradient) → Eyes OR Recording Grid
+6. Back face: Analysis/results display
+7. Drag hover highlight (ring)
+8. Analysis ripples
+9. Floating test tube (always visible)
+10. Results bubble (bottom area, when showing)
+11. Particles (confetti on interactions)
+```
+
+### Eye System (Pupil Mouse Tracking)
+
+Single-entity offset model (NOT dual-layer socket+pupil):
+```cpp
+// Track mouse position → compute offset angle + distance
+float maxDisplacement = pupilRadius * 0.35f;
+float offsetX = std::cos(angle) * distance * maxDisplacement;
+float offsetY = std::sin(angle) * distance * maxDisplacement;
+// Draw pupil at (eyeCenterX + offsetX, eyeCenterY + offsetY)
+```
+Eye states: Normal (tracking), Dizzy (spiral animation), Sleeping (closed arcs).
+
+### Recording Grid (Visor Overlay)
+
+Displayed inside the visor ellipse ONLY when `audioRecorder.getIsRecording()` is true.
+Uses `g.saveState() / g.reduceClipRegion(visorEllipse) / g.restoreState()` — properly scoped.
+
+DSP pipeline:
+```
+audioLevel (from processBlock)
+  → First-order difference: hfEnergy = abs(current - previous)
+  → Display gain: × 22.0f
+  → Soft clipping: std::sqrt(juce::jlimit(0.0f, 1.0f, value))
+  → Push to gridWaveformHistory as GridColumn { float level; uint32_t randomSeed; }
+```
+
+Visual properties:
+- White base + ~12% red glitch pixels (deterministic per-column seed)
+- Unipolar bottom-up histogram (NOT bipolar symmetric)
+- 70% height cap, baseline raised 12px above visor bottom edge
+- Per-cell RNG: `juce::Random(colSeed + row * 7919u)` — glitch scrolls WITH data
+- Faint grid lines, scanline interference, blinking REC dot
 
 ---
 

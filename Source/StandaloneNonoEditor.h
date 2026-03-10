@@ -128,7 +128,17 @@ public:
             if (phase == AnimPhase::compact)
                 triggerAnimationSequence();
             else if (phase == AnimPhase::floating)
-                triggerRecall();
+            {
+                // Nono's exclusive resurrection: check for shattered cards first
+                int shatteredCount = 0;
+                for (int i = 0; i < numCards; ++i)
+                    if (cardStowed[i]) shatteredCount++;
+
+                if (shatteredCount > 0)
+                    triggerSelectiveRecall();  // only unshatter hidden cards
+                else
+                    triggerRecall();           // full recall (no shattered cards)
+            }
             else if (phase == AnimPhase::settled)
                 triggerSettledRecall();
         };
@@ -596,6 +606,7 @@ private:
     // Recall animation state
     float recallProgress[numCards] = {};
     juce::Point<float> recallStartPos[numCards] = {};
+    bool recallingCard[numCards] = {};  // true = this card participates in recall animation
     float recallTargetX = 0.0f;
     float recallTargetStartY = 0.0f;
 
@@ -975,14 +986,19 @@ private:
             // Stop recording
             audioProcessor.audioRecorder.stop();
             isRecording = false;
+
+            // Reveal the just-finished file in Finder immediately
+            auto lastFile = audioProcessor.audioRecorder.getLastRecordedFile();
+            if (lastFile.existsAsFile())
+                lastFile.revealToUser();
         }
         else
         {
-            // Generate unique filename: ~/Desktop/GOODMETER_YYYYMMDD_HHMMSS.wav
+            // Generate unique filename in the user's chosen recording directory
             auto now = juce::Time::getCurrentTime();
             auto filename = "GOODMETER_" + now.formatted("%Y%m%d_%H%M%S") + ".wav";
-            auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
-            auto file = desktop.getChildFile(filename);
+            auto recDir = getRecordingDirectory();
+            auto file = recDir.getChildFile(filename);
 
             double sr = 48000.0;
             if (auto* dm = getDeviceManager())
@@ -1005,63 +1021,212 @@ private:
     // Phase 3: Thanos Snap Stow (shard button)
     //==========================================================================
 
-    /** Evaluate which cards should be stowed:
-     *  A card is eligible if it's docked (still on shelf) or floating but collapsed.
-     *  Already-stowed cards are skipped. */
+    /** Strict three-stage unidirectional shatter (NO recall/resurrection).
+     *
+     *  Stage 1: If harbor cards OR floating-folded cards exist → shatter them.
+     *           Expanded floating cards survive. EXIT.
+     *  Stage 2: If Stage 1 didn't hit, but floating-expanded cards exist →
+     *           stow them back to harbor (force collapse + full state reset). EXIT.
+     *  Stage 3: If only harbor cards remain → shatter them all.
+     *
+     *  This function NEVER calls triggerSelectiveRecall or triggerRecall.
+     *  Resurrection is Nono's exclusive power. */
     void handleShardButtonClick()
     {
+        // In compact phase, shard button does nothing (no cards visible)
         if (phase == AnimPhase::compact)
+            return;
+
+        // =====================================================================
+        // Census: classify every non-stowed visible card
+        // =====================================================================
+        int harborCount = 0;        // docked, visible, not floating
+        int floatingFoldedCount = 0; // floating, visible, NOT expanded
+        int floatingExpandedCount = 0; // floating, visible, expanded
+
+        for (int i = 0; i < numCards; ++i)
         {
-            // If all cards are stowed, trigger selective recall
-            triggerSelectiveRecall();
+            if (cardStowed[i]) continue;
+            auto* card = getCard(i);
+            if (!card || !card->isVisible()) continue;
+
+            if (cardFloatState[i].isFloating)
+            {
+                if (card->getExpanded())
+                    floatingExpandedCount++;
+                else
+                    floatingFoldedCount++;
+            }
+            else
+            {
+                harborCount++;
+            }
+        }
+
+        // =====================================================================
+        // STAGE 1: Shatter harbor cards + floating-folded cards
+        //          Expanded floaters survive untouched.
+        // =====================================================================
+        if (harborCount > 0 || floatingFoldedCount > 0)
+        {
+            isSystemStowing = true;
+
+            // Dissolve snap groups for non-expanded cards only
+            for (auto& group : snapGroups)
+            {
+                for (int idx : group.members)
+                {
+                    auto* mc = getCard(idx);
+                    if (mc && !mc->getExpanded())
+                    {
+                        cardFloatState[idx].snapGroupID = -1;
+                        mc->showDetachButton = false;
+                    }
+                }
+            }
+            // Clean up groups: remove shattered members, delete empty/singleton groups
+            for (int g = static_cast<int>(snapGroups.size()) - 1; g >= 0; --g)
+            {
+                auto& members = snapGroups[static_cast<size_t>(g)].members;
+                members.erase(
+                    std::remove_if(members.begin(), members.end(), [this](int idx)
+                    {
+                        auto* mc = getCard(idx);
+                        return mc == nullptr || !mc->getExpanded();
+                    }),
+                    members.end());
+                if (members.size() <= 1)
+                {
+                    for (int idx : members)
+                    {
+                        cardFloatState[idx].snapGroupID = -1;
+                        auto* mc = getCard(idx);
+                        if (mc) mc->showDetachButton = false;
+                    }
+                    snapGroups.erase(snapGroups.begin() + g);
+                }
+            }
+
+            isSystemStowing = false;
+
+            // Shatter eligible cards (harbor + floating-folded)
+            for (int i = 0; i < numCards; ++i)
+            {
+                if (cardStowed[i]) continue;
+                auto* card = getCard(i);
+                if (!card || !card->isVisible()) continue;
+
+                // Expanded floating cards survive Stage 1
+                if (cardFloatState[i].isFloating && card->getExpanded())
+                    continue;
+
+                // Force collapse if somehow expanded (safety)
+                if (card->getExpanded())
+                    card->setExpanded(false, false);
+
+                cardStowed[i] = true;
+                triggerShatterVFX(i);
+            }
+
+            expandWindowForShatter();
+
+            // Dismiss hover buttons and EXIT
+            hoverBtnState = HoverButtonState::retracting;
+            hoverBtnProgress = 1.0f;
+            hoverBtnHotIndex = -1;
             return;
         }
 
-        // ★ Bypass collision/relayout during system stow
-        isSystemStowing = true;
-
-        // ★ Force-collapse all expanded floating cards first
-        for (int i = 0; i < numCards; ++i)
+        // =====================================================================
+        // STAGE 2: No harbor or folded-floating cards. Stow expanded floaters
+        //          back to harbor (NOT shatter — just dock them).
+        //          Full dirty-data cleanup on each card.
+        // =====================================================================
+        if (floatingExpandedCount > 0)
         {
-            if (cardStowed[i]) continue;
-            auto* card = getCard(i);
-            if (!card) continue;
-            if (card->getExpanded())
-                card->setExpanded(false, false);  // instant collapse, no animation
-        }
+            isSystemStowing = true;
 
-        // ★ Dissolve all snap groups (shatter is a global operation)
-        for (auto& group : snapGroups)
-        {
-            for (int idx : group.members)
+            // Dissolve ALL snap groups
+            for (auto& group : snapGroups)
             {
-                cardFloatState[idx].snapGroupID = -1;
-                auto* mc = getCard(idx);
-                if (mc) mc->showDetachButton = false;
+                for (int idx : group.members)
+                {
+                    cardFloatState[idx].snapGroupID = -1;
+                    auto* mc = getCard(idx);
+                    if (mc) mc->showDetachButton = false;
+                }
             }
+            snapGroups.clear();
+
+            // Stow each expanded floater back to harbor with full state reset
+            for (int i = 0; i < numCards; ++i)
+            {
+                if (cardStowed[i]) continue;
+                auto* card = getCard(i);
+                if (!card || !card->isVisible()) continue;
+                if (!cardFloatState[i].isFloating) continue;
+
+                // ⚠️ Dirty data cleanup
+                card->setExpanded(false, false);       // force collapse
+                card->isDocked = true;                 // re-dock
+                card->showDetachButton = false;
+                card->customContentHeight = -1;        // reset custom sizing
+                card->customWidth = -1;
+                cardFloatState[i].isFloating = false;   // force un-float
+                cardFloatState[i].snapGroupID = -1;
+            }
+
+            isSystemStowing = false;
+
+            // Transition to settled layout (shrink window to fit shelf)
+            phase = AnimPhase::canvasShrink;
+            animFrameCounter = 0;
+
+            // Dismiss hover buttons and EXIT
+            hoverBtnState = HoverButtonState::retracting;
+            hoverBtnProgress = 1.0f;
+            hoverBtnHotIndex = -1;
+            return;
         }
-        snapGroups.clear();
 
-        isSystemStowing = false;
-
-        // Now all cards are collapsed — stow everything
-        bool anyEligible = false;
-        for (int i = 0; i < numCards; ++i)
+        // =====================================================================
+        // STAGE 3: Only harbor cards remain (no floaters at all). Shatter all.
+        // =====================================================================
         {
-            if (cardStowed[i]) continue;
-            auto* card = getCard(i);
-            if (!card) continue;
+            isSystemStowing = true;
 
-            anyEligible = true;
-            cardStowed[i] = true;
-            triggerShatterVFX(i);
+            // Dissolve all snap groups (safety)
+            for (auto& group : snapGroups)
+            {
+                for (int idx : group.members)
+                {
+                    cardFloatState[idx].snapGroupID = -1;
+                    auto* mc = getCard(idx);
+                    if (mc) mc->showDetachButton = false;
+                }
+            }
+            snapGroups.clear();
+
+            isSystemStowing = false;
+
+            bool anyShattered = false;
+            for (int i = 0; i < numCards; ++i)
+            {
+                if (cardStowed[i]) continue;
+                auto* card = getCard(i);
+                if (!card || !card->isVisible()) continue;
+
+                if (card->getExpanded())
+                    card->setExpanded(false, false);
+
+                cardStowed[i] = true;
+                triggerShatterVFX(i);
+                anyShattered = true;
+            }
+
+            if (anyShattered)
+                expandWindowForShatter();
         }
-
-        // If nothing was eligible but some are stowed, do selective recall instead
-        if (!anyEligible)
-            triggerSelectiveRecall();
-        else
-            expandWindowForShatter();  // give particles room to fly
 
         // Dismiss hover buttons
         hoverBtnState = HoverButtonState::retracting;
@@ -1310,7 +1475,8 @@ private:
         }
     }
 
-    /** Trigger selective recall: only stowed cards fly back. Reuses recall animation. */
+    /** Trigger selective recall: only stowed/hidden cards fly back to harbor.
+     *  Cards currently floating on screen (expanded or folded) are untouched. */
     void triggerSelectiveRecall()
     {
         // Count stowed cards
@@ -1320,17 +1486,17 @@ private:
 
         if (stowedCount == 0) return;
 
-        // If we're in floating or settled, recall stowed cards
+        // If we're in floating or settled, recall only stowed cards
         if (phase == AnimPhase::floating || phase == AnimPhase::settled)
         {
             // If settled, promote to floating first (expands canvas to full screen)
             if (phase == AnimPhase::settled)
                 promoteSettledToFloating();
 
-            // Unstow and recall
+            // Unstow ONLY stowed cards — leave floating cards completely untouched
             for (int i = 0; i < numCards; ++i)
             {
-                if (!cardStowed[i]) continue;
+                if (!cardStowed[i]) continue;  // skip non-stowed (active floating) cards
                 cardStowed[i] = false;
 
                 auto* card = getCard(i);
@@ -1343,7 +1509,7 @@ private:
                 cardFloatState[i].snapGroupID = -1;
             }
 
-            // Trigger full recall animation (phase is now guaranteed floating)
+            // Trigger recall animation that only moves recovered cards
             triggerRecall();
         }
         else if (phase == AnimPhase::compact)
@@ -1364,6 +1530,54 @@ private:
         if (auto* holder = juce::StandalonePluginHolder::getInstance())
             return &holder->deviceManager;
         return nullptr;
+    }
+
+    /** Get the user's chosen recording directory (reads from shared PropertiesFile).
+     *  Falls back to ~/Desktop if no custom path is set or saved path is invalid. */
+    juce::File getRecordingDirectory() const
+    {
+        if (auto* app = dynamic_cast<juce::JUCEApplication*>(juce::JUCEApplication::getInstance()))
+        {
+            // Access the ApplicationProperties via the app's PropertiesFile
+            // The PropertiesFile is stored at ~/Library/Application Support/GOODMETER.settings
+            juce::PropertiesFile::Options opts;
+            opts.applicationName     = juce::CharPointer_UTF8(JucePlugin_Name);
+            opts.filenameSuffix      = ".settings";
+            opts.osxLibrarySubFolder = "Application Support";
+
+            auto propsFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                .getChildFile(opts.osxLibrarySubFolder)
+                .getChildFile(opts.applicationName + opts.filenameSuffix);
+
+            if (propsFile.existsAsFile())
+            {
+                juce::XmlDocument doc(propsFile);
+                auto xml = doc.getDocumentElement();
+                if (xml != nullptr)
+                {
+                    auto saved = xml->getStringAttribute("recordingDirectory", "");
+                    if (saved.isEmpty())
+                    {
+                        // PropertiesFile stores as child elements: <VALUE name="key" val="value"/>
+                        for (auto* child : xml->getChildIterator())
+                        {
+                            if (child->getStringAttribute("name") == "recordingDirectory")
+                            {
+                                saved = child->getStringAttribute("val");
+                                break;
+                            }
+                        }
+                    }
+                    if (saved.isNotEmpty())
+                    {
+                        juce::File dir(saved);
+                        if (dir.isDirectory())
+                            return dir;
+                    }
+                }
+            }
+        }
+        return juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
     }
 
     void showSettingsMenu()
@@ -1541,10 +1755,22 @@ private:
 
         int totalShelfH = visibleCount * foldedCardH + juce::jmax(0, visibleCount - 1) * shelfGap;
         int h = getHeight();
+        int w = getWidth();
 
         int shelfStartY = (h - totalShelfH) / 2;
-        int nonoX = settledPadding + foldedCardW + settledGap;
-        int nonoY = (h - compactH) / 2;
+
+        // If no visible cards, center Nono without shelf offset
+        int nonoX, nonoY;
+        if (visibleCount > 0)
+        {
+            nonoX = settledPadding + foldedCardW + settledGap;
+            nonoY = (h - compactH) / 2;
+        }
+        else
+        {
+            nonoX = (w - compactW) / 2;
+            nonoY = (h - compactH) / 2;
+        }
 
         holoNono->setBounds(nonoX, nonoY, compactW, compactH);
 
@@ -1894,11 +2120,17 @@ private:
         auto nonoScreenPos = holoNono->getScreenPosition();
         auto windowPos = topLevel->getScreenPosition();
 
-        // Compute final window size from settled layout
-        int totalShelfH = numCards * foldedCardH + (numCards - 1) * shelfGap;
+        // Compute final window size from settled layout (visible cards only)
+        int visibleCount = 0;
+        for (int i = 0; i < numCards; ++i)
+            if (!cardStowed[i]) visibleCount++;
+
+        int totalShelfH = visibleCount * foldedCardH + juce::jmax(0, visibleCount - 1) * shelfGap;
         int finalH = juce::jmax(totalShelfH + settledPadding * 2,
                                 compactH + settledPadding * 2);
-        int finalW = settledPadding + foldedCardW + settledGap + compactW + settledPadding;
+        int finalW = (visibleCount > 0)
+            ? settledPadding + foldedCardW + settledGap + compactW + settledPadding
+            : settledPadding + compactW + settledPadding;  // no shelf → Nono only
 
         // Set phase BEFORE resize — resized() will call layoutSettled()
         phase = AnimPhase::settled;
@@ -3462,7 +3694,8 @@ private:
     }
 
     //==========================================================================
-    // RECALL ANIMATION: Nono click → all cards fly back → shrink
+    // RECALL ANIMATION: cards fly back → shrink
+    // Respects per-card participation: floating (undocked) cards are left in place.
     //==========================================================================
     void triggerRecall()
     {
@@ -3470,38 +3703,80 @@ private:
 
         phase = AnimPhase::recalling;
 
-        // Collapse all cards instantly
+        // Determine which cards participate in the recall animation.
+        // Cards that are currently floating (isFloating == true) and NOT docked
+        // are left untouched — they stay where they are.
+        // Shattered/stowed cards are NEVER recalled by triggerRecall —
+        // only triggerSelectiveRecall can unshatter them.
+        bool anyParticipating = false;
         for (int i = 0; i < numCards; ++i)
         {
             auto* card = getCard(i);
-            if (!card) continue;
-            card->setExpanded(false, false);
-        }
 
-        // Dissolve all snap groups
-        for (auto& group : snapGroups)
-        {
-            for (int idx : group.members)
+            // Shattered cards: absolutely do NOT touch
+            if (cardStowed[i])
             {
-                cardFloatState[idx].snapGroupID = -1;
-                auto* mc = getCard(idx);
-                if (mc) mc->showDetachButton = false;
+                recallingCard[i] = false;
+                continue;
+            }
+
+            // Active floaters: skip (they stay floating)
+            bool isActiveFloater = cardFloatState[i].isFloating && card != nullptr && !card->isDocked;
+
+            recallingCard[i] = !isActiveFloater;
+
+            if (recallingCard[i] && card != nullptr)
+            {
+                card->setExpanded(false, false);  // collapse for shelf
+                anyParticipating = true;
             }
         }
-        snapGroups.clear();
 
-        // Record current positions as start positions
+        // Dissolve snap groups only for recalling cards
+        for (int g = static_cast<int>(snapGroups.size()) - 1; g >= 0; --g)
+        {
+            auto& members = snapGroups[static_cast<size_t>(g)].members;
+            bool anyMemberRecalling = false;
+            for (int idx : members)
+            {
+                if (recallingCard[idx])
+                    anyMemberRecalling = true;
+            }
+            if (anyMemberRecalling)
+            {
+                for (int idx : members)
+                {
+                    cardFloatState[idx].snapGroupID = -1;
+                    auto* mc = getCard(idx);
+                    if (mc) mc->showDetachButton = false;
+                }
+                snapGroups.erase(snapGroups.begin() + g);
+            }
+        }
+
+        // Record current positions as start positions (only for participating cards)
         for (int i = 0; i < numCards; ++i)
         {
             auto* card = getCard(i);
             if (!card) continue;
-            recallStartPos[i] = card->getPosition().toFloat();
-            recallProgress[i] = 0.0f;
+            if (recallingCard[i])
+            {
+                recallStartPos[i] = card->getPosition().toFloat();
+                recallProgress[i] = 0.0f;
+            }
+            else
+            {
+                recallProgress[i] = 1.0f;  // mark as "already done" so it doesn't block completion
+            }
         }
 
-        // Compute recall target (shelf position in current canvas)
-        // Same delta math as tickSwordDwell for consistency
-        int totalShelfH = numCards * foldedCardH + (numCards - 1) * shelfGap;
+        // Compute recall target (shelf position in current canvas — visible cards only)
+        int recallVisibleCount = 0;
+        for (int i = 0; i < numCards; ++i)
+            if (!cardStowed[i]) recallVisibleCount++;
+
+        int totalShelfH = recallVisibleCount * foldedCardH
+                        + juce::jmax(0, recallVisibleCount - 1) * shelfGap;
         int settledFinalH = juce::jmax(totalShelfH + settledPadding * 2,
                                        compactH + settledPadding * 2);
 
@@ -3527,6 +3802,9 @@ private:
             auto* card = getCard(i);
             if (!card) continue;
 
+            // Skip cards not participating in recall (active floaters)
+            if (!recallingCard[i]) continue;
+
             recallProgress[i] = juce::jmin(1.0f, recallProgress[i] + recallSpeed);
             if (recallProgress[i] < 1.0f) allDone = false;
 
@@ -3544,20 +3822,42 @@ private:
 
         if (allDone)
         {
-            // Re-dock all cards
+            // Re-dock only recalled cards; leave active floaters untouched
             for (int i = 0; i < numCards; ++i)
             {
+                if (!recallingCard[i]) continue;
                 auto* card = getCard(i);
                 if (!card) continue;
                 card->isDocked = true;
                 card->showDetachButton = false;
+                card->customContentHeight = -1;  // reset custom sizing
+                card->customWidth = -1;
                 cardFloatState[i].isFloating = false;
                 cardFloatState[i].snapGroupID = -1;
             }
 
-            // Transition to canvas shrink → settled
-            phase = AnimPhase::canvasShrink;
-            animFrameCounter = 0;
+            // Check if any active floaters or stowed cards remain on screen.
+            // If so, stay in floating phase (don't shrink to settled).
+            bool hasActiveFloater = false;
+            bool hasStowed = false;
+            for (int i = 0; i < numCards; ++i)
+            {
+                if (cardStowed[i]) { hasStowed = true; continue; }
+                if (cardFloatState[i].isFloating) hasActiveFloater = true;
+            }
+
+            if (hasActiveFloater || hasStowed)
+            {
+                // Stay in floating phase — layout the shelf with recalled cards
+                phase = AnimPhase::floating;
+                layoutFloating();
+            }
+            else
+            {
+                // All cards are docked, none stowed → shrink to settled
+                phase = AnimPhase::canvasShrink;
+                animFrameCounter = 0;
+            }
         }
     }
 
