@@ -38,7 +38,9 @@ GOODMETERAudioProcessor::GOODMETERAudioProcessor()
 
     // Reserve LRA history
     lraHistory.reserve(lraMaxSamples);
-    integratedBlockLufs.reserve(4096);
+
+    // Zero integrated block storage
+    std::fill(std::begin(integratedBlockStorage), std::end(integratedBlockStorage), 0.0f);
 
 #if JUCE_MAC && JucePlugin_Build_Standalone
     systemAudioCapture = std::make_unique<SystemAudioCapture>();
@@ -162,11 +164,9 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     stLufsBufferR.fill(0.0f);
     stLufsBufferIndex = 0;
 
-    // Reset integrated LUFS state
-    {
-        std::lock_guard<std::mutex> lock(integratedMutex);
-        integratedBlockLufs.clear();
-    }
+    // Reset integrated LUFS state (lock-free — only accessed from audio thread)
+    std::fill(std::begin(integratedBlockStorage), std::end(integratedBlockStorage), 0.0f);
+    integratedBlockCount = 0;
     integratedBlockSampleCount = 0;
 
     // Reset LRA history
@@ -499,6 +499,7 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 
     //==========================================================================
     // Integrated LUFS — accumulate 400ms blocks for gating (BS.1770-4)
+    // Lock-free: all data stays on audio thread, no mutex, no allocation.
     //==========================================================================
     integratedBlockSampleCount += numSamples;
     if (integratedBlockSampleCount >= static_cast<int>(currentSampleRate * 0.4))
@@ -506,44 +507,43 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         // We have one 400ms block worth — compute its loudness
         float blockLufs = lufsLevel.load(std::memory_order_relaxed);
 
-        {
-            std::lock_guard<std::mutex> lock(integratedMutex);
-            integratedBlockLufs.push_back(blockLufs);
-        }
+        // Store in fixed-size array (cap at max to prevent overflow)
+        if (integratedBlockCount < integratedBlockMaxCount)
+            integratedBlockStorage[integratedBlockCount++] = blockLufs;
 
         integratedBlockSampleCount = 0;
 
         // Compute Integrated LUFS with absolute + relative gating
-        std::vector<float> localBlocks;
+        // All data is local to audio thread — no lock needed
+        if (integratedBlockCount > 0)
         {
-            std::lock_guard<std::mutex> lock(integratedMutex);
-            localBlocks = integratedBlockLufs;
-        }
+            // Step 1: Absolute gate — count blocks > -70 LUFS
+            double linSum1 = 0.0;
+            int gated1Count = 0;
+            for (int idx = 0; idx < integratedBlockCount; ++idx)
+            {
+                if (integratedBlockStorage[idx] > -70.0f)
+                {
+                    linSum1 += std::pow(10.0, integratedBlockStorage[idx] / 10.0);
+                    gated1Count++;
+                }
+            }
 
-        if (!localBlocks.empty())
-        {
-            // Step 1: Absolute gate — remove blocks <= -70 LUFS
-            std::vector<float> gated1;
-            for (float v : localBlocks)
-                if (v > -70.0f) gated1.push_back(v);
-
-            if (!gated1.empty())
+            if (gated1Count > 0)
             {
                 // Step 2: Calculate average of gated blocks (in linear power)
-                double linSum = 0.0;
-                for (float v : gated1)
-                    linSum += std::pow(10.0, v / 10.0);
-                double avgLin = linSum / gated1.size();
+                double avgLin = linSum1 / gated1Count;
                 float relativeGate = static_cast<float>(10.0 * std::log10(avgLin)) - 10.0f;
 
-                // Step 3: Relative gate — remove blocks below relativeGate
+                // Step 3: Relative gate — sum blocks above relativeGate
                 double finalSum = 0.0;
                 int finalCount = 0;
-                for (float v : gated1)
+                for (int idx = 0; idx < integratedBlockCount; ++idx)
                 {
-                    if (v > relativeGate)
+                    if (integratedBlockStorage[idx] > -70.0f &&
+                        integratedBlockStorage[idx] > relativeGate)
                     {
-                        finalSum += std::pow(10.0, v / 10.0);
+                        finalSum += std::pow(10.0, integratedBlockStorage[idx] / 10.0);
                         finalCount++;
                     }
                 }
@@ -755,11 +755,16 @@ void GOODMETERAudioProcessor::calculateLRARealtime()
 }
 
 //==============================================================================
-void GOODMETERAudioProcessor::exportRetrospectiveRecording(int secondsToSave)
+void GOODMETERAudioProcessor::exportRetrospectiveRecording(int secondsToSave,
+                                                           const juce::File& exportDir)
 {
-    auto dir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-                   .getChildFile("Downloads")
-                   .getChildFile("GOODMETER_Records");
+    juce::File dir;
+    if (exportDir.exists())
+        dir = exportDir;
+    else
+        dir = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+
+    if (!dir.exists()) dir.createDirectory();
 
     auto now = juce::Time::getCurrentTime();
     auto filename = "Rewind_" + now.formatted("%Y-%m-%d_%H%M%S") + ".wav";

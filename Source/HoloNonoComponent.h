@@ -60,7 +60,9 @@ public:
         stopTimer();
         if (analysisThread)
         {
-            analysisThread->stopThread(3000);
+            analysisThread->signalThreadShouldExit();
+            analysisThread->notify();  // wake thread if sleeping/waiting
+            analysisThread->stopThread(5000);  // generous timeout for large files
             analysisThread.reset();
         }
     }
@@ -1593,7 +1595,9 @@ private:
         // Stop any running analysis
         if (analysisThread)
         {
-            analysisThread->stopThread(500);
+            analysisThread->signalThreadShouldExit();
+            analysisThread->notify();
+            analysisThread->stopThread(2000);
             analysisThread.reset();
         }
 
@@ -1639,7 +1643,9 @@ private:
     {
         if (analysisThread)
         {
-            analysisThread->stopThread(2000);
+            analysisThread->signalThreadShouldExit();
+            analysisThread->notify();
+            analysisThread->stopThread(3000);
             analysisThread.reset();
         }
 

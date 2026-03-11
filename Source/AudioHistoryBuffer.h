@@ -28,6 +28,13 @@ public:
 
     AudioHistoryBuffer() = default;
 
+    ~AudioHistoryBuffer()
+    {
+        // Wait for any in-flight export thread to finish before destroying buffer
+        if (exportThread.joinable())
+            exportThread.join();
+    }
+
     //==========================================================================
     // Called from prepareToPlay — allocates buffer for current sample rate
     //==========================================================================
@@ -70,7 +77,8 @@ public:
         }
 
         writePos.store((pos + numSamples) % capacity, std::memory_order_release);
-        totalSamplesWritten.fetch_add(numSamples, std::memory_order_relaxed);
+        // release: pairs with acquire in exportLastSeconds() to guarantee data visibility
+        totalSamplesWritten.fetch_add(numSamples, std::memory_order_release);
     }
 
     //==========================================================================
@@ -109,7 +117,8 @@ public:
         int samplesToSave = static_cast<int>(sr * secondsToSave);
 
         // Clamp to available data (don't export zeros from unfilled buffer)
-        const int64_t written = totalSamplesWritten.load(std::memory_order_relaxed);
+        // acquire: synchronize with audio thread's release store to see all written samples
+        const int64_t written = totalSamplesWritten.load(std::memory_order_acquire);
         const int available = static_cast<int>(juce::jmin(written, static_cast<int64_t>(cap)));
         samplesToSave = juce::jmin(samplesToSave, available);
 
@@ -148,7 +157,11 @@ public:
             + outputFile.getFullPathName());
 
         // Write WAV on background thread (I/O-bound, must not block GUI)
-        std::thread([exportBuffer, outputFile, sr]()
+        // Join any previous export thread before launching a new one
+        if (exportThread.joinable())
+            exportThread.join();
+
+        exportThread = std::thread([exportBuffer, outputFile, sr]()
         {
             outputFile.getParentDirectory().createDirectory();
 
@@ -177,8 +190,7 @@ public:
             juce::Logger::outputDebugString("AudioHistoryBuffer: export complete — "
                 + juce::String(exportBuffer->getNumSamples() / sr, 1) + "s written to "
                 + outputFile.getFullPathName());
-
-        }).detach();
+        });
     }
 
 private:
@@ -187,4 +199,5 @@ private:
     int capacity = 0;
     double cachedSampleRate = 0.0;
     std::atomic<int64_t> totalSamplesWritten { 0 };
+    std::thread exportThread;  // Managed background export thread (joined in destructor)
 };

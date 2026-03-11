@@ -23,6 +23,7 @@
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 #include "PluginProcessor.h"
 #include "GoodMeterLookAndFeel.h"
+#include "AudioLabComponent.h"
 
 #if JUCE_MAC
  #include <objc/message.h>
@@ -319,7 +320,7 @@ public:
     //==========================================================================
     juce::StringArray getMenuBarNames() override
     {
-        return { "Recording", "Audio Source" };
+        return { "Recording", "Audio Source", "Audio Lab" };
     }
 
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
@@ -391,6 +392,14 @@ public:
 #else
             menu.addItem(-1, "System audio requires macOS 14.2+", false);
 #endif
+        }
+        else if (menuIndex == 2)
+        {
+            // ── Audio Lab export mode: radio group ──
+            int mode = AudioLabContent::exportMode;
+            menu.addItem(800, "Export Both",          true, mode == 1);
+            menu.addItem(801, "Export Clean Only",    true, mode == 2);
+            menu.addItem(802, "Export RoomTone Only", true, mode == 3);
         }
 
         return menu;
@@ -515,6 +524,12 @@ public:
             menuItemsChanged();
         }
 #endif
+        else if (menuItemID >= 800 && menuItemID <= 802)
+        {
+            // Audio Lab export mode: 800=Both(1), 801=Clean(2), 802=RoomTone(3)
+            AudioLabContent::exportMode = menuItemID - 800 + 1;
+            menuItemsChanged();
+        }
     }
 
 private:

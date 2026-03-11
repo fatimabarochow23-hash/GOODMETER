@@ -174,7 +174,7 @@ private:
                     else
                     {
                         for (int i = 0; i < numBins; ++i)
-                            smoothedFftData[i] = smoothedFftData[i] * 0.85f + fftData[i] * 0.15f;
+                            smoothedFftData[i] = smoothedFftData[i] * 0.3f + fftData[i] * 0.7f;
                     }
 
                     fftHistory[static_cast<size_t>(historyHead)] = smoothedFftData;

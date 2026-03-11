@@ -35,7 +35,7 @@ public:
         setColour(juce::TextButton::textColourOnId, bgPanel);
 
         // ── ComboBox ──
-        setColour(juce::ComboBox::backgroundColourId, bgPanel);
+        setColour(juce::ComboBox::backgroundColourId, bgPaper);
         setColour(juce::ComboBox::textColourId, ink);
         setColour(juce::ComboBox::outlineColourId, ink);
         setColour(juce::ComboBox::arrowColourId, ink);
@@ -45,21 +45,26 @@ public:
         setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
 
         // ── TextEditor ──
-        setColour(juce::TextEditor::backgroundColourId, bgPanel);
+        setColour(juce::TextEditor::backgroundColourId, bgPaper);
         setColour(juce::TextEditor::textColourId, ink);
         setColour(juce::TextEditor::outlineColourId, ink);
         setColour(juce::TextEditor::focusedOutlineColourId, ink);
         setColour(juce::TextEditor::highlightColourId, ink.withAlpha(0.15f));
 
         // ── ListBox ──
-        setColour(juce::ListBox::backgroundColourId, bgPanel);
+        setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
         setColour(juce::ListBox::textColourId, ink);
-        setColour(juce::ListBox::outlineColourId, ink);
+        setColour(juce::ListBox::outlineColourId, ink.withAlpha(0.3f));
 
         // ── ToggleButton / TickBox ──
         setColour(juce::ToggleButton::textColourId, ink);
         setColour(juce::ToggleButton::tickColourId, ink);
         setColour(juce::ToggleButton::tickDisabledColourId, textMuted);
+
+        // ── Slider ──
+        setColour(juce::Slider::thumbColourId, ink);
+        setColour(juce::Slider::trackColourId, ink.withAlpha(0.2f));
+        setColour(juce::Slider::backgroundColourId, bgPanel);
 
         // ── ScrollBar ──
         setColour(juce::ScrollBar::thumbColourId, ink.withAlpha(0.35f));
@@ -75,10 +80,10 @@ public:
         setColour(juce::AlertWindow::outlineColourId, ink);
 
         // ── PopupMenu ──
-        setColour(juce::PopupMenu::backgroundColourId, bgPanel);
+        setColour(juce::PopupMenu::backgroundColourId, bgPaper);
         setColour(juce::PopupMenu::textColourId, ink);
-        setColour(juce::PopupMenu::highlightedBackgroundColourId, ink);
-        setColour(juce::PopupMenu::highlightedTextColourId, bgPanel);
+        setColour(juce::PopupMenu::highlightedBackgroundColourId, ink.withAlpha(0.08f));
+        setColour(juce::PopupMenu::highlightedTextColourId, ink);
     }
 
     //==========================================================================
@@ -89,6 +94,7 @@ public:
     static inline const juce::Colour ink      = juce::Colour(0xFF2A2A35);  // near-black
     static inline const juce::Colour bgPanel  = juce::Colour(0xFFFFFFFF);  // pure white
     static inline const juce::Colour bgMain   = juce::Colour(0xFFF4F4F6);  // off-white
+    static inline const juce::Colour bgPaper  = juce::Colour(0xFFE8E4DD);  // warm paper
 
     // Text
     static inline const juce::Colour textMain  = ink;
@@ -111,6 +117,11 @@ public:
     static inline const juce::Colour scrollThumb     = juce::Colour(0xFFD1D1D6);
     static inline const juce::Colour scrollThumbHover = juce::Colour(0xFFA1A1AA);
 
+    // Cross-component state: AudioLabContent sets these for title bar modes
+    static inline bool holoTitleBar = false;
+    static inline bool spectroTitleBar = false;
+    static inline bool spectroProcessed = false;
+
     //==========================================================================
     // Typography
     //==========================================================================
@@ -128,34 +139,35 @@ public:
     static constexpr float cardSpacing    = 12.0f;
 
     //==========================================================================
-    // Button — ink border, color-invert on press
+    // Button — ink border on press, ghost on paper normally (for AudioLab)
+    // Normal state: transparent bg, no border (text only)
+    // Hover: faint ink border appears
+    // Press: full inversion (ink fill, white text)
     //==========================================================================
     void drawButtonBackground(juce::Graphics& g,
                              juce::Button& button,
-                             const juce::Colour& backgroundColour,
+                             const juce::Colour& /*backgroundColour*/,
                              bool shouldDrawButtonAsHighlighted,
                              bool shouldDrawButtonAsDown) override
     {
         auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
+        auto textCol = button.findColour(juce::TextButton::textColourOffId);
 
         if (shouldDrawButtonAsDown)
         {
-            // PRESS: full inversion — ink fill
-            g.setColour(ink);
+            // PRESS: full fill in text colour (inversion)
+            g.setColour(textCol);
             g.fillRoundedRectangle(bounds, brutalCorner);
         }
-        else
+        else if (shouldDrawButtonAsHighlighted)
         {
-            // Normal / hover
-            g.setColour(shouldDrawButtonAsHighlighted
-                            ? backgroundColour.interpolatedWith(ink, 0.06f)
-                            : backgroundColour);
+            // HOVER: subtle tint + border in text colour
+            g.setColour(textCol.withAlpha(0.08f));
             g.fillRoundedRectangle(bounds, brutalCorner);
+            g.setColour(textCol.withAlpha(0.6f));
+            g.drawRoundedRectangle(bounds, brutalCorner, 1.5f);
         }
-
-        // Thick brutalist border
-        g.setColour(ink);
-        g.drawRoundedRectangle(bounds, brutalCorner, brutalBorder);
+        // Normal: completely transparent — no fill, no border
     }
 
     void drawButtonText(juce::Graphics& g, juce::TextButton& button,
@@ -163,8 +175,10 @@ public:
     {
         auto font = juce::Font(14.0f, juce::Font::bold);
         g.setFont(font);
-        // Invert text on press
-        g.setColour(isButtonDown ? bgPanel : ink);
+        // Use per-component colours (supports dark/light mode)
+        g.setColour(isButtonDown
+            ? button.findColour(juce::TextButton::textColourOnId)
+            : button.findColour(juce::TextButton::textColourOffId));
         g.drawText(button.getButtonText(), button.getLocalBounds(),
                    juce::Justification::centred, true);
     }
@@ -178,28 +192,35 @@ public:
     {
         juce::ignoreUnused(shouldDrawButtonAsDown);
 
+        auto tickCol = button.findColour(juce::ToggleButton::tickColourId);
+        auto textCol = button.findColour(juce::ToggleButton::textColourId);
+
         const float boxSize = 16.0f;
         const float boxX = 4.0f;
         const float boxY = (static_cast<float>(button.getHeight()) - boxSize) * 0.5f;
 
-        // Box background
-        g.setColour(shouldDrawButtonAsHighlighted ? bgMain : bgPanel);
-        g.fillRoundedRectangle(boxX, boxY, boxSize, boxSize, 1.0f);
+        // Box background — transparent normally, faint on hover
+        if (shouldDrawButtonAsHighlighted)
+        {
+            g.setColour(tickCol.withAlpha(0.06f));
+            g.fillRoundedRectangle(boxX, boxY, boxSize, boxSize, 1.0f);
+        }
 
-        // Thick border
-        g.setColour(ink);
-        g.drawRoundedRectangle(boxX, boxY, boxSize, boxSize, 1.0f, brutalBorder);
+        // Border — thin normally, thicker on hover
+        float borderW = shouldDrawButtonAsHighlighted ? 2.0f : 1.5f;
+        g.setColour(tickCol.withAlpha(shouldDrawButtonAsHighlighted ? 0.7f : 0.4f));
+        g.drawRoundedRectangle(boxX, boxY, boxSize, boxSize, 1.0f, borderW);
 
-        // Tick: solid ink fill with white checkmark
+        // Tick: solid fill
         if (button.getToggleState())
         {
-            g.setColour(ink);
+            g.setColour(tickCol);
             g.fillRoundedRectangle(boxX + 2.0f, boxY + 2.0f,
                                    boxSize - 4.0f, boxSize - 4.0f, 1.0f);
         }
 
         // Label text
-        g.setColour(ink);
+        g.setColour(textCol);
         g.setFont(juce::Font(13.0f, juce::Font::bold));
         auto textArea = button.getLocalBounds()
                           .withLeft(static_cast<int>(boxX + boxSize + 6.0f));
@@ -216,25 +237,27 @@ public:
     {
         auto bounds = juce::Rectangle<float>(0, 0,
                           static_cast<float>(width), static_cast<float>(height));
+        auto textCol = box.findColour(juce::ComboBox::textColourId);
+        auto bgCol   = box.findColour(juce::ComboBox::backgroundColourId);
 
         if (isButtonDown)
         {
-            // PRESS: invert
-            g.setColour(ink);
+            // PRESS: invert (fill with text colour)
+            g.setColour(textCol);
             g.fillRoundedRectangle(bounds, brutalCorner);
         }
-        else
+        else if (box.isMouseOver())
         {
-            g.setColour(bgPanel);
+            // HOVER: subtle border in text colour
+            g.setColour(textCol.withAlpha(0.06f));
             g.fillRoundedRectangle(bounds, brutalCorner);
+            g.setColour(textCol.withAlpha(0.6f));
+            g.drawRoundedRectangle(bounds.reduced(0.5f), brutalCorner, 1.5f);
         }
-
-        // Thick border
-        g.setColour(ink);
-        g.drawRoundedRectangle(bounds.reduced(0.5f), brutalCorner, brutalBorder);
+        // Normal: no border, no fill — just text on background
 
         // Text
-        g.setColour(isButtonDown ? bgPanel : ink);
+        g.setColour(isButtonDown ? bgCol : textCol);
         g.setFont(juce::Font(13.0f, juce::Font::bold));
         g.drawText(box.getText(),
                    juce::Rectangle<int>(8, 0, width - 28, height),
@@ -245,7 +268,7 @@ public:
         float ax = static_cast<float>(width) - 16.0f;
         float ay = static_cast<float>(height) * 0.5f - 3.0f;
         arrow.addTriangle(ax - 5.0f, ay, ax + 5.0f, ay, ax, ay + 6.0f);
-        g.setColour(isButtonDown ? bgPanel : ink);
+        g.setColour(isButtonDown ? bgCol : textCol);
         g.fillPath(arrow);
     }
 
@@ -286,12 +309,15 @@ public:
     {
         auto bounds = juce::Rectangle<float>(0, 0,
                           static_cast<float>(width), static_cast<float>(height));
-        g.setColour(editor.hasKeyboardFocus(true) ? ink : ink.withAlpha(0.7f));
+        auto col = editor.findColour(editor.hasKeyboardFocus(true)
+            ? juce::TextEditor::focusedOutlineColourId
+            : juce::TextEditor::outlineColourId);
+        g.setColour(col);
         g.drawRoundedRectangle(bounds.reduced(0.5f), brutalCorner, brutalBorder);
     }
 
     //==========================================================================
-    // GroupComponent — thick border, bold title, square corners
+    // GroupComponent — thin border, bold title, paper punch-out
     //==========================================================================
     void drawGroupComponentOutline(juce::Graphics& g, int width, int height,
                                     const juce::String& text,
@@ -307,12 +333,12 @@ public:
         auto bounds = juce::Rectangle<float>(0, top,
                           static_cast<float>(width), static_cast<float>(height) - top);
 
-        // Thick border rect
-        g.setColour(ink);
-        g.drawRoundedRectangle(bounds.reduced(0.5f), brutalCorner, brutalBorder);
+        // Thin border rect (paper-friendly)
+        g.setColour(ink.withAlpha(0.25f));
+        g.drawRoundedRectangle(bounds.reduced(0.5f), brutalCorner, 1.0f);
 
-        // Title background punch-out
-        g.setColour(bgPanel);
+        // Title background punch-out (matches paper)
+        g.setColour(bgPaper);
         g.fillRect(8.0f, 0.0f, textW, textH);
 
         // Title text
@@ -357,17 +383,50 @@ public:
     }
 
     //==========================================================================
-    // PopupMenu — Neo-Brutalism: white bg, ink text, ink-fill on hover
+    // PopupMenu — mode-aware: paper (default) / holo grid / spectro black
     //==========================================================================
     void drawPopupMenuBackground(juce::Graphics& g, int width, int height) override
     {
-        // White panel
-        g.setColour(bgPanel);
-        g.fillRect(0, 0, width, height);
+        auto area = juce::Rectangle<float>(0, 0,
+                        static_cast<float>(width), static_cast<float>(height));
 
-        // Thick outer border
-        g.setColour(ink);
-        g.drawRect(0, 0, width, height, 3);
+        if (holoTitleBar)
+        {
+            // Holo mode: dark bg + holographic grid
+            static const juce::Colour holoDark(0xFF1A1A24);
+            static const juce::Colour holoGrey(0xFFD5D3DE);
+            g.setColour(holoDark);
+            g.fillRect(0, 0, width, height);
+
+            // Grid
+            float cellW = 3.0f, cellH = 2.0f;
+            g.setColour(holoGrey.withAlpha(0.06f));
+            for (float y = 0.0f; y < area.getBottom(); y += cellH)
+                g.drawHorizontalLine(static_cast<int>(y), 0.0f, area.getRight());
+            for (float x = 0.0f; x < area.getRight(); x += cellW)
+                g.drawVerticalLine(static_cast<int>(x), 0.0f, area.getBottom());
+
+            g.setColour(holoGrey.withAlpha(0.2f));
+            g.drawRect(0, 0, width, height, 1);
+        }
+        else if (spectroTitleBar)
+        {
+            // Spectro mode: pure black
+            g.setColour(juce::Colour(0xFF0A0A18));
+            g.fillRect(0, 0, width, height);
+
+            g.setColour(juce::Colour(0xFFD5D3DE).withAlpha(0.15f));
+            g.drawRect(0, 0, width, height, 1);
+        }
+        else
+        {
+            // Default: warm paper + blueprint grid
+            g.setColour(bgPaper);
+            g.fillRect(0, 0, width, height);
+            drawBlueprintGrid(g, area);
+            g.setColour(ink.withAlpha(0.2f));
+            g.drawRect(0, 0, width, height, 1);
+        }
     }
 
     void drawPopupMenuItem(juce::Graphics& g, const juce::Rectangle<int>& area,
@@ -376,45 +435,106 @@ public:
                            const juce::String& /*shortcutKeyText*/,
                            const juce::Drawable* /*icon*/, const juce::Colour* /*textColour*/) override
     {
+        // Determine text colour based on mode
+        juce::Colour textCol = ink;
+        juce::Colour mutedCol = textMuted;
+        juce::Colour highlightBg = ink.withAlpha(0.08f);
+
+        if (holoTitleBar)
+        {
+            textCol = juce::Colour(0xFFD5D3DE);   // white/grey
+            mutedCol = juce::Colour(0xFF8A8A9D);
+            highlightBg = textCol.withAlpha(0.10f);
+        }
+        else if (spectroTitleBar)
+        {
+            if (spectroProcessed)
+                textCol = juce::Colour(0xFFFFB840);  // yellow
+            else
+                textCol = juce::Colour(0xFF4A9EFF);  // blue
+            mutedCol = textCol.withAlpha(0.4f);
+            highlightBg = textCol.withAlpha(0.10f);
+        }
+
         if (isSeparator)
         {
-            g.setColour(ink);
-            g.fillRect(area.getX() + 8, area.getCentreY(), area.getWidth() - 16, 2);
+            g.setColour(textCol.withAlpha(0.15f));
+            g.fillRect(area.getX() + 12, area.getCentreY(), area.getWidth() - 24, 1);
             return;
         }
 
-        // Hover: full ink fill (color inversion)
         if (isHighlighted && isActive)
         {
-            g.setColour(ink);
+            g.setColour(highlightBg);
             g.fillRect(area);
         }
 
-        // Text
-        g.setColour(isHighlighted && isActive ? bgPanel : ink);
+        g.setColour(isActive ? textCol : mutedCol);
         g.setFont(juce::Font(13.0f, juce::Font::bold));
         g.drawText(text, area.reduced(20, 0), juce::Justification::centredLeft, true);
 
-        // Ticked: ink square (not circle, not checkmark)
         if (isTicked)
         {
-            auto tickColour = isHighlighted && isActive ? bgPanel : ink;
-            g.setColour(tickColour);
-            float ty = static_cast<float>(area.getCentreY()) - 3.0f;
-            g.fillRect(static_cast<float>(area.getX()) + 6.0f, ty, 6.0f, 6.0f);
+            g.setColour(textCol);
+            float ty = static_cast<float>(area.getCentreY()) - 2.5f;
+            g.fillEllipse(static_cast<float>(area.getX()) + 7.0f, ty, 5.0f, 5.0f);
         }
     }
 
     void drawPopupMenuSectionHeader(juce::Graphics& g, const juce::Rectangle<int>& area,
                                      const juce::String& sectionName) override
     {
-        g.setColour(ink);
+        juce::Colour headerCol = textMuted;
+        if (holoTitleBar)
+            headerCol = juce::Colour(0xFF8A8A9D);
+        else if (spectroTitleBar)
+            headerCol = spectroProcessed ? juce::Colour(0xFFFFB840).withAlpha(0.5f)
+                                         : juce::Colour(0xFF4A9EFF).withAlpha(0.5f);
+
+        g.setColour(headerCol);
         g.setFont(juce::Font(11.0f, juce::Font::bold));
         g.drawText(sectionName.toUpperCase(), area.reduced(20, 0),
                    juce::Justification::centredLeft, true);
 
-        g.setColour(ink.withAlpha(0.3f));
-        g.fillRect(area.getX() + 8, area.getBottom() - 1, area.getWidth() - 16, 1);
+        g.setColour(headerCol.withAlpha(0.25f));
+        g.fillRect(area.getX() + 12, area.getBottom() - 1, area.getWidth() - 24, 1);
+    }
+
+    //==========================================================================
+    // TabbedButtonBar — paper background with grid, ink text
+    //==========================================================================
+    void drawTabbedButtonBarBackground(juce::TabbedButtonBar& bar, juce::Graphics& g) override
+    {
+        auto bounds = bar.getLocalBounds().toFloat();
+        g.setColour(bgPaper);
+        g.fillRect(bounds);
+        drawBlueprintGrid(g, bounds);
+    }
+
+    void drawTabButton(juce::TabBarButton& button, juce::Graphics& g,
+                        bool isMouseOver, bool isMouseDown) override
+    {
+        auto area = button.getActiveArea().toFloat();
+        bool isFront = button.isFrontTab();
+
+        if (isFront)
+        {
+            // Active tab: slightly brighter paper + bottom ink line
+            g.setColour(bgPaper.brighter(0.05f));
+            g.fillRect(area);
+            g.setColour(ink);
+            g.fillRect(area.getX(), area.getBottom() - 2.0f, area.getWidth(), 2.0f);
+        }
+        else if (isMouseOver || isMouseDown)
+        {
+            g.setColour(ink.withAlpha(0.06f));
+            g.fillRect(area);
+        }
+
+        // Tab text
+        g.setColour(isFront ? ink : textMuted);
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText(button.getButtonText(), area, juce::Justification::centred);
     }
 
     //==========================================================================
@@ -427,47 +547,222 @@ public:
         juce::ignoreUnused(style);
         auto bounds = juce::Rectangle<float>(static_cast<float>(x), static_cast<float>(y),
                                               static_cast<float>(width), static_cast<float>(height));
+        auto thumbCol = slider.findColour(juce::Slider::thumbColourId);
 
         // Track
         float trackH = 4.0f;
         float trackY = bounds.getCentreY() - trackH * 0.5f;
-        g.setColour(ink.withAlpha(0.2f));
+        g.setColour(thumbCol.withAlpha(0.2f));
         g.fillRect(bounds.getX(), trackY, bounds.getWidth(), trackH);
 
         // Filled portion
-        g.setColour(ink);
+        g.setColour(thumbCol);
         g.fillRect(bounds.getX(), trackY, sliderPos - bounds.getX(), trackH);
 
-        // Thumb: square ink block
+        // Thumb: square block
         float thumbW = 14.0f, thumbH = 20.0f;
         float thumbX = sliderPos - thumbW * 0.5f;
         float thumbY = bounds.getCentreY() - thumbH * 0.5f;
 
-        g.setColour(slider.isMouseOverOrDragging() ? ink : ink.withAlpha(0.85f));
+        g.setColour(slider.isMouseOverOrDragging() ? thumbCol : thumbCol.withAlpha(0.85f));
         g.fillRect(thumbX, thumbY, thumbW, thumbH);
-        g.setColour(bgPanel);
-        g.drawRect(thumbX, thumbY, thumbW, thumbH, 1.0f);
     }
 
     //==========================================================================
-    // DocumentWindow title bar — Neo-Brutalism: ink bar, white text, no gradient
+    // DocumentWindow title bar — Paper style (default) or Holo torn-paper
     //==========================================================================
     void drawDocumentWindowTitleBar(juce::DocumentWindow& window, juce::Graphics& g,
                                     int w, int h, int /*titleSpaceX*/, int /*titleSpaceW*/,
                                     const juce::Image* /*icon*/, bool /*drawTitleTextOnLeft*/) override
     {
-        // Ink-black title bar
-        g.setColour(ink);
+        if (spectroTitleBar)
+        {
+            drawSpectroTitleBar(g, w, h, window.getName());
+            return;
+        }
+        if (holoTitleBar)
+        {
+            drawHoloTitleBar(g, w, h, window.getName());
+            return;
+        }
+
+        // ── Default: Blueprint paper title bar ──
+        static const juce::Colour paperColour(0xFFE8E4DD);
+        g.setColour(paperColour);
         g.fillRect(0, 0, w, h);
 
-        // Bottom border accent
-        g.setColour(bgPanel.withAlpha(0.15f));
+        // Subtle blueprint grid on title bar too
+        g.setColour(juce::Colour(0x0C000000));
+        for (int x = 0; x < w; x += 16)
+            g.drawVerticalLine(x, 0.0f, static_cast<float>(h));
+
+        // Bottom border line (faint)
+        g.setColour(ink.withAlpha(0.15f));
         g.fillRect(0, h - 1, w, 1);
 
-        // Title text — bold, white, centered
-        g.setColour(bgPanel);
+        // Title text — bold, ink-black, centered
+        g.setColour(ink);
         g.setFont(juce::Font(14.0f, juce::Font::bold));
         g.drawText(window.getName(), 0, 0, w, h, juce::Justification::centred, true);
+    }
+
+    //==========================================================================
+    // Holo torn-paper title bar — grey-white holographic grid with wavy bottom
+    // The title bar is dark holo at the bottom, with a grey-white zone on top
+    // that has a torn/wavy bottom edge (like ripped paper over holographic grid)
+    //==========================================================================
+    void drawHoloTitleBar(juce::Graphics& g, int w, int h, const juce::String& title)
+    {
+        static const juce::Colour holoDark(0xFF1A1A24);
+        static const juce::Colour holoGrey(0xFFD5D3DE);
+
+        const float cellW = 3.0f;
+        const float cellH = 2.0f;
+        float fW = static_cast<float>(w);
+        float fH = static_cast<float>(h);
+
+        // Fill entire title bar with dark holographic background
+        g.setColour(holoDark);
+        g.fillRect(0, 0, w, h);
+
+        // Draw dark holographic grid across entire title bar
+        g.setColour(holoGrey.withAlpha(0.06f));
+        for (float y = 0.0f; y < fH; y += cellH)
+            g.drawHorizontalLine(static_cast<int>(y), 0.0f, fW);
+        for (float x = 0.0f; x < fW; x += cellW)
+            g.drawVerticalLine(static_cast<int>(x), 0.0f, fH);
+
+        // ── Grey-white torn paper zone (top portion) ──
+        // The tear line sits ~6px above the bottom of the title bar
+        // with a multi-sine wave for irregular torn paper feel
+        float tearBaseY = fH - 6.0f;  // base tear line position
+
+        // Paint grey-white cells above the wavy tear line
+        // Use combined sine waves for organic torn-paper feel
+        for (float x = 0.0f; x < fW; x += cellW)
+        {
+            // Multi-frequency wave: primary + secondary + tertiary
+            float phase = x * 0.025f;
+            float wave = std::sin(phase) * 2.0f
+                       + std::sin(phase * 2.7f + 1.3f) * 1.2f
+                       + std::sin(phase * 5.1f + 0.7f) * 0.6f;
+            // wave range ≈ [-3.8, +3.8], scale to ≈ [-1.5, +1.5] cells
+            float tearY = tearBaseY + wave;
+            // Snap to grid
+            tearY = std::floor(tearY / cellH) * cellH;
+
+            // Fill grey-white cells from top down to the tear line
+            for (float y = 0.0f; y < tearY; y += cellH)
+            {
+                g.setColour(holoGrey.withAlpha(0.25f));
+                g.fillRect(x, y, cellW - 0.5f, cellH - 0.5f);
+            }
+        }
+
+        // ── Grey-white grid lines on the torn paper zone ──
+        // (slightly brighter lines over the grey-white cells)
+        g.setColour(holoGrey.withAlpha(0.10f));
+        for (float y = 0.0f; y < tearBaseY - 4.0f; y += cellH)
+            g.drawHorizontalLine(static_cast<int>(y), 0.0f, fW);
+        for (float x = 0.0f; x < fW; x += cellW)
+            g.drawVerticalLine(static_cast<int>(x), 0.0f, tearBaseY - 4.0f);
+
+        // Title text — light on dark holo zone, centered vertically in upper area
+        g.setColour(holoGrey);
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText(title, 0, 0, w, static_cast<int>(tearBaseY - 2.0f),
+                   juce::Justification::centred, true);
+    }
+
+    //==========================================================================
+    // Spectrogram title bar — black bg + blue/yellow meteor decorations
+    // Blue meteors (left): visible before processing
+    // Yellow meteors (right): visible after processing
+    //==========================================================================
+    void drawSpectroTitleBar(juce::Graphics& g, int w, int h, const juce::String& title)
+    {
+        static const juce::Colour spectroBg(0xFF0A0A18);
+        static const juce::Colour meteorBlue(0xFF4A9EFF);
+        static const juce::Colour meteorYellow(0xFFFFB840);
+
+        float fW = static_cast<float>(w);
+        float fH = static_cast<float>(h);
+
+        // Pure black background — matches spectrogram area below
+        g.setColour(spectroBg);
+        g.fillRect(0, 0, w, h);
+
+        // ── Left: blue meteors (pre-process state indicator) ──
+        if (!spectroProcessed)
+            drawMeteorGroup(g, 8.0f, fW * 0.38f, fH, meteorBlue, false);
+
+        // ── Right: yellow meteors (post-process state indicator) ──
+        if (spectroProcessed)
+            drawMeteorGroup(g, fW * 0.62f, fW - 8.0f, fH, meteorYellow, true);
+
+        // ── Title text: white, centered ──
+        g.setColour(juce::Colours::white);
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText(title, 0, 0, w, h, juce::Justification::centred, true);
+    }
+
+    /** Draw a group of meteor streaks in a horizontal region */
+    static void drawMeteorGroup(juce::Graphics& g, float left, float right,
+                                 float height, const juce::Colour& colour,
+                                 bool tailGoesLeft)
+    {
+        // 7 deterministic meteor positions (fractions within the region)
+        struct MeteorDef { float xFrac, yFrac, len, angleDeg, alpha; };
+        static const MeteorDef defs[] = {
+            { 0.12f, 0.28f, 24.0f, 8.0f,  0.75f },
+            { 0.32f, 0.58f, 17.0f, 5.0f,  0.45f },
+            { 0.52f, 0.20f, 30.0f, 12.0f, 0.65f },
+            { 0.78f, 0.68f, 19.0f, 7.0f,  0.38f },
+            { 0.22f, 0.76f, 22.0f, 10.0f, 0.55f },
+            { 0.68f, 0.40f, 15.0f, 4.0f,  0.30f },
+            { 0.45f, 0.84f, 26.0f, 9.0f,  0.50f },
+        };
+
+        float regionW = right - left;
+
+        for (const auto& m : defs)
+        {
+            float headX = left + m.xFrac * regionW;
+            float headY = m.yFrac * height;
+            float angleRad = m.angleDeg * (3.14159265f / 180.0f);
+
+            // Tail extends away from center; slight downward angle
+            float tailDirX = tailGoesLeft ? -std::cos(angleRad) : std::cos(angleRad);
+            float tailDirY = std::abs(std::sin(angleRad));
+
+            // Draw tail as fading segments (head → tail)
+            int segments = 6;
+            float segLen = m.len / static_cast<float>(segments);
+
+            for (int i = 0; i < segments; ++i)
+            {
+                float t0 = static_cast<float>(i) * segLen;
+                float t1 = static_cast<float>(i + 1) * segLen;
+                float fade = 1.0f - (static_cast<float>(i) / static_cast<float>(segments));
+
+                float x0 = headX + tailDirX * t0;
+                float y0 = headY + tailDirY * t0;
+                float x1 = headX + tailDirX * t1;
+                float y1 = headY + tailDirY * t1;
+
+                float thickness = 1.8f * fade + 0.3f;
+                g.setColour(colour.withAlpha(m.alpha * fade * fade));
+                g.drawLine(x0, y0, x1, y1, thickness);
+            }
+
+            // Bright head dot
+            g.setColour(colour.withAlpha(juce::jmin(m.alpha + 0.15f, 1.0f)));
+            g.fillEllipse(headX - 1.5f, headY - 1.5f, 3.0f, 3.0f);
+
+            // Soft glow around head
+            g.setColour(colour.withAlpha(m.alpha * 0.25f));
+            g.fillEllipse(headX - 3.5f, headY - 3.5f, 7.0f, 7.0f);
+        }
     }
 
     void drawResizableWindowBorder(juce::Graphics& g, int w, int h,
@@ -475,49 +770,52 @@ public:
                                     juce::ResizableWindow& /*window*/) override
     {
         juce::ignoreUnused(border);
-        g.setColour(ink);
-        g.drawRect(0, 0, w, h, 3);
+        // Thin subtle border instead of thick ink (blends with paper)
+        g.setColour(ink.withAlpha(0.25f));
+        g.drawRect(0, 0, w, h, 1);
     }
 
     juce::Button* createDocumentWindowButton(int buttonType) override
     {
         if (buttonType == juce::DocumentWindow::closeButton)
         {
-            // Custom painted close button — white border + white X on ink title bar
-            class BrutalCloseButton : public juce::Button
+            // Close button — ink X on paper, subtle until hover
+            class PaperCloseButton : public juce::Button
             {
             public:
-                BrutalCloseButton() : juce::Button("close") {}
+                PaperCloseButton() : juce::Button("close") {}
                 void paintButton(juce::Graphics& g, bool isOver, bool isDown) override
                 {
                     auto b = getLocalBounds().toFloat().reduced(1.0f);
+                    static const juce::Colour inkC(0xFF2A2A35);
+                    bool darkMode = GoodMeterLookAndFeel::holoTitleBar
+                                 || GoodMeterLookAndFeel::spectroTitleBar;
+                    auto fgCol = darkMode ? juce::Colour(0xFFD5D3DE) : inkC;
 
-                    // Background: transparent normally, white fill on hover/press
                     if (isDown)
                     {
-                        g.setColour(juce::Colour(0xFFE6335F)); // accentPink on press
+                        g.setColour(juce::Colour(0xFFE6335F));
                         g.fillRect(b);
                     }
                     else if (isOver)
                     {
-                        g.setColour(juce::Colours::white.withAlpha(0.2f));
+                        g.setColour(fgCol.withAlpha(0.1f));
                         g.fillRect(b);
+                        g.setColour(fgCol.withAlpha(0.5f));
+                        g.drawRect(b, 1.5f);
                     }
 
-                    // White border — always visible on ink title bar
-                    g.setColour(juce::Colours::white);
-                    g.drawRect(b, 2.0f);
-
-                    // White X mark — thick strokes
+                    // X mark
                     auto inner = b.reduced(5.0f);
-                    g.setColour(juce::Colours::white);
+                    float alpha = isOver || isDown ? 1.0f : (darkMode ? 0.6f : 0.4f);
+                    g.setColour(isDown ? juce::Colours::white : fgCol.withAlpha(alpha));
                     g.drawLine(inner.getX(), inner.getY(),
-                               inner.getRight(), inner.getBottom(), 2.5f);
+                               inner.getRight(), inner.getBottom(), 2.0f);
                     g.drawLine(inner.getRight(), inner.getY(),
-                               inner.getX(), inner.getBottom(), 2.5f);
+                               inner.getX(), inner.getBottom(), 2.0f);
                 }
             };
-            return new BrutalCloseButton();
+            return new PaperCloseButton();
         }
         return juce::LookAndFeel_V4::createDocumentWindowButton(buttonType);
     }
@@ -536,6 +834,29 @@ public:
                                     titleBarY + 4, btnSize, btnSize);
         if (minimiseButton != nullptr) minimiseButton->setVisible(false);
         if (maximiseButton != nullptr) maximiseButton->setVisible(false);
+    }
+
+    //==========================================================================
+    // Helper: drawBlueprintGrid — reusable paper grid lines (fine 16px + major 80px)
+    //==========================================================================
+    static void drawBlueprintGrid(juce::Graphics& g, juce::Rectangle<float> area)
+    {
+        float gridSmall = 16.0f;
+        float gridLarge = 80.0f;
+
+        // Fine grid
+        g.setColour(juce::Colour(0x0C000000));
+        for (float x = area.getX(); x < area.getRight(); x += gridSmall)
+            g.drawVerticalLine(static_cast<int>(x), area.getY(), area.getBottom());
+        for (float y = area.getY(); y < area.getBottom(); y += gridSmall)
+            g.drawHorizontalLine(static_cast<int>(y), area.getX(), area.getRight());
+
+        // Major grid
+        g.setColour(juce::Colour(0x18000000));
+        for (float x = area.getX(); x < area.getRight(); x += gridLarge)
+            g.drawVerticalLine(static_cast<int>(x), area.getY(), area.getBottom());
+        for (float y = area.getY(); y < area.getBottom(); y += gridLarge)
+            g.drawHorizontalLine(static_cast<int>(y), area.getX(), area.getRight());
     }
 
     //==========================================================================

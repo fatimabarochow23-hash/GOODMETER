@@ -34,18 +34,46 @@ A professional audio metering suite that operates in two modes:
 
 ---
 
+## Features
+
+### Audio Capture
+- **Microphone Input**: Hardware mic capture for real-time metering
+- **System Audio Capture**: CoreAudio Process Tap (macOS 14.2+ Sonoma) captures all system audio, excluding own process. Toggled via menu: Audio Source > System Audio
+
+### Recording
+- **Live Recording**: Lock-free WAV recorder — FIFO bridge from audio thread to background writer thread. 24-bit WAV format
+- **Retroactive Recording**: Always-on 65-second circular buffer. "Save Last 60s" exports the buffer to WAV on a background thread without interrupting audio
+- **Configurable Output Directory**: Set recording save location via menu (Recording > Set Recording Location)
+
+### Nono (Interactive Character)
+- **Offline Audio Analysis**: Double-click Nono to flip to back face, drop any audio file (WAV/MP3/FLAC/AIFF/OGG) for EBU R128 analysis: Peak dBFS, Momentary Max, Short-Term Max, Integrated LUFS. Multichannel support (up to 64ch) with center channel dialogue loudness
+- **Video Audio Extraction**: Extract audio from video files for analysis (via AVFoundation)
+- **Expressions**: Idle figure-8 floating, mouse-tracking pupils, smile orbit, shy (><), dizzy spirals, wink, recording grid face, rewind holographic face, amber extraction face
+- **Overload Explosion**: Peak >= 0 dBFS triggers glass shard explosion + liquid splatter animation
+
+### Card Management (Standalone)
+- **Orbit Animation**: Cards fly out from Nono in a circular orbit, then dock as a bookshelf
+- **Snap Groups**: Drag cards near each other to auto-snap into groups with BFS connected components
+- **Thanos Snap Stow**: Double-click Nono's test tube to stow all cards with particle disintegration VFX
+- **Recall**: Cards fly back to shelf positions with spring animation
+
+---
+
 ## Source File Map
 
 ```
 Source/
   PluginProcessor.h/.cpp       DSP engine (shared by plugin + standalone)
   PluginEditor.h/.cpp          Plugin UI (DAW mode, scrollable card layout)
-  StandaloneNonoEditor.h       Standalone UI (desktop pet, 2800 lines)
+  StandaloneNonoEditor.h       Standalone UI (desktop pet, ~4100 lines)
   StandaloneApp.cpp            Custom JUCEApplication + MenuBarModel
   GoodMeterLookAndFeel.h       Shared colors, fonts, drawStatusDot
-  HoloNonoComponent.h          Animated Nono character (holographic pet)
+  HoloNonoComponent.h          Animated Nono character (~3000 lines)
   MeterCardComponent.h         Collapsible card (header + content + shadow)
   AudioRecorder.h              Lock-free WAV recorder (FIFO + background thread)
+  AudioHistoryBuffer.h         Retroactive 65s circular buffer (lock-free)
+  SystemAudioCapture.h/.mm     CoreAudio Process Tap system audio capture
+  VideoAudioExtractor.h/.mm    AVFoundation video-to-audio extraction
   LevelsMeterComponent.h       LUFS/Peak/RMS/LRA meter
   VUMeterComponent.h           Classic analog VU needle meter
   Band3Component.h             3-band frequency meter
@@ -67,7 +95,7 @@ Assets/
 
 ### Prerequisites
 
-- macOS 15.x (ARM64 / Apple Silicon)
+- macOS 14.2+ (ARM64 / Apple Silicon)
 - Xcode 16.3+
 - JUCE 8 (with Projucer)
 
@@ -116,12 +144,10 @@ This project includes comprehensive documentation designed for AI code assistant
 |----------|---------|
 | `ARCHITECTURE.md` | Complete technical map: file structure, DSP pipeline, standalone architecture, state machine, build system |
 | `DEVELOPMENT_HISTORY.md` | Chronological record: 45 commits, bugs, fixes, battle plan vs reality, JUCE lessons |
-| `LESSONS_LEARNED.md` | Deep dive: 6-round drag-freeze debugging saga, paint() path rules, performance emergency |
 
 **Reading order for a new AI assistant:**
 1. `ARCHITECTURE.md` - understand the dual-mode architecture
 2. `DEVELOPMENT_HISTORY.md` - understand history and pitfalls
-3. `LESSONS_LEARNED.md` - the performance debugging saga
 
 ---
 
@@ -132,25 +158,18 @@ This project includes comprehensive documentation designed for AI code assistant
 - **No drawText in paint()**: JUCE 8 HarfBuzz creates CTFont every call. All text pre-rendered to offline Images
 - **Custom standalone app**: `JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1` enables our StandaloneApp.cpp
 - **Click-through**: macOS `[NSWindow setIgnoresMouseEvents:]` toggled at 60Hz via ObjC runtime bridge
-- **Microphone only**: Currently captures hardware mic input. System audio capture (ScreenCaptureKit) is a V2.0 feature
+- **System audio via CoreAudio Process Tap**: `CATapDescription` + aggregate device + IOProc callback. Requires macOS 14.2+ and `NSAudioCaptureUsageDescription` entitlement
+- **Lock-free audio pipeline**: All audio thread paths are allocation-free, mutex-free. FIFO bridges to background threads for I/O
 
 ---
 
 ## Known Limitations
 
-1. Standalone captures microphone only (no system audio capture yet)
-2. Recording saves to ~/Desktop only (no configurable output directory)
-3. Recording format is WAV 16-bit only
-4. macOS only (no Windows support yet)
-
----
-
-## Related Projects
-
-- **SPLENTA**: Low-frequency enhancement plugin
-- **SOLARIS-8**: Organismic synthesizer (LYRA-8 inspired)
+1. macOS only (no Windows/Linux support)
+2. System audio capture requires macOS 14.2+ (Sonoma)
+3. Standalone mode only — plugin mode does not support system audio capture or recording
 
 ---
 
 Copyright 2026 Solaris Audio. All rights reserved.
-**Last Updated**: 2026-03-07
+**Last Updated**: 2026-03-11

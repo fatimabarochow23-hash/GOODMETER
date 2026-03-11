@@ -565,8 +565,9 @@ public:
     int getDesiredHeight() const
     {
         const int hh = getActiveHeaderHeight();
+        const int shadow = static_cast<int>(maxShadowOffset);
         if (!isExpanded)
-            return hh;
+            return hh + shadow;
 
         int contentHeight = 0;
         if (contentComponent != nullptr)
@@ -591,7 +592,7 @@ public:
             contentHeight += pad * 2;
         }
 
-        return hh + contentHeight;
+        return hh + contentHeight + shadow;
     }
 
     //==========================================================================

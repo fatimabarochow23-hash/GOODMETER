@@ -36,25 +36,31 @@ public:
 
     bool push(const T* data, size_t numSamples)
     {
-        const auto currentWrite = writeIndex.load(std::memory_order_acquire);
+        // Writer owns writeIndex → relaxed load is sufficient
+        const auto currentWrite = writeIndex.load(std::memory_order_relaxed);
         const auto nextWrite = (currentWrite + 1) % Size;
 
+        // Must acquire readIndex to see consumer's latest progress
         if (nextWrite == readIndex.load(std::memory_order_acquire))
             return false; // Buffer full
 
         std::copy(data, data + numSamples, buffer[currentWrite].data());
+        // Release: ensure buffer[] writes are visible before index advances
         writeIndex.store(nextWrite, std::memory_order_release);
         return true;
     }
 
     bool pop(T* dest, size_t numSamples)
     {
-        const auto currentRead = readIndex.load(std::memory_order_acquire);
+        // Reader owns readIndex → relaxed load is sufficient
+        const auto currentRead = readIndex.load(std::memory_order_relaxed);
 
+        // Must acquire writeIndex to see producer's latest data
         if (currentRead == writeIndex.load(std::memory_order_acquire))
             return false; // Buffer empty
 
         std::copy(buffer[currentRead].begin(), buffer[currentRead].begin() + numSamples, dest);
+        // Release: ensure buffer[] reads complete before index advances
         readIndex.store((currentRead + 1) % Size, std::memory_order_release);
         return true;
     }
@@ -203,7 +209,8 @@ public:
     AudioHistoryBuffer audioHistoryBuffer;
 
     // Export last N seconds of audio to WAV file (called from GUI)
-    void exportRetrospectiveRecording(int secondsToSave = 60);
+    void exportRetrospectiveRecording(int secondsToSave = 60,
+                                      const juce::File& exportDir = {});
 
     // FFT Data (lock-free FIFOs — separate channels for Spectrum and Spectrogram)
     LockFreeFIFO<float, 256> fftFifoL;            // Spectrum analyzer
@@ -288,9 +295,11 @@ private:
     int stLufsBufferIndex = 0;
 
     // Integrated LUFS gating (BS.1770-4 with absolute + relative gating)
-    std::vector<float> integratedBlockLufs;    // All 400ms block LUFS values
-    std::mutex integratedMutex;                // Protect from timer thread reads
-    int integratedBlockSampleCount = 0;        // Counter for 400ms blocks
+    // Lock-free: all data stays on audio thread. Only lufsIntegrated atomic is read by GUI.
+    static constexpr int integratedBlockMaxCount = 8192;   // ~55 min at 400ms blocks
+    float integratedBlockStorage[integratedBlockMaxCount];  // Fixed-size ring (no allocation)
+    int integratedBlockCount = 0;                          // Number of blocks stored
+    int integratedBlockSampleCount = 0;                    // Counter for 400ms blocks
     static constexpr int integratedBlockSamples400ms = 19200; // at 48kHz
 
     // LRA history pool (Short-Term LUFS samples, ~100ms intervals, up to 5 min)

@@ -135,8 +135,9 @@ static bool performWavExtraction(const juce::String& inputPathStr,
                     break;
 
                 CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
-                if (!blockBuffer)
+                if (blockBuffer == nullptr)
                 {
+                    // No data buffer — video-only frame or empty sample; skip safely
                     CFRelease(sampleBuffer);
                     continue;
                 }
@@ -146,7 +147,14 @@ static bool performWavExtraction(const juce::String& inputPathStr,
                 OSStatus status = CMBlockBufferGetDataPointer(
                     blockBuffer, 0, nullptr, &totalLength, &dataPointer);
 
-                if (status != kCMBlockBufferNoErr || !dataPointer || totalLength == 0)
+                if (status != kCMBlockBufferNoErr || dataPointer == nullptr || totalLength == 0)
+                {
+                    CFRelease(sampleBuffer);
+                    continue;
+                }
+
+                // Validate totalLength is aligned to float frames
+                if (totalLength < sizeof(float) * static_cast<size_t>(numChannels))
                 {
                     CFRelease(sampleBuffer);
                     continue;
@@ -208,7 +216,10 @@ void VideoAudioExtractor::extractAudio(const juce::File& videoFile,
     if (outputFile.existsAsFile())
         outputFile.deleteFile();
 
-    // Capture paths and callback for the background block
+    // Capture paths and callback for the background block.
+    // The callback is wrapped in shared_ptr for ObjC++ block capture safety.
+    // The caller is responsible for ensuring their captured state is valid
+    // (e.g. using Component::SafePointer in the lambda passed as onComplete).
     juce::String inputPath  = videoFile.getFullPathName();
     juce::String outputPath = outputFile.getFullPathName();
     auto callback = std::make_shared<std::function<void(bool)>>(std::move(onComplete));
@@ -217,12 +228,15 @@ void VideoAudioExtractor::extractAudio(const juce::File& videoFile,
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         bool success = performWavExtraction(inputPath, outputPath);
 
-        // Callback on the JUCE message thread
+        // Callback on the JUCE message thread — guard against post-shutdown callAsync
         auto cb = callback;
-        juce::MessageManager::callAsync([cb, success]()
+        if (juce::MessageManager::getInstanceWithoutCreating() != nullptr)
         {
-            if (*cb) (*cb)(success);
-        });
+            juce::MessageManager::callAsync([cb, success]()
+            {
+                if (*cb) (*cb)(success);
+            });
+        }
     });
 }
 

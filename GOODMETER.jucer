@@ -18,11 +18,25 @@
               vstNumMidiOutputs="16">
   <MAINGROUP id="Kpwd8d" name="GOODMETER">
     <FILE id="NonoIcn1" name="nono_icon.png" compile="0" resource="1" file="nono_icon.png"/>
-    <FILE id="BtnSettings1" name="btn_settings.png" compile="0" resource="1" file="Assets/btn_settings.png"/>
-    <FILE id="BtnRecord1" name="btn_record.png" compile="0" resource="1" file="Assets/btn_record.png"/>
+    <FILE id="BlueprintBg1" name="blueprint_paper_bg.png" compile="0" resource="1"
+          file="blueprint_paper_bg.png"/>
+    <FILE id="MainNonoSprite1" name="main_nono_sprite.PNG" compile="0"
+          resource="1" file="main_nono_sprite.PNG"/>
+    <FILE id="No2Nono1" name="no2nono.PNG" compile="0" resource="1"
+          file="no2nono.PNG"/>
+    <FILE id="No2Beijing1" name="no2beijing.png" compile="0" resource="1"
+          file="no2beijing.png"/>
+    <FILE id="AnfangIcon1" name="anfang.PNG" compile="0" resource="1"
+          file="anfang.PNG"/>
+    <FILE id="BtnSettings1" name="btn_settings.png" compile="0" resource="1"
+          file="Assets/btn_settings.png"/>
+    <FILE id="BtnRecord1" name="btn_record.png" compile="0" resource="1"
+          file="Assets/btn_record.png"/>
     <FILE id="BtnStow1" name="btn_stow.png" compile="0" resource="1" file="Assets/btn_stow.png"/>
-    <FILE id="BtnRewind1" name="rewind_skill_icon.png" compile="0" resource="1" file="rewind_skill_icon.png"/>
-    <FILE id="BtnVideoExt1" name="video_extract_icon.png" compile="0" resource="1" file="video_extract_icon.png"/>
+    <FILE id="BtnRewind1" name="rewind_skill_icon.png" compile="0" resource="1"
+          file="rewind_skill_icon.png"/>
+    <FILE id="BtnVideoExt1" name="video_extract_icon.png" compile="0" resource="1"
+          file="video_extract_icon.png"/>
     <GROUP id="{BAB75B8F-DC22-7029-A0C0-25796381529F}" name="Source">
       <FILE id="PlugProc1" name="PluginProcessor.cpp" compile="1" resource="0"
             file="Source/PluginProcessor.cpp"/>
@@ -52,6 +66,18 @@
             file="Source/VideoAudioExtractor.h"/>
       <FILE id="VidExt2" name="VideoAudioExtractor.mm" compile="1" resource="0"
             file="Source/VideoAudioExtractor.mm"/>
+      <FILE id="SkillTree1" name="SkillTreeComponent.h" compile="0" resource="0"
+            file="Source/SkillTreeComponent.h"/>
+      <FILE id="AudioLab1" name="AudioLabComponent.h" compile="0" resource="0"
+            file="Source/AudioLabComponent.h"/>
+      <FILE id="RoomTone1" name="RoomToneExtractor.h" compile="0" resource="0"
+            file="Source/RoomToneExtractor.h"/>
+      <FILE id="DeepFilt1" name="DeepFilterProcessor.h" compile="0" resource="0"
+            file="Source/DeepFilterProcessor.h"/>
+      <FILE id="AudRec1" name="AudioRecorder.h" compile="0" resource="0"
+            file="Source/AudioRecorder.h"/>
+      <FILE id="HoloNono1" name="HoloNonoComponent.h" compile="0" resource="0"
+            file="Source/HoloNonoComponent.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>
@@ -77,10 +103,11 @@
                JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP="1"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" developmentTeamID="33NJKA4738" extraDefs="JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1"
-               bigIcon="NonoIcn1" smallIcon="NonoIcn1"
-               microphonePermissionNeeded="1"
+               bigIcon="NonoIcn1" smallIcon="NonoIcn1" microphonePermissionNeeded="1"
                microphonePermissionsText="GOODMETER needs microphone access to analyze audio in real-time."
-               extraFrameworks="CoreMedia,CoreAudio,AVFoundation"
+               extraFrameworks="CoreMedia,CoreAudio,AVFoundation,Accelerate"
+               extraLinkerFlags="-L../../ThirdParty/onnxruntime-osx-arm64-1.20.1/lib -lonnxruntime -rpath @executable_path/../Frameworks"
+               headerPath="../../ThirdParty/onnxruntime-osx-arm64-1.20.1/include"
                customPList="&lt;plist&gt;&lt;dict&gt;&lt;key&gt;NSAudioCaptureUsageDescription&lt;/key&gt;&lt;string&gt;GOODMETER needs System Audio Recording permission to capture and analyze system audio in real-time.&lt;/string&gt;&lt;/dict&gt;&lt;/plist&gt;">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="GOODMETER" macOSDeploymentTarget="14.2"/>

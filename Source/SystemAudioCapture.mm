@@ -25,6 +25,8 @@
 #import <CoreAudio/AudioHardwareTapping.h>
 #import <CoreAudio/CATapDescription.h>
 
+#include <mutex>
+
 //==============================================================================
 // C++ PIMPL Implementation — CoreAudio Process Tap
 //==============================================================================
@@ -45,6 +47,9 @@ struct SystemAudioCapture::Impl
     // State
     std::atomic<bool> active { false };
     std::atomic<double> sampleRate { 48000.0 };
+
+    // Serializes start/stop to prevent concurrent CoreAudio state transitions
+    std::mutex startStopMutex;
 
     Impl()
     {
@@ -151,6 +156,8 @@ struct SystemAudioCapture::Impl
     //==========================================================================
     void startCaptureAsync(double expectedSampleRate)
     {
+        std::lock_guard<std::mutex> lock(startStopMutex);
+
         if (active.load(std::memory_order_relaxed))
             return;
 
@@ -315,6 +322,8 @@ struct SystemAudioCapture::Impl
     //==========================================================================
     void stopCapture()
     {
+        std::lock_guard<std::mutex> lock(startStopMutex);
+
         active.store(false, std::memory_order_relaxed);
 
         if (ioProcID != nullptr && aggregateDeviceID != kAudioObjectUnknown)

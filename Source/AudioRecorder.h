@@ -84,16 +84,29 @@ public:
      *  After this returns, the file is immediately visible in Finder / file listings. */
     void stop()
     {
+        if (!isRecording.load() && !isThreadRunning())
+        {
+            // Already stopped — just clean up writer if lingering
+            if (writer != nullptr)
+            {
+                writer->flush();
+                writer.reset();
+            }
+            return;
+        }
+
+        // Step 1: Stop audio thread from pushing new samples into the FIFO.
         isRecording.store(false);
 
-        // Wait for writer thread to finish
+        // Step 2: Signal the writer thread to exit. It will do a final drainFifo()
+        // inside run() after its loop exits, ensuring all FIFO data reaches disk.
         if (isThreadRunning())
-            stopThread(3000);
+            stopThread(5000);
 
-        // Flush remaining samples and release writer (closes file handle)
+        // Step 3: All data has been drained by the thread's final pass.
+        // Now flush and close the file handle (safe — thread is dead).
         if (writer != nullptr)
         {
-            drainFifo();
             writer->flush();   // Force WAV header + data to OS buffer
             writer.reset();    // Close file handle (writes final WAV header chunk sizes)
         }
@@ -193,8 +206,15 @@ private:
             Thread::sleep(5);  // ~200Hz polling, plenty fast for disk I/O
         }
 
-        // Final drain after stop
-        drainFifo();
+        // Final drain: keep draining until FIFO is completely empty.
+        // Audio thread may have pushed a few last samples between isRecording=false
+        // and this point. Multiple passes ensure nothing is left behind.
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            drainFifo();
+            if (fifo.getNumReady() == 0) break;
+            Thread::sleep(1);  // brief yield to let any in-flight push complete
+        }
     }
 
     /** Drain available samples from FIFO and write to WAV */

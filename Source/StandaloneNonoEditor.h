@@ -34,6 +34,8 @@
 #include "SpectrogramComponent.h"
 #include "PsrMeterComponent.h"
 #include "VideoAudioExtractor.h"
+#include "SkillTreeComponent.h"
+#include "AudioLabComponent.h"
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 
 //==============================================================================
@@ -213,6 +215,9 @@ public:
         setInterceptsMouseClicks(false, true);
         setPaintingIsUnclipped(true);  // Allow glow/shadow to overflow component bounds
 
+        // Load skill loadout from settings
+        equippedSkills = SkillPersistence::loadLoadout();
+
         startTimerHz(60);
     }
 
@@ -332,6 +337,7 @@ public:
     void resized() override
     {
         if (holoNono == nullptr) return;
+        if (isWindowResizing) return;  // suppress intermediate layout during atomic window ops
 
         if (phase == AnimPhase::compact)
         {
@@ -666,8 +672,8 @@ private:
     CollisionWarning collisionWarning;
 
     // Snap constants
-    static constexpr int snapThreshold = 14;         // pixels for snap detection
-    static constexpr int snapOverlapMin = 10;         // perpendicular overlap minimum
+    static constexpr int snapThreshold = 8;          // pixels for snap detection (edge gap)
+    static constexpr int snapOverlapMin = 20;         // perpendicular overlap minimum
 
     //==========================================================================
     // Hover button system (2 rows: Olympic-rings offset layout)
@@ -701,6 +707,7 @@ private:
     juce::Image btnStowImg;
     juce::Image btnRewindImg;
     juce::Image btnVideoExtractImg;
+    juce::Image btnAudioLabImg;
     bool hoverBtnIconsLoaded = false;
 
     // Recording state (for tape button pulse)
@@ -708,6 +715,31 @@ private:
 
     // Video extraction state
     std::unique_ptr<juce::FileChooser> videoFileChooser;
+
+    // Skill loadout (configurable N-choose-5 hover button system)
+    std::array<SkillID, 5> equippedSkills = getDefaultLoadout();
+
+    /** Get the icon image for a given skill */
+    const juce::Image& getSkillIcon(SkillID skill)
+    {
+        loadHoverButtonIcons();
+        switch (skill)
+        {
+            case SkillID::Gear:         return btnSettingsImg;
+            case SkillID::Record:       return btnRecordImg;
+            case SkillID::Stow:         return btnStowImg;
+            case SkillID::Rewind:       return btnRewindImg;
+            case SkillID::VideoExtract: return btnVideoExtractImg;
+            case SkillID::AudioLab:     return btnAudioLabImg;  // placeholder until art
+            default:                    return btnSettingsImg;
+        }
+    }
+
+    /** Get glow colour for a given skill */
+    static juce::Colour getSkillGlowColour(SkillID skill)
+    {
+        return getSkillInfo(skill).glowColour;
+    }
 
     //==========================================================================
     // Thanos Snap Stow system (Phase 3)
@@ -745,6 +777,10 @@ private:
 
     // System animation flag: when true, onHeightChanged skips collision/relayout
     bool isSystemStowing = false;
+
+    // Window geometry guard: when true, resized() is suppressed to prevent
+    // intermediate layout during non-atomic window position+size changes.
+    bool isWindowResizing = false;
 
     //==========================================================================
     // Easing functions
@@ -784,6 +820,8 @@ private:
             BinaryData::rewind_skill_icon_png, BinaryData::rewind_skill_icon_pngSize);
         btnVideoExtractImg = juce::ImageCache::getFromMemory(
             BinaryData::video_extract_icon_png, BinaryData::video_extract_icon_pngSize);
+        btnAudioLabImg = juce::ImageCache::getFromMemory(
+            BinaryData::anfang_PNG, BinaryData::anfang_PNGSize);
         hoverBtnIconsLoaded = true;
     }
 
@@ -853,16 +891,13 @@ private:
 
         auto [cx, cy, bodyR] = getNonoCenterAndRadius();
 
-        const juce::Image* icons[numHoverBtns] = { &btnSettingsImg, &btnRecordImg, &btnStowImg, &btnRewindImg, &btnVideoExtractImg };
-
-        // Accent colours per button for glow effects
-        const juce::Colour glowColours[numHoverBtns] = {
-            GoodMeterLookAndFeel::accentCyan,     // gear — cyan
-            GoodMeterLookAndFeel::accentPink,     // tape — pink
-            GoodMeterLookAndFeel::accentPurple,   // shard — purple
-            juce::Colour(0xFF00E5FF),             // rewind — holographic cyan
-            juce::Colour(0xFFD2911E)              // video extract — amber
-        };
+        const juce::Image* icons[numHoverBtns];
+        juce::Colour glowColours[numHoverBtns];
+        for (int i = 0; i < numHoverBtns; ++i)
+        {
+            icons[i] = &getSkillIcon(equippedSkills[i]);
+            glowColours[i] = getSkillGlowColour(equippedSkills[i]);
+        }
 
         for (int i = 0; i < numHoverBtns; ++i)
         {
@@ -893,7 +928,7 @@ private:
 
             // Recording pulse for tape button
             float pulseAlpha = 1.0f;
-            if (i == 1 && isRecording)
+            if (equippedSkills[i] == SkillID::Record && isRecording)
             {
                 float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
                 pulseAlpha = 0.6f + 0.4f * std::sin(ms * 0.012f); // ~2Hz pulse
@@ -901,13 +936,13 @@ private:
 
             // ── Glow backing layer (replaces opaque circle background) ──
             // Radial gradient glow behind the icon — visible on hover or recording pulse
-            if (isHot || (i == 1 && isRecording))
+            if (isHot || (equippedSkills[i] == SkillID::Record && isRecording))
             {
                 float glowR = sz * 0.75f;
                 float gcx = drawX + sz * 0.5f;
                 float gcy = drawY + sz * 0.5f;
 
-                juce::Colour glowCol = (i == 1 && isRecording && !isHot)
+                juce::Colour glowCol = (equippedSkills[i] == SkillID::Record && isRecording && !isHot)
                     ? juce::Colour(0xFFE6335F)   // red glow for recording
                     : glowColours[i];
 
@@ -924,35 +959,35 @@ private:
             if (icons[i] != nullptr && icons[i]->isValid())
             {
                 float iconAlpha = alpha * (isHot ? 1.0f : 0.85f);
-                if (i == 1 && isRecording) iconAlpha *= pulseAlpha;
+                if (equippedSkills[i] == SkillID::Record && isRecording) iconAlpha *= pulseAlpha;
 
                 float iconCX = drawX + sz * 0.5f;
                 float iconCY = drawY + sz * 0.5f;
 
                 // Rewind button: breathing cyan RadialGradient behind icon
-                if (i == 3)
+                if (equippedSkills[i] == SkillID::Rewind)
                 {
                     float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
                     float breathe = 0.12f + 0.08f * std::sin(ms * 0.003f);
                     float glowR = sz * 0.65f;
 
                     juce::ColourGradient breathGlow(
-                        glowColours[3].withAlpha(breathe * alpha), iconCX, iconCY,
-                        glowColours[3].withAlpha(0.0f), iconCX + glowR, iconCY, true);
+                        glowColours[i].withAlpha(breathe * alpha), iconCX, iconCY,
+                        glowColours[i].withAlpha(0.0f), iconCX + glowR, iconCY, true);
                     g.setGradientFill(breathGlow);
                     g.fillEllipse(iconCX - glowR, iconCY - glowR, glowR * 2.0f, glowR * 2.0f);
                 }
 
                 // Video extract button: breathing amber RadialGradient behind icon
-                if (i == 4)
+                if (equippedSkills[i] == SkillID::VideoExtract)
                 {
                     float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
                     float breathe = 0.10f + 0.06f * std::sin(ms * 0.004f);
                     float glowR = sz * 0.65f;
 
                     juce::ColourGradient breathGlow(
-                        glowColours[4].withAlpha(breathe * alpha), iconCX, iconCY,
-                        glowColours[4].withAlpha(0.0f), iconCX + glowR, iconCY, true);
+                        glowColours[i].withAlpha(breathe * alpha), iconCX, iconCY,
+                        glowColours[i].withAlpha(0.0f), iconCX + glowR, iconCY, true);
                     g.setGradientFill(breathGlow);
                     g.fillEllipse(iconCX - glowR, iconCY - glowR, glowR * 2.0f, glowR * 2.0f);
                 }
@@ -1051,27 +1086,51 @@ private:
         }
     }
 
-    /** Handle click on hover button */
+    /** Handle click on hover button — dispatches via equipped skill */
     void handleHoverButtonClick(int buttonIndex)
     {
-        switch (buttonIndex)
+        if (buttonIndex < 0 || buttonIndex >= numHoverBtns) return;
+        handleSkillClick(equippedSkills[buttonIndex]);
+    }
+
+    /** Central skill click dispatcher */
+    void handleSkillClick(SkillID skill)
+    {
+        switch (skill)
         {
-            case 0: // Gear → Settings menu
-                showSettingsMenu();
-                break;
-            case 1: // Tape → Toggle recording
-                handleTapeButtonClick();
-                break;
-            case 2: // Shard → Thanos snap stow
-                handleShardButtonClick();
-                break;
-            case 3: // Rewind → Export last 60s of audio
-                handleRewindButtonClick();
-                break;
-            case 4: // Video extract → Extract audio from video file
-                handleVideoExtractClick();
-                break;
+            case SkillID::Gear:         showSettingsMenu();          break;
+            case SkillID::Record:       handleTapeButtonClick();     break;
+            case SkillID::Stow:         handleShardButtonClick();    break;
+            case SkillID::Rewind:       handleRewindButtonClick();   break;
+            case SkillID::VideoExtract: handleVideoExtractClick();   break;
+            case SkillID::AudioLab:     handleAudioLabClick();       break;
+            default: break;
         }
+    }
+
+    /** Audio Lab — launch processing window */
+    void handleAudioLabClick()
+    {
+        hoverBtnState = HoverButtonState::retracting;
+        hoverBtnProgress = 1.0f;
+        hoverBtnHotIndex = -1;
+
+        auto* content = new AudioLabContent(getRecordingDirectory());
+        content->setSize(680, 520);
+        content->setLookAndFeel(&customLookAndFeel);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(content);
+        opts.dialogTitle = "AUDIO LAB";
+        opts.dialogBackgroundColour = GoodMeterLookAndFeel::bgPaper;
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = false;
+        opts.resizable = false;
+        opts.componentToCentreAround = this;
+
+        auto* dialog = opts.launchAsync();
+        if (dialog != nullptr)
+            dialog->setLookAndFeel(&customLookAndFeel);
     }
 
     // Forward declarations for button click handlers (implemented in later phases)
@@ -1118,8 +1177,8 @@ private:
     //==========================================================================
     void handleRewindButtonClick()
     {
-        // 1. Trigger export of last 60 seconds
-        audioProcessor.exportRetrospectiveRecording(60);
+        // 1. Trigger export of last 60 seconds to user's configured directory
+        audioProcessor.exportRetrospectiveRecording(60, getRecordingDirectory());
 
         // 2. Trigger Nono time-rewind holographic face animation (1 second)
         if (holoNono != nullptr)
@@ -1133,13 +1192,13 @@ private:
         hoverBtnHotIndex = -1;
 
         // 4. Reveal the export folder after a short delay (give WAV writer time to start)
-        juce::Timer::callAfterDelay(500, [this]()
+        auto revealDir = getRecordingDirectory();
+        auto safeThis = juce::Component::SafePointer<StandaloneNonoEditor>(this);
+        juce::Timer::callAfterDelay(500, [safeThis, revealDir]()
         {
-            auto dir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-                           .getChildFile("Downloads")
-                           .getChildFile("GOODMETER_Records");
-            if (dir.isDirectory())
-                dir.revealToUser();
+            if (safeThis == nullptr) return;  // editor was destroyed before timer fired
+            if (revealDir.isDirectory())
+                revealDir.revealToUser();
         });
     }
 
@@ -1170,10 +1229,8 @@ private:
                 if (holoNono != nullptr)
                     holoNono->triggerExtractExpression();
 
-                // Build output path: ~/Downloads/GOODMETER_Records/<videoName>_audio.m4a
-                auto outputDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-                                     .getChildFile("Downloads")
-                                     .getChildFile("GOODMETER_Records");
+                // Build output path: <recordingDirectory>/<videoName>_audio.wav
+                auto outputDir = getRecordingDirectory();
                 outputDir.createDirectory();
 
                 auto outputName = "Extract_" + result.getFileNameWithoutExtension() + ".wav";
@@ -1275,27 +1332,33 @@ private:
                 }
             }
             // Clean up groups: remove shattered members, delete empty/singleton groups
-            for (int g = static_cast<int>(snapGroups.size()) - 1; g >= 0; --g)
+            for (auto& group : snapGroups)
             {
-                auto& members = snapGroups[static_cast<size_t>(g)].members;
-                members.erase(
-                    std::remove_if(members.begin(), members.end(), [this](int idx)
+                group.members.erase(
+                    std::remove_if(group.members.begin(), group.members.end(), [this](int idx)
                     {
                         auto* mc = getCard(idx);
                         return mc == nullptr || !mc->getExpanded();
                     }),
-                    members.end());
-                if (members.size() <= 1)
+                    group.members.end());
+            }
+            // Dissolve singleton/empty groups, then erase-remove them in one pass
+            for (auto& group : snapGroups)
+            {
+                if (group.members.size() <= 1)
                 {
-                    for (int idx : members)
+                    for (int idx : group.members)
                     {
                         cardFloatState[idx].snapGroupID = -1;
                         auto* mc = getCard(idx);
                         if (mc) mc->showDetachButton = false;
                     }
-                    snapGroups.erase(snapGroups.begin() + g);
                 }
             }
+            snapGroups.erase(
+                std::remove_if(snapGroups.begin(), snapGroups.end(),
+                    [](const SnapGroup& g) { return g.members.size() <= 1; }),
+                snapGroups.end());
 
             isSystemStowing = false;
 
@@ -1496,11 +1559,7 @@ private:
         int oldW = topLevel->getWidth();
         int oldH = topLevel->getHeight();
 
-        // Expand window: add overflow on all 4 sides
-        topLevel->setTopLeftPosition(pos.x - shatterOverflow, pos.y - shatterOverflow);
-        topLevel->setSize(oldW + shatterOverflow * 2, oldH + shatterOverflow * 2);
-
-        // Shift all children by +overflow so they stay in the same screen position
+        // Shift all children by +overflow FIRST (before window resize triggers repaint)
         for (int i = getNumChildComponents() - 1; i >= 0; --i)
         {
             auto* child = getChildComponent(i);
@@ -1517,6 +1576,12 @@ private:
                 cardShatterStates[i].originY += static_cast<float>(shatterOverflow);
             }
         }
+
+        // Atomic window geometry: suppress resized() to prevent re-layout
+        isWindowResizing = true;
+        topLevel->setBounds(pos.x - shatterOverflow, pos.y - shatterOverflow,
+                            oldW + shatterOverflow * 2, oldH + shatterOverflow * 2);
+        isWindowResizing = false;
     }
 
     void shrinkWindowAfterShatter()
@@ -1532,7 +1597,7 @@ private:
         int oldW = topLevel->getWidth();
         int oldH = topLevel->getHeight();
 
-        // Shift children back
+        // Shift children back FIRST (before window resize triggers repaint)
         for (int i = getNumChildComponents() - 1; i >= 0; --i)
         {
             auto* child = getChildComponent(i);
@@ -1540,9 +1605,11 @@ private:
             child->setBounds(cb.translated(-shatterOverflow, -shatterOverflow));
         }
 
-        // Shrink window
-        topLevel->setTopLeftPosition(pos.x + shatterOverflow, pos.y + shatterOverflow);
-        topLevel->setSize(oldW - shatterOverflow * 2, oldH - shatterOverflow * 2);
+        // Atomic window geometry: suppress resized() to prevent re-layout
+        isWindowResizing = true;
+        topLevel->setBounds(pos.x + shatterOverflow, pos.y + shatterOverflow,
+                            oldW - shatterOverflow * 2, oldH - shatterOverflow * 2);
+        isWindowResizing = false;
     }
 
     /** Tick shatter physics — called from timerCallback */
@@ -1818,9 +1885,9 @@ private:
         menu.addSeparator();
 #endif
 
-        // ── Section 3: Audio Settings Dialog ──
+        // ── Section 3: More Settings Dialog (Audio + Skills tabs) ──
         const int audioSettingsID = 900;
-        menu.addItem(audioSettingsID, "Audio Settings...");
+        menu.addItem(audioSettingsID, "More Settings...");
 
         menu.addSeparator();
 
@@ -1875,33 +1942,37 @@ private:
 
                 if (result == 900)
                 {
-                    // Show Audio Settings — INPUT ONLY (output channels = 0,0)
-                    if (auto* devMgr = getDeviceManager())
-                    {
-                        auto* dialogContent = new juce::AudioDeviceSelectorComponent(
-                            *devMgr,
-                            0, 256,   // minInputChannels, maxInputChannels
-                            0, 0,     // minOutputChannels, maxOutputChannels = 0 → hides Output
-                            true,     // showMidiInputOptions
-                            false,    // showMidiOutputSelector
-                            true,     // showChannelsAsStereoPairs
-                            false);   // hideAdvancedOptions
-                        dialogContent->setSize(450, 300);
-                        dialogContent->setLookAndFeel(&customLookAndFeel);
+                    // Show More Settings — tabbed dialog (Audio + Skills)
+                    auto* dialogContent = new MoreSettingsContent(
+                        getDeviceManager(), equippedSkills, &customLookAndFeel);
+                    dialogContent->setSize(520, 550);
+                    dialogContent->setLookAndFeel(&customLookAndFeel);
 
-                        juce::DialogWindow::LaunchOptions opts;
-                        opts.content.setOwned(dialogContent);
-                        opts.dialogTitle = "AUDIO SETTINGS";
-                        opts.dialogBackgroundColour = GoodMeterLookAndFeel::bgPanel;
-                        opts.escapeKeyTriggersCloseButton = true;
-                        opts.useNativeTitleBar = false;  // use JUCE title bar so LookAndFeel applies
-                        opts.resizable = false;
-                        opts.componentToCentreAround = this;
+                    // Wire skill tree change callback
+                    auto safeThis = juce::Component::SafePointer<StandaloneNonoEditor>(this);
+                    dialogContent->getSkillTree()->onLoadoutChanged =
+                        [safeThis](const std::array<SkillID, 5>& newLoadout)
+                        {
+                            if (auto* self = safeThis.getComponent())
+                            {
+                                self->equippedSkills = newLoadout;
+                                SkillPersistence::saveLoadout(newLoadout);
+                                self->repaint();
+                            }
+                        };
 
-                        auto* dialog = opts.launchAsync();
-                        if (dialog != nullptr)
-                            dialog->setLookAndFeel(&customLookAndFeel);
-                    }
+                    juce::DialogWindow::LaunchOptions opts;
+                    opts.content.setOwned(dialogContent);
+                    opts.dialogTitle = "GOODMETER SETTINGS";
+                    opts.dialogBackgroundColour = GoodMeterLookAndFeel::bgPaper;
+                    opts.escapeKeyTriggersCloseButton = true;
+                    opts.useNativeTitleBar = false;
+                    opts.resizable = false;
+                    opts.componentToCentreAround = this;
+
+                    auto* dialog = opts.launchAsync();
+                    if (dialog != nullptr)
+                        dialog->setLookAndFeel(&customLookAndFeel);
                     return;
                 }
 
@@ -2042,26 +2113,30 @@ private:
 
         // Record Nono's screen position BEFORE expansion
         auto nonoScreenPos = holoNono->getScreenPosition();
-        auto windowPos = topLevel->getScreenPosition();
 
-        // Expand canvas
-        phase = AnimPhase::orbFlyOut;
-        topLevel->setSize(expandedW, expandedH);
-
-        // Compensate window position to lock Nono in place
-        auto newNonoScreenPos = holoNono->getScreenPosition();
-        int dx = nonoScreenPos.x - newNonoScreenPos.x;
-        int dy = nonoScreenPos.y - newNonoScreenPos.y;
-        int newX = windowPos.x + dx;
-        int newY = windowPos.y + dy;
+        // Pre-compute where Nono will be after expansion:
+        // In orbFlyOut phase, resized() places Nono at (nonoExpandedX, nonoExpandedY).
+        // Window needs to shift so Nono's screen position is preserved.
+        int newWindowX = nonoScreenPos.x - nonoExpandedX;
+        int newWindowY = nonoScreenPos.y - nonoExpandedY;
 
         if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         {
             auto screen = display->userArea;
-            newX = juce::jlimit(screen.getX(), screen.getRight()  - expandedW, newX);
-            newY = juce::jlimit(screen.getY(), screen.getBottom() - expandedH, newY);
+            newWindowX = juce::jlimit(screen.getX(), screen.getRight()  - expandedW, newWindowX);
+            newWindowY = juce::jlimit(screen.getY(), screen.getBottom() - expandedH, newWindowY);
         }
-        topLevel->setTopLeftPosition(newX, newY);
+
+        // Set phase BEFORE resize so resized() dispatches correctly
+        phase = AnimPhase::orbFlyOut;
+
+        // Atomic window geometry: suppress resized() during intermediate state
+        isWindowResizing = true;
+        topLevel->setBounds(newWindowX, newWindowY, expandedW, expandedH);
+        isWindowResizing = false;
+
+        // Now trigger a single resized() with correct window geometry
+        resized();
 
         // Reset all card animation state
         float centerX = static_cast<float>(nonoExpandedX) + nonoLocalCX;
@@ -2346,9 +2421,20 @@ private:
         auto* topLevel = getTopLevelComponent();
         if (!topLevel) { phase = AnimPhase::settled; return; }
 
+        // Force-complete any in-flight shatter VFX and undo window expansion.
+        // Without this, Stage 1 shatter particles finishing AFTER canvasShrink
+        // would call shrinkWindowAfterShatter() on the already-settled layout,
+        // shifting all children by -80px and breaking positions.
+        if (shatterExpanded)
+        {
+            for (int i = 0; i < numCards; ++i)
+                cardShatterStates[i].active = false;
+            anyShatterActive = false;
+            shrinkWindowAfterShatter();
+        }
+
         // Record Nono screen position before shrink
         auto nonoScreenPos = holoNono->getScreenPosition();
-        auto windowPos = topLevel->getScreenPosition();
 
         // Compute final window size from settled layout (visible cards only)
         int visibleCount = 0;
@@ -2362,17 +2448,15 @@ private:
             ? settledPadding + foldedCardW + settledGap + compactW + settledPadding
             : settledPadding + compactW + settledPadding;  // no shelf → Nono only
 
-        // Set phase BEFORE resize — resized() will call layoutSettled()
-        phase = AnimPhase::settled;
-        holoNono->useLocalDrag = false;
-        topLevel->setSize(finalW, finalH);
+        // Pre-compute Nono's position in settled layout
+        int settledNonoX = (visibleCount > 0)
+            ? settledPadding + foldedCardW + settledGap
+            : (finalW - compactW) / 2;
+        int settledNonoY = (finalH - compactH) / 2;
 
-        // Compensate position to keep Nono on screen
-        auto newNonoScreenPos = holoNono->getScreenPosition();
-        int ddx = nonoScreenPos.x - newNonoScreenPos.x;
-        int ddy = nonoScreenPos.y - newNonoScreenPos.y;
-        int nx = windowPos.x + ddx;
-        int ny = windowPos.y + ddy;
+        // Pre-compute window position: Nono's screen position must stay the same
+        int nx = nonoScreenPos.x - settledNonoX;
+        int ny = nonoScreenPos.y - settledNonoY;
 
         if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         {
@@ -2380,7 +2464,18 @@ private:
             nx = juce::jlimit(screen.getX(), screen.getRight()  - finalW, nx);
             ny = juce::jlimit(screen.getY(), screen.getBottom() - finalH, ny);
         }
-        topLevel->setTopLeftPosition(nx, ny);
+
+        // Set phase BEFORE resize — resized() will call layoutSettled()
+        phase = AnimPhase::settled;
+        holoNono->useLocalDrag = false;
+
+        // Atomic window geometry: suppress resized() during intermediate state
+        isWindowResizing = true;
+        topLevel->setBounds(nx, ny, finalW, finalH);
+        isWindowResizing = false;
+
+        // Now trigger a single resized() with correct window geometry
+        resized();
     }
 
     //==========================================================================
@@ -2424,12 +2519,17 @@ private:
         phase = AnimPhase::floating;
         holoNono->useLocalDrag = true;
 
-        // Expand to full screen
-        topLevel->setTopLeftPosition(screenArea.getX(), screenArea.getY());
-        topLevel->setSize(screenArea.getWidth(), screenArea.getHeight());
+        // Atomic window geometry: suppress resized() during setBounds
+        isWindowResizing = true;
+        topLevel->setBounds(screenArea.getX(), screenArea.getY(),
+                            screenArea.getWidth(), screenArea.getHeight());
+        isWindowResizing = false;
 
         // Undock the specific card
         undockCard(undockingCardIndex);
+
+        // Now trigger a single resized() with correct window geometry
+        resized();
 
         // Position the undocked card at its pre-expansion screen location
         auto* card = getCard(undockingCardIndex);
@@ -3884,9 +3984,14 @@ private:
         phase = AnimPhase::floating;
         holoNono->useLocalDrag = true;
 
-        // Expand to full screen
-        topLevel->setTopLeftPosition(screenArea.getX(), screenArea.getY());
-        topLevel->setSize(screenArea.getWidth(), screenArea.getHeight());
+        // Atomic window geometry: suppress resized() during setBounds
+        isWindowResizing = true;
+        topLevel->setBounds(screenArea.getX(), screenArea.getY(),
+                            screenArea.getWidth(), screenArea.getHeight());
+        isWindowResizing = false;
+
+        // Now trigger a single resized() with correct window geometry
+        resized();
 
         // Restore card positions in new coordinate space
         for (int i = 0; i < numCards; ++i)
@@ -3963,26 +4068,29 @@ private:
         }
 
         // Dissolve snap groups only for recalling cards
-        for (int g = static_cast<int>(snapGroups.size()) - 1; g >= 0; --g)
+        for (auto& group : snapGroups)
         {
-            auto& members = snapGroups[static_cast<size_t>(g)].members;
             bool anyMemberRecalling = false;
-            for (int idx : members)
+            for (int idx : group.members)
             {
                 if (recallingCard[idx])
                     anyMemberRecalling = true;
             }
             if (anyMemberRecalling)
             {
-                for (int idx : members)
+                for (int idx : group.members)
                 {
                     cardFloatState[idx].snapGroupID = -1;
                     auto* mc = getCard(idx);
                     if (mc) mc->showDetachButton = false;
                 }
-                snapGroups.erase(snapGroups.begin() + g);
+                group.members.clear();  // mark for removal
             }
         }
+        snapGroups.erase(
+            std::remove_if(snapGroups.begin(), snapGroups.end(),
+                [](const SnapGroup& g) { return g.members.empty(); }),
+            snapGroups.end());
 
         // Record current positions as start positions (only for participating cards)
         for (int i = 0; i < numCards; ++i)
