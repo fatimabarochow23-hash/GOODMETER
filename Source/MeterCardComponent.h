@@ -49,6 +49,12 @@ public:
     // Resize callback (notifies editor when card is resized by user drag)
     std::function<void(MeterCardComponent*, int newW, int newH)> onResized;
 
+    // Resize snap query: parent returns damped (snappedW, snappedH) for Apex-style sticky edges
+    std::function<juce::Point<int>(MeterCardComponent*, int rawW, int rawH)> onResizeSnapQuery;
+
+    // Resize ended: parent can commit final snap alignment on mouseUp
+    std::function<void(MeterCardComponent*, int finalW, int finalH)> onResizeEnded;
+
     // Custom card width/height (set by resize drag; -1 = default)
     int customWidth = -1;
     int customContentHeight = -1;
@@ -361,6 +367,14 @@ public:
             int newW = juce::jmax(minResizeW, resizeStartW + delta.x);
             int newH = juce::jmax(getActiveHeaderHeight() + minResizeContentH, resizeStartH + delta.y);
 
+            // Apex-style edge-length snap: parent returns damped size
+            if (onResizeSnapQuery)
+            {
+                auto snapped = onResizeSnapQuery(this, newW, newH);
+                newW = snapped.x;
+                newH = snapped.y;
+            }
+
             customWidth = newW - static_cast<int>(maxShadowOffset);  // store without shadow
             customContentHeight = newH - getActiveHeaderHeight() - static_cast<int>(maxShadowOffset);
 
@@ -377,8 +391,9 @@ public:
 
             if (onResized)
                 onResized(this, newW, newH);
-            if (onHeightChanged)
-                onHeightChanged();
+            // NOTE: onHeightChanged deliberately NOT called during resize drag
+            // to avoid clamp + relayout + collision resolution each frame.
+            // Full relayout happens on mouseUp via onResizeEnded.
 
             repaint();
             return;
@@ -405,6 +420,9 @@ public:
         if (isResizeDragging)
         {
             isResizeDragging = false;
+            // Apex-style: commit snap alignment on mouseUp
+            if (onResizeEnded)
+                onResizeEnded(this, getWidth(), getHeight());
             return;
         }
 
@@ -658,6 +676,14 @@ public:
             repaint();  // Final frame
             stopTimer();
         }
+    }
+
+    /** Immediately sync internal height animation targets to the given value.
+     *  Prevents timer-driven animation from reverting an externally-committed size. */
+    void syncAnimationHeight(float h)
+    {
+        targetHeight = h;
+        currentHeight = h;
     }
 
 private:

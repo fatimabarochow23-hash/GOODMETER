@@ -208,6 +208,27 @@ public:
                     relayoutGroupForCard(i);
                 }
             };
+            card->onResizeSnapQuery = [this, i](MeterCardComponent*, int rawW, int rawH) -> juce::Point<int>
+            {
+                if (phase == AnimPhase::floating && !isSystemStowing)
+                    return computeResizeSnap(i, rawW, rawH);
+                return { rawW, rawH };
+            };
+            card->onResizeEnded = [this, i](MeterCardComponent*, int finalW, int finalH)
+            {
+                if (phase == AnimPhase::floating && !isSystemStowing)
+                    commitResizeSnap(i, finalW, finalH);
+            };
+            card->onResized = [this, i](MeterCardComponent*, int, int)
+            {
+                if (phase == AnimPhase::floating && !isSystemStowing)
+                {
+                    // Lightweight: only recalc group offsets during resize drag.
+                    // Heavy relayout (collision, validation) deferred to onResizeEnded.
+                    int gid = cardFloatState[i].snapGroupID;
+                    if (gid >= 0) recalcGroupOffsets(gid);
+                }
+            };
         }
 
         setSize(compactW, compactH);
@@ -284,6 +305,38 @@ public:
             // Translucent fill
             g.setColour(warningColour.withAlpha(0.12f * cw.alpha));
             g.fillRect(cw.overlapRect);
+        }
+
+        // Draw resize snap guide: orange fluorescent edge line on target edges
+        if (phase == AnimPhase::floating)
+        {
+            auto orange = juce::Colour(0xFFFF8C00);
+
+            if (resizeSnapGuide.activeW)
+            {
+                // Outer haze
+                g.setColour(orange.withAlpha(0.12f));
+                g.fillRect(resizeSnapGuide.guideRectW.expanded(5.0f, 0.0f));
+                // Mid glow
+                g.setColour(orange.withAlpha(0.30f));
+                g.fillRect(resizeSnapGuide.guideRectW.expanded(2.5f, 0.0f));
+                // Core line
+                g.setColour(orange.withAlpha(0.80f));
+                g.fillRect(resizeSnapGuide.guideRectW);
+            }
+
+            if (resizeSnapGuide.activeH)
+            {
+                // Outer haze
+                g.setColour(orange.withAlpha(0.12f));
+                g.fillRect(resizeSnapGuide.guideRectH.expanded(0.0f, 5.0f));
+                // Mid glow
+                g.setColour(orange.withAlpha(0.30f));
+                g.fillRect(resizeSnapGuide.guideRectH.expanded(0.0f, 2.5f));
+                // Core line
+                g.setColour(orange.withAlpha(0.80f));
+                g.fillRect(resizeSnapGuide.guideRectH);
+            }
         }
 
         // Draw hover buttons (on top of everything except snap guides)
@@ -670,6 +723,20 @@ private:
         juce::Rectangle<float> overlapRect;
     };
     CollisionWarning collisionWarning;
+
+    // Resize snap guide (orange guide line showing target edge during resize drag)
+    // Also stores the target edge values for commit-on-release.
+    // Guide visible = guaranteed commit on mouseUp.
+    struct ResizeSnapGuide
+    {
+        bool activeW = false;                       // width snap guide visible
+        bool activeH = false;                       // height snap guide visible
+        juce::Rectangle<float> guideRectW;          // right-edge target line
+        juce::Rectangle<float> guideRectH;          // bottom-edge target line
+        int targetEdgeW = 0;                        // exact target X for right-edge commit
+        int targetEdgeH = 0;                        // exact target Y for bottom-edge commit
+    };
+    ResizeSnapGuide resizeSnapGuide;
 
     // Snap constants
     static constexpr int snapThreshold = 8;          // pixels for snap detection (edge gap)
@@ -3950,6 +4017,217 @@ private:
             recalcGroupOffsets(groupID);
             break;
         }
+    }
+
+    //==========================================================================
+    // APEX-STYLE RESIZE EDGE-LENGTH SNAP
+    // When a card is resized via corner grip, its free edges are checked against
+    // neighboring cards' corresponding edges. Within a snapZone (24px), mouse
+    // movement is attenuated (0.3x damping), creating a sticky slowdown feel.
+    // On mouseUp within the damped zone, edges commit to exact alignment.
+    //==========================================================================
+    static constexpr int resizeSnapZone = 24;            // damping zone radius in px
+    static constexpr float resizeDampingFactor = 0.3f;   // speed attenuation inside zone
+
+    /** During resize drag: apply Apex-style damping to raw width/height.
+     *  Checks if the card's right/bottom edges approach any neighbor's
+     *  corresponding edges. Returns damped (newW, newH).
+     *
+     *  Apex deceleration formula (boundary-continuous, RESISTS approaching target):
+     *    Inside the zone, mouse movement is attenuated: the actual edge position
+     *    stays FURTHER from the target than the raw mouse would place it.
+     *    This creates the "sticky resistance" feel near the target line.
+     *
+     *    Formula: dampedEdge = target + sign(dist) * (damping * |dist| + (1-damping) * snapZone)
+     *    At boundary (|dist|=snapZone):  dampedEdge = target ± snapZone = rawEdge  (continuous!)
+     *    At center   (|dist|=0):         dampedEdge = target ± (1-damping)*snapZone = ±16.8px
+     *    → Edge can never reach target during drag. MouseUp commits if within window.
+     *
+     *  Also populates resizeSnapGuide for orange guide line rendering.
+     */
+    juce::Point<int> computeResizeSnap(int cardIndex, int rawW, int rawH)
+    {
+        auto* card = getCard(cardIndex);
+        if (!card) return { rawW, rawH };
+
+        int groupID = cardFloatState[cardIndex].snapGroupID;
+        if (groupID < 0)
+        {
+            resizeSnapGuide.activeW = false;
+            resizeSnapGuide.activeH = false;
+            return { rawW, rawH };
+        }
+
+        // Card's visual top-left (fixed during resize — only right/bottom move)
+        auto cardBounds = card->getBounds();
+        int visualLeft = cardBounds.getX() + 8;   // +8 for shadow inset
+        int visualTop  = cardBounds.getY() + 8;
+
+        // Compute raw right/bottom visual edges from the proposed size
+        int rawVisualRight  = visualLeft + (rawW - 8);   // width - shadow
+        int rawVisualBottom = visualTop  + (rawH - 8);
+
+        int dampedW = rawW;
+        int dampedH = rawH;
+        int bestDistW = resizeSnapZone + 1;  // track closest target for W
+        int bestDistH = resizeSnapZone + 1;  // track closest target for H
+        int bestTargetW = 0;  // the target edge X for width guide
+        int bestTargetH = 0;  // the target edge Y for height guide
+        int bestNeighborForW = -1;  // neighbor index for width guide line extent
+        int bestNeighborForH = -1;  // neighbor index for height guide line extent
+
+        // Search group neighbors for edge-length alignment targets
+        for (const auto& group : snapGroups)
+        {
+            if (group.groupID != groupID) continue;
+
+            for (int neighbor : group.members)
+            {
+                if (neighbor == cardIndex) continue;
+                auto nRect = getCardVisualRect(neighbor);
+                if (nRect.isEmpty()) continue;
+
+                // --- RIGHT edge targets ---
+                auto tryDampWidth = [&](int targetEdge)
+                {
+                    int dist = rawVisualRight - targetEdge;  // signed distance
+                    int absDist = std::abs(dist);
+                    if (absDist <= resizeSnapZone && absDist < bestDistW)
+                    {
+                        bestDistW = absDist;
+                        bestTargetW = targetEdge;
+                        bestNeighborForW = neighbor;
+                        // Apex deceleration: edge stays further from target than raw
+                        // dampedEdge = target + sign * (damping * |dist| + (1-damping) * snapZone)
+                        float sign = (dist >= 0) ? 1.0f : -1.0f;
+                        float dampedDist = resizeDampingFactor * static_cast<float>(absDist)
+                                         + (1.0f - resizeDampingFactor) * static_cast<float>(resizeSnapZone);
+                        int dampedRight = targetEdge + static_cast<int>(std::round(sign * dampedDist));
+                        dampedW = (dampedRight - visualLeft) + 8;
+                    }
+                };
+
+                tryDampWidth(nRect.getRight());   // neighbor's right edge
+                tryDampWidth(nRect.getX());        // neighbor's left edge
+
+                // --- BOTTOM edge targets ---
+                auto tryDampHeight = [&](int targetEdge)
+                {
+                    int dist = rawVisualBottom - targetEdge;
+                    int absDist = std::abs(dist);
+                    if (absDist <= resizeSnapZone && absDist < bestDistH)
+                    {
+                        bestDistH = absDist;
+                        bestTargetH = targetEdge;
+                        bestNeighborForH = neighbor;
+                        float sign = (dist >= 0) ? 1.0f : -1.0f;
+                        float dampedDist = resizeDampingFactor * static_cast<float>(absDist)
+                                         + (1.0f - resizeDampingFactor) * static_cast<float>(resizeSnapZone);
+                        int dampedBottom = targetEdge + static_cast<int>(std::round(sign * dampedDist));
+                        dampedH = (dampedBottom - visualTop) + 8;
+                    }
+                };
+
+                tryDampHeight(nRect.getBottom());  // neighbor's bottom edge
+                tryDampHeight(nRect.getY());        // neighbor's top edge
+            }
+            break;
+        }
+
+        // Enforce minimums after damping
+        dampedW = juce::jmax(180, dampedW);
+        dampedH = juce::jmax(card->isMiniMode ? 24 + 80 + 8 : 48 + 80 + 8, dampedH);
+
+        // Populate orange guide line rects
+        auto myRect = getCardVisualRect(cardIndex);
+
+        if (bestDistW <= resizeSnapZone && bestNeighborForW >= 0)
+        {
+            // Vertical orange line at the target X, spanning both cards' Y range
+            auto nRect = getCardVisualRect(bestNeighborForW);
+            float lineX = static_cast<float>(bestTargetW);
+            float top = static_cast<float>(juce::jmin(myRect.getY(), nRect.getY()));
+            float bot = static_cast<float>(juce::jmax(myRect.getBottom(), nRect.getBottom()));
+            resizeSnapGuide.activeW = true;
+            resizeSnapGuide.targetEdgeW = bestTargetW;
+            resizeSnapGuide.guideRectW = { lineX - 1.0f, top, 2.0f, bot - top };
+        }
+        else
+        {
+            resizeSnapGuide.activeW = false;
+        }
+
+        if (bestDistH <= resizeSnapZone && bestNeighborForH >= 0)
+        {
+            // Horizontal orange line at the target Y, spanning both cards' X range
+            auto nRect = getCardVisualRect(bestNeighborForH);
+            float lineY = static_cast<float>(bestTargetH);
+            float left = static_cast<float>(juce::jmin(myRect.getX(), nRect.getX()));
+            float right = static_cast<float>(juce::jmax(myRect.getRight(), nRect.getRight()));
+            resizeSnapGuide.activeH = true;
+            resizeSnapGuide.targetEdgeH = bestTargetH;
+            resizeSnapGuide.guideRectH = { left, lineY - 1.0f, right - left, 2.0f };
+        }
+        else
+        {
+            resizeSnapGuide.activeH = false;
+        }
+
+        repaint();
+        return { dampedW, dampedH };
+    }
+
+    /** On mouseUp after resize: if the orange guide line was visible (meaning
+     *  raw edge was within snapZone of a target), commit to exact alignment.
+     *  Guide visible = guaranteed commit. No secondary distance check needed.
+     *  Then relayout group. */
+    void commitResizeSnap(int cardIndex, int finalW, int finalH)
+    {
+        // Snapshot guide state BEFORE clearing (these are the commit targets)
+        bool commitW = resizeSnapGuide.activeW;
+        bool commitH = resizeSnapGuide.activeH;
+        int targetW = resizeSnapGuide.targetEdgeW;
+        int targetH = resizeSnapGuide.targetEdgeH;
+
+        // Clear orange guide lines immediately on mouseUp
+        resizeSnapGuide.activeW = false;
+        resizeSnapGuide.activeH = false;
+
+        auto* card = getCard(cardIndex);
+        if (!card) return;
+
+        int groupID = cardFloatState[cardIndex].snapGroupID;
+        if (groupID < 0) return;
+
+        auto cardBounds = card->getBounds();
+        int visualLeft = cardBounds.getX() + 8;
+        int visualTop  = cardBounds.getY() + 8;
+
+        int bestW = finalW;
+        int bestH = finalH;
+
+        // Guide was visible → commit right edge to stored target
+        if (commitW)
+            bestW = (targetW - visualLeft) + 8;
+
+        // Guide was visible → commit bottom edge to stored target
+        if (commitH)
+            bestH = (targetH - visualTop) + 8;
+
+        // Apply snapped size if changed
+        if (bestW != finalW || bestH != finalH)
+        {
+            card->customWidth = bestW - 8;
+            card->customContentHeight = bestH - (card->isMiniMode ? 24 : 48) - 8;
+            card->setSize(bestW, bestH);
+            card->syncAnimationHeight(static_cast<float>(bestH));  // prevent timer-driven revert
+            card->resized();
+            card->repaint();
+        }
+
+        // Always relayout group + recalc offsets after resize ends
+        relayoutGroupForCard(cardIndex);
+        recalcGroupOffsets(groupID);
     }
 
     //==========================================================================
