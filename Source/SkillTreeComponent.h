@@ -64,7 +64,7 @@ inline SkillInfo getSkillInfo(SkillID id)
                      GoodMeterLookAndFeel::accentPurple, false };
         case SkillID::Rewind:
             return { id, "Rewind", "REW",
-                     juce::Colour(0xFF00E5FF), false };
+                     juce::Colour(0xFFF9E353), false };
         case SkillID::VideoExtract:
             return { id, "Video Extract", "VID",
                      juce::Colour(0xFFD2911E), false };

@@ -28,6 +28,16 @@
 #if JUCE_MAC
  #include <objc/message.h>
  #include <objc/runtime.h>
+ #include <CoreGraphics/CoreGraphics.h>
+
+// Pass-through replacement for NSWindow's constrainFrameRect:toScreen:
+// Returns the proposed frame unmodified, allowing the window to be
+// positioned below the Dock / above the menu bar — essential for a
+// desktop pet that should roam freely across the entire screen.
+static CGRect noConstrainFrameRect(id, SEL, CGRect frameRect, id /*screen*/)
+{
+    return frameRect;
+}
 #endif
 
 namespace goodmeter
@@ -78,6 +88,10 @@ public:
         // Add to desktop as a semi-transparent, borderless window
         addToDesktop(juce::ComponentPeer::windowIsSemiTransparent
                    | juce::ComponentPeer::windowAppearsOnTaskbar);
+
+        // Disable macOS Dock/menu bar position clamping so Nono can
+        // roam freely across the entire screen, including below the Dock.
+        disableFrameConstraint();
 
         setAlwaysOnTop(true);
         setVisible(true);
@@ -211,6 +225,38 @@ private:
                 reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
                     nsWindow, sel_registerName("setIgnoresMouseEvents:"),
                     static_cast<BOOL>(shouldIgnore));
+        }
+#endif
+    }
+
+    //==========================================================================
+    // Disable macOS Dock/menu bar position clamping.
+    //
+    // JUCE's NSWindow subclass overrides constrainFrameRect:toScreen:
+    // and calls super, which clamps the window to [NSScreen visibleFrame]
+    // (excluding Dock and menu bar). This prevents a desktop pet from
+    // being dragged below the Dock.
+    //
+    // Fix: replace the method implementation on the JUCE NSWindow's class
+    // with a pass-through that returns the proposed frame unmodified.
+    //==========================================================================
+    void disableFrameConstraint()
+    {
+#if JUCE_MAC
+        if (auto* peer = getPeer())
+        {
+            auto nsView = reinterpret_cast<id>(peer->getNativeHandle());
+            auto nsWindow = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+                nsView, sel_registerName("window"));
+
+            if (nsWindow != nullptr)
+            {
+                Class windowClass = object_getClass(nsWindow);
+                SEL sel = sel_registerName("constrainFrameRect:toScreen:");
+                Method m = class_getInstanceMethod(windowClass, sel);
+                if (m != nullptr)
+                    method_setImplementation(m, reinterpret_cast<IMP>(noConstrainFrameRect));
+            }
         }
 #endif
     }

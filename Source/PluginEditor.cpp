@@ -115,7 +115,7 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
 
     nonoCard = std::make_unique<MeterCardComponent>(
         "NONO",
-        juce::Colour(0xFF00E5FF),  // Holo-cyan
+        juce::Colour(0xFFF9E353),  // GUOBA sweater yellow
         true  // Expanded by default
     );
 

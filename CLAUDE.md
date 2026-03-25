@@ -36,6 +36,7 @@ xcodebuild -project Builds/MacOSX/GOODMETER.xcodeproj -scheme "GOODMETER - Stand
 App output: `Builds/MacOSX/build/Release/GOODMETER.app`
 
 ## Critical Rules
+- DO NOT codesign, notarize, or run any signing/notarytool commands unless the user explicitly asks for it. Testing builds don't need signing.
 - DO NOT modify PluginProcessor::processBlock DSP logic unless explicitly asked
 - DO NOT remove the standalone output muting (anti-feedback protection)
 - Always preserve the NSMicrophoneUsageDescription in Info plists

@@ -233,7 +233,7 @@ public:
 
         setSize(compactW, compactH);
         setResizable(false, false);
-        setInterceptsMouseClicks(false, true);
+        setInterceptsMouseClicks(true, true);
         setPaintingIsUnclipped(true);  // Allow glow/shadow to overflow component bounds
 
         // Load skill loadout from settings
@@ -868,6 +868,38 @@ private:
         return t < 0.5f
             ? 4.0f * t * t * t
             : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) / 2.0f;
+    }
+
+    //==========================================================================
+    // Multi-monitor helpers
+    //==========================================================================
+
+    /** Get the display that currently contains Nono's center point.
+     *  Falls back to primary display if none found. */
+    const juce::Displays::Display* getDisplayContainingNono() const
+    {
+        auto& displays = juce::Desktop::getInstance().getDisplays();
+        if (holoNono != nullptr)
+        {
+            auto nonoCenter = holoNono->getScreenBounds().getCentre();
+            for (auto& d : displays.displays)
+                if (d.userArea.contains(nonoCenter))
+                    return &d;
+        }
+        return displays.getPrimaryDisplay();
+    }
+
+    /** Get the bounding rect of all connected displays (for multi-monitor floating phase).
+     *  The floating-phase window covers ALL screens so cards can be dragged between monitors. */
+    juce::Rectangle<int> getAllDisplaysBounds() const
+    {
+        juce::Rectangle<int> total;
+        for (auto& d : juce::Desktop::getInstance().getDisplays().displays)
+            total = total.isEmpty() ? d.userArea : total.getUnion(d.userArea);
+        if (total.isEmpty())
+            if (auto* primary = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+                total = primary->userArea;
+        return total;
     }
 
     //==========================================================================
@@ -2187,9 +2219,8 @@ private:
         int newWindowX = nonoScreenPos.x - nonoExpandedX;
         int newWindowY = nonoScreenPos.y - nonoExpandedY;
 
-        if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         {
-            auto screen = display->userArea;
+            auto screen = getAllDisplaysBounds();
             newWindowX = juce::jlimit(screen.getX(), screen.getRight()  - expandedW, newWindowX);
             newWindowY = juce::jlimit(screen.getY(), screen.getBottom() - expandedH, newWindowY);
         }
@@ -2525,9 +2556,8 @@ private:
         int nx = nonoScreenPos.x - settledNonoX;
         int ny = nonoScreenPos.y - settledNonoY;
 
-        if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         {
-            auto screen = display->userArea;
+            auto screen = getAllDisplaysBounds();
             nx = juce::jlimit(screen.getX(), screen.getRight()  - finalW, nx);
             ny = juce::jlimit(screen.getY(), screen.getBottom() - finalH, ny);
         }
@@ -2557,16 +2587,15 @@ private:
     }
 
     //--------------------------------------------------------------------------
-    // Enter floating phase: expand window to full primary display
+    // Enter floating phase: expand window to cover all connected displays
     //--------------------------------------------------------------------------
     void enterFloatingPhase(int undockingCardIndex, const juce::MouseEvent& event)
     {
         auto* topLevel = getTopLevelComponent();
         if (!topLevel) return;
 
-        auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
-        if (!display) return;
-        auto screenArea = display->userArea;
+        auto screenArea = getAllDisplaysBounds();
+        if (screenArea.isEmpty()) return;
 
         // Record screen positions of Nono and all cards before expansion
         auto nonoScreenPos = holoNono->getScreenPosition();
@@ -4240,9 +4269,8 @@ private:
         auto* topLevel = getTopLevelComponent();
         if (!topLevel) return;
 
-        auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
-        if (!display) return;
-        auto screenArea = display->userArea;
+        auto screenArea = getAllDisplaysBounds();
+        if (screenArea.isEmpty()) return;
 
         // Record screen positions before expansion
         auto nonoScreenPos = holoNono->getScreenPosition();

@@ -3,7 +3,7 @@
 <JUCERPROJECT id="GdMtRx" name="GOODMETER" projectType="audioplug" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Solaris"
               bundleIdentifier="com.solaris.GOODMETER" pluginManufacturerCode="SLRS"
-              pluginCode="GdMt" version="1.0.0" companyWebsite="https://github.com/fatimabarochow23-hash/GOODMETER"
+              pluginCode="GdMt" version="1.0.2" companyWebsite="https://github.com/fatimabarochow23-hash/GOODMETER"
               pluginName="GOODMETER" pluginDesc="Professional Audio Metering Plugin"
               pluginManufacturer="Solaris" aaxIdentifier="com.solaris.GOODMETER"
               pluginAAXCategory="8192" pluginVSTCategory="kPlugCategAnalysis"
@@ -37,6 +37,8 @@
           file="rewind_skill_icon.png"/>
     <FILE id="BtnVideoExt1" name="video_extract_icon.png" compile="0" resource="1"
           file="video_extract_icon.png"/>
+    <FILE id="GuobaSprite1" name="guoba.png" compile="0" resource="1"
+          file="guoba.png"/>
     <GROUP id="{BAB75B8F-DC22-7029-A0C0-25796381529F}" name="Source">
       <FILE id="PlugProc1" name="PluginProcessor.cpp" compile="1" resource="0"
             file="Source/PluginProcessor.cpp"/>
