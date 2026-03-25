@@ -103,7 +103,7 @@ private:
 
     // Electro-cyan palette
     static inline const juce::Colour techCyan = juce::Colour(0xFF20C997);
-    static inline const juce::Colour recRed   = juce::Colour(0xFFFF0040);  // Neon Punch Red — solid, no alpha
+    static inline const juce::Colour recRed   = juce::Colour(0xFFFF7B3A);  // Sunset Orange — matches GUOBA holo theme
 
     // REC indicator breathing state
     float recBreathPhase = 0.0f;

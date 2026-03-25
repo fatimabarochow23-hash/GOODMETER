@@ -232,6 +232,14 @@ public:
             return;
         }
 
+        // Lightning badge double-click → toggle holo visor mode
+        if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
+            && !badgeHitRect.isEmpty() && badgeHitRect.contains(pos))
+        {
+            triggerLightningToggle();
+            return;
+        }
+
         // Body region
         if (!bodyHitRect.contains(pos))
             return;
@@ -419,6 +427,19 @@ public:
             earHitRect[1] = { earRX - earW * 0.5f, earY - earH * 0.3f, earW, earH };
         }
 
+        // Lightning badge hit rect: belt buckle at ~(50%, 78%) of sprite
+        {
+            float spriteH = radius * 4.0f;
+            float spriteW = spriteH;
+            float anchorY = cy - radius * 0.1f;
+            float spriteY = anchorY - spriteH * 0.38f;
+            float badgeCX = cx;                            // center of sprite
+            float badgeCY = spriteY + spriteH * 0.78f;    // 78% down from top
+            float badgeR  = radius * 0.35f * hScale;      // generous hit area
+            badgeHitRect = { badgeCX - badgeR, badgeCY - badgeR * 0.7f,
+                             badgeR * 2.0f, badgeR * 1.4f };
+        }
+
         // Store visor hit path for back-face click detection (uses same coords as drawVisor/drawBackFace)
         visorHitPath = buildVisorPath(cx, cy - radius * 0.06f, radius, hScale);
 
@@ -462,6 +483,10 @@ public:
             drawResultsBubble(g, bubbleArea, cx);
 
         drawParticles(g, cx, cy, radius);
+
+        // Lightning VFX (drawn on top of everything)
+        if (showLightningVFX)
+            drawLightningVFX(g, cx, cy, radius);
     }
 
     void resized() override {}
@@ -476,6 +501,10 @@ public:
 
         // GUOBA body: rectangle check (sprite is not elliptical)
         if (!bodyHitRect.isEmpty() && bodyHitRect.contains(pt))
+            return true;
+
+        // Lightning badge on belt buckle
+        if (!badgeHitRect.isEmpty() && badgeHitRect.contains(pt))
             return true;
 
         // Test tube region (rectangle check is fine for this shape)
@@ -526,9 +555,15 @@ public:
             }
         }
 
+        // ===== Lightning badge: toggle holo visor mode =====
+        // (moved to mouseDoubleClick to avoid accidental triggers)
+
         // Front-face body single-click → pending smile (300ms delay to distinguish from double-click)
+        // Exclude badge area to avoid triggering smile when toggling holo
         if ((nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
-            && bodyHitRect.contains(e.position) && !isEditMode && !e.mods.isRightButtonDown())
+            && bodyHitRect.contains(e.position)
+            && !badgeHitRect.contains(e.position)
+            && !isEditMode && !e.mods.isRightButtonDown())
         {
             pendingSmileClick = true;
             pendingSmileClickTime = juce::Time::getMillisecondCounter();
@@ -1091,7 +1126,22 @@ private:
     juce::Rectangle<float> bodyHitRect;
     juce::Rectangle<float> tubeHitRect;
     juce::Rectangle<float> earHitRect[2];  // [0] = left ear, [1] = right ear
+    juce::Rectangle<float> badgeHitRect;   // lightning badge on belt buckle
     juce::Path visorHitPath;               // visor shape for back-face click detection
+
+    // Holo visor mode (toggled by lightning badge click)
+    bool isHoloVisor = false;              // true = yellow visor + gray-white fill + blue bean eyes
+    float holoTransition = 0.0f;           // smooth 0→1 transition
+
+    // Lightning VFX state
+    bool showLightningVFX = false;
+    float lightningProgress = 0.0f;        // 0→1 over ~0.5s
+    struct LightningBolt {
+        float x1, y1, x2, y2;             // start/end points
+        float midOffsetX;                   // zigzag offset
+        float brightness;
+    };
+    LightningBolt lightningBolts[5];
 
     // Edit mode transition (0=normal, 1=editMode → color/bubble change)
     float editModeTransition = 0.0f;
@@ -1109,6 +1159,7 @@ private:
     // Colors
     static inline const juce::Colour electricBlue = juce::Colour(0xFFF9E353);
     static inline const juce::Colour eyeBlue     = juce::Colour(0xFF00D4FF);
+    static inline const juce::Colour sunsetOrange = juce::Colour(0xFFFF7B3A);  // holo-mode eye color
     static inline const juce::Colour bodyEdge     = juce::Colour(0xFFD0D0D8);
     static inline const juce::Colour screenDark   = juce::Colour(0xFF0E0E1E);
     static inline const juce::Colour magicPink    = juce::Colour(0xFFFF2A7F);
@@ -1230,6 +1281,25 @@ private:
         visorAlpha += (visorAlphaTarget - visorAlpha) * 0.12f;
         if (std::abs(visorAlpha - visorAlphaTarget) < 0.01f)
             visorAlpha = visorAlphaTarget;
+
+        // Holo visor transition (smooth 0→1 / 1→0, ~0.25s)
+        {
+            float holoTarget = isHoloVisor ? 1.0f : 0.0f;
+            holoTransition += (holoTarget - holoTransition) * 0.14f;
+            if (std::abs(holoTransition - holoTarget) < 0.005f)
+                holoTransition = holoTarget;
+        }
+
+        // Lightning VFX progress (~0.5s = 30 frames)
+        if (showLightningVFX)
+        {
+            lightningProgress += 1.0f / 30.0f;
+            if (lightningProgress >= 1.0f)
+            {
+                showLightningVFX = false;
+                lightningProgress = 0.0f;
+            }
+        }
 
         // Front face animations
         advanceFrontAnim();
@@ -1640,6 +1710,31 @@ private:
         // Notify editor
         if (onEarFlipBack)
             onEarFlipBack();
+    }
+
+    void triggerLightningToggle()
+    {
+        isHoloVisor = !isHoloVisor;
+
+        // Fire lightning VFX
+        showLightningVFX = true;
+        lightningProgress = 0.0f;
+
+        // Generate random bolt paths radiating from badge center
+        auto& rng = juce::Random::getSystemRandom();
+        float bcx = badgeHitRect.getCentreX();
+        float bcy = badgeHitRect.getCentreY();
+        for (auto& bolt : lightningBolts)
+        {
+            float angle = rng.nextFloat() * juce::MathConstants<float>::twoPi;
+            float len = 30.0f + rng.nextFloat() * 50.0f;
+            bolt.x1 = bcx;
+            bolt.y1 = bcy;
+            bolt.x2 = bcx + std::cos(angle) * len;
+            bolt.y2 = bcy + std::sin(angle) * len;
+            bolt.midOffsetX = (rng.nextFloat() - 0.5f) * 20.0f;
+            bolt.brightness = 0.6f + rng.nextFloat() * 0.4f;
+        }
     }
 
     //==========================================================================
@@ -2141,67 +2236,101 @@ private:
         float vcy = cy - r * 0.06f;  // shifted up slightly
         auto visorPath = buildVisorPath(cx, vcy, r, hScale);
 
-        // Three-segment all-upward-arching boundary matching GUOBA plush fur pattern.
-        // Gray fur on top, white fur below. The boundary is a continuous wave with
-        // THREE upward arches: left cheek arch, nose bridge arch (highest), right cheek arch.
-        // This replicates the plush toy's white nose area pushing gray fur upward.
-        float maskL = cx - r * 0.8094f * hScale;   // visor left edge X
-        float maskR = cx + r * 0.8094f * hScale;   // visor right edge X
-        float leftEyeX  = cx - r * 0.30f * hScale; // left eye center X (matches drawEyes)
-        float rightEyeX = cx + r * 0.30f * hScale; // right eye center X
-
-        // Key Y coordinates (screen Y: smaller = higher on screen)
-        // Anchor points sit BELOW the eyes — the arches curve UP from these anchors
-        float baseY       = vcy + r * 0.15f;      // baseline: below eye center
-        float cheekCtrlY  = vcy - r * 0.10f;      // cheek arch control: at eye level
-        float noseCtrlY   = vcy - r * 0.40f;      // nose arch control: well ABOVE eyes (highest point)
-
-        // Transition points between arches (at left/right eye inner edges)
-        float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;  // ~3 o'clock of left eye
-        float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;  // ~9 o'clock of right eye
-        // Transition Y: slightly below eye center (where arches meet)
-        float transY = vcy + r * 0.05f;
-
-        auto grayFur  = juce::Colour(0xFFCCCCCC).withAlpha(visorAlpha);
-        auto whiteFur = juce::Colour(0xFFFFFEFA).withAlpha(visorAlpha);
+        float maskL = cx - r * 0.8094f * hScale;
+        float maskR = cx + r * 0.8094f * hScale;
         float vTop = vcy - r * 1.2f;
         float vBot = vcy + r * 1.2f;
 
         g.saveState();
         g.reduceClipRegion(visorPath);
 
-        // 1. Fill entire visor white (base layer)
-        g.setColour(whiteFur);
-        g.fillRect(maskL - r, vTop, (maskR - maskL) + r * 2.0f, vBot - vTop);
+        if (holoTransition > 0.99f)
+        {
+            // ===== FULL HOLO: gray-white gradient fill (translucent, airy) =====
+            juce::ColourGradient holoGrad(
+                juce::Colour(0xFFF6F6F8).withAlpha(visorAlpha), cx, vTop,
+                juce::Colour(0xFFD8D8DE).withAlpha(visorAlpha), cx, vBot, false);
+            holoGrad.addColour(0.35, juce::Colour(0xFFECECF0).withAlpha(visorAlpha));
+            g.setGradientFill(holoGrad);
+            g.fillRect(maskL - r, vTop, (maskR - maskL) + r * 2.0f, vBot - vTop);
+        }
+        else if (holoTransition < 0.01f)
+        {
+            // ===== FULL NORMAL: three-arch fur pattern =====
+            float leftEyeX  = cx - r * 0.30f * hScale;
+            float rightEyeX = cx + r * 0.30f * hScale;
+            float baseY       = vcy + r * 0.15f;
+            float cheekCtrlY  = vcy - r * 0.10f;
+            float noseCtrlY   = vcy - r * 0.40f;
+            float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;
+            float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
+            float transY = vcy + r * 0.05f;
 
-        // 2. Three-segment upward-arching gray top path
-        juce::Path grayTopPath;
-        grayTopPath.startNewSubPath(maskL, vTop);       // top-left corner
-        grayTopPath.lineTo(maskR, vTop);                 // top-right corner
-        grayTopPath.lineTo(maskR, baseY);                // right edge at baseline
+            // White base
+            g.setColour(juce::Colour(0xFFFFFEFA).withAlpha(visorAlpha));
+            g.fillRect(maskL - r, vTop, (maskR - maskL) + r * 2.0f, vBot - vTop);
 
-        // Seg 3 (right cheek): right edge → right eye inner edge, arch UP
-        float rcCtrlX = (maskR + rightEyeInnerX) * 0.5f;
-        grayTopPath.quadraticTo(rcCtrlX, cheekCtrlY,
-                                rightEyeInnerX, transY);
+            // Gray top with three upward arches
+            juce::Path grayTopPath;
+            grayTopPath.startNewSubPath(maskL, vTop);
+            grayTopPath.lineTo(maskR, vTop);
+            grayTopPath.lineTo(maskR, baseY);
+            float rcCtrlX = (maskR + rightEyeInnerX) * 0.5f;
+            grayTopPath.quadraticTo(rcCtrlX, cheekCtrlY, rightEyeInnerX, transY);
+            grayTopPath.quadraticTo(cx, noseCtrlY, leftEyeInnerX, transY);
+            float lcCtrlX = (maskL + leftEyeInnerX) * 0.5f;
+            grayTopPath.quadraticTo(lcCtrlX, cheekCtrlY, maskL, baseY);
+            grayTopPath.closeSubPath();
 
-        // Seg 2 (nose bridge): right eye inner → left eye inner, BIG arch UP
-        grayTopPath.quadraticTo(cx, noseCtrlY,
-                                leftEyeInnerX, transY);
+            g.setColour(juce::Colour(0xFFCCCCCC).withAlpha(visorAlpha * 0.65f));
+            g.fillPath(grayTopPath);
+        }
+        else
+        {
+            // ===== TRANSITION: cross-fade between fur and solid =====
+            float na = 1.0f - holoTransition;
 
-        // Seg 1 (left cheek): left eye inner → left edge, arch UP
-        float lcCtrlX = (maskL + leftEyeInnerX) * 0.5f;
-        grayTopPath.quadraticTo(lcCtrlX, cheekCtrlY,
-                                maskL, baseY);
+            // Fur layer
+            {
+                float leftEyeX  = cx - r * 0.30f * hScale;
+                float rightEyeX = cx + r * 0.30f * hScale;
+                float baseY       = vcy + r * 0.15f;
+                float cheekCtrlY  = vcy - r * 0.10f;
+                float noseCtrlY   = vcy - r * 0.40f;
+                float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;
+                float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
+                float transY = vcy + r * 0.05f;
 
-        grayTopPath.closeSubPath();                      // left edge baseline → top-left (vertical close)
+                g.setColour(juce::Colour(0xFFFFFEFA).withAlpha(visorAlpha * na));
+                g.fillRect(maskL - r, vTop, (maskR - maskL) + r * 2.0f, vBot - vTop);
 
-        g.setColour(grayFur);
-        g.fillPath(grayTopPath);
+                juce::Path grayTopPath;
+                grayTopPath.startNewSubPath(maskL, vTop);
+                grayTopPath.lineTo(maskR, vTop);
+                grayTopPath.lineTo(maskR, baseY);
+                float rcCtrlX = (maskR + rightEyeInnerX) * 0.5f;
+                grayTopPath.quadraticTo(rcCtrlX, cheekCtrlY, rightEyeInnerX, transY);
+                grayTopPath.quadraticTo(cx, noseCtrlY, leftEyeInnerX, transY);
+                float lcCtrlX = (maskL + leftEyeInnerX) * 0.5f;
+                grayTopPath.quadraticTo(lcCtrlX, cheekCtrlY, maskL, baseY);
+                grayTopPath.closeSubPath();
+
+                g.setColour(juce::Colour(0xFFCCCCCC).withAlpha(visorAlpha * na * 0.65f));
+                g.fillPath(grayTopPath);
+            }
+
+            // Holo gradient layer on top
+            juce::ColourGradient holoGrad(
+                juce::Colour(0xFFF6F6F8).withAlpha(visorAlpha * holoTransition), cx, vTop,
+                juce::Colour(0xFFD8D8DE).withAlpha(visorAlpha * holoTransition), cx, vBot, false);
+            holoGrad.addColour(0.35, juce::Colour(0xFFECECF0).withAlpha(visorAlpha * holoTransition));
+            g.setGradientFill(holoGrad);
+            g.fillRect(maskL - r, vTop, (maskR - maskL) + r * 2.0f, vBot - vTop);
+        }
 
         g.restoreState();
 
-        // 3-layer glow rings (outer → mid → core)
+        // Yellow visor frame glow rings (always visible)
         g.setColour(electricBlue.withAlpha(0.08f * visorAlpha));
         g.strokePath(visorPath, juce::PathStrokeType(8.0f));
         g.setColour(electricBlue.withAlpha(0.30f * visorAlpha));
@@ -2221,22 +2350,24 @@ private:
         float maxH = r * 0.5f, minH = r * 0.08f;
         float eh = juce::jmap(juce::jlimit(0.2f, 1.0f, eyeOpenness), 0.2f, 1.0f, minH, maxH);
 
+        bool inHolo = (holoTransition > 0.5f);
+
         // ===== TIME-REWIND: Reverse holographic bar waveform (highest priority) =====
-        if (isRewinding)
+        if (isRewinding && inHolo)
         {
             drawRewindFace(g, cx, vcy, r, hScale);
             return;
         }
 
-        // ===== VIDEO EXTRACTION: Amber grid waveform (forward scrolling) =====
-        if (isExtractingVideo)
+        // ===== VIDEO EXTRACTION: Amber grid waveform =====
+        if (isExtractingVideo && inHolo)
         {
             drawExtractFace(g, cx, vcy, r, hScale);
             return;
         }
 
-        // ===== Dizzy: spinning spiral / mosquito-coil eyes =====
-        if (isDizzy)
+        // ===== Dizzy: spinning spiral / mosquito-coil eyes (holo only) =====
+        if (isDizzy && inHolo)
         {
             float angle = static_cast<float>(juce::Time::getMillisecondCounterHiRes()) * 0.015f;
 
@@ -2246,22 +2377,20 @@ private:
                 float spiralR = r * 0.22f;
                 float eyeAngle = (idx == 0) ? angle : -angle;
 
-                // Glow bloom behind spiral
                 juce::ColourGradient bloom(
-                    eyeBlue.withAlpha(0.3f), ex, vcy,
-                    eyeBlue.withAlpha(0.0f), ex + spiralR * 1.5f, vcy, true);
+                    sunsetOrange.withAlpha(0.3f), ex, vcy,
+                    sunsetOrange.withAlpha(0.0f), ex + spiralR * 1.5f, vcy, true);
                 g.setGradientFill(bloom);
                 g.fillEllipse(ex - spiralR * 1.5f, vcy - spiralR * 1.5f,
                               spiralR * 3.0f, spiralR * 3.0f);
 
-                // Spiral path (3-turn mosquito coil)
                 juce::Path spiral;
                 const float turns = 3.0f;
-                const float maxAngle = turns * juce::MathConstants<float>::twoPi;
+                const float mxAngle = turns * juce::MathConstants<float>::twoPi;
                 bool first = true;
-                for (float a = 0.0f; a <= maxAngle; a += 0.15f)
+                for (float a = 0.0f; a <= mxAngle; a += 0.15f)
                 {
-                    float t = a / maxAngle;
+                    float t = a / mxAngle;
                     float sr = spiralR * t;
                     float px = ex + sr * std::cos(a);
                     float py = vcy + sr * std::sin(a);
@@ -2269,18 +2398,14 @@ private:
                     else spiral.lineTo(px, py);
                 }
 
-                // Rotate around eye center
                 g.saveState();
                 g.addTransform(juce::AffineTransform::rotation(eyeAngle, ex, vcy));
-
-                // 3-layer neon glow
-                g.setColour(eyeBlue.withAlpha(0.1f));
+                g.setColour(sunsetOrange.withAlpha(0.1f));
                 g.strokePath(spiral, juce::PathStrokeType(6.0f));
-                g.setColour(eyeBlue.withAlpha(0.35f));
+                g.setColour(sunsetOrange.withAlpha(0.35f));
                 g.strokePath(spiral, juce::PathStrokeType(3.0f));
-                g.setColour(eyeBlue.withAlpha(0.9f));
+                g.setColour(sunsetOrange.withAlpha(0.9f));
                 g.strokePath(spiral, juce::PathStrokeType(1.5f));
-
                 g.restoreState();
             }
             return;
@@ -2288,12 +2413,12 @@ private:
 
         struct EyeParams { float x, w, corner; };
         EyeParams eyes[2] = {
-            { cx - spacing, ew, ew * 0.4f },   // left eye
-            { cx + spacing, ew, ew * 0.4f }    // right eye
+            { cx - spacing, ew, ew * 0.4f },
+            { cx + spacing, ew, ew * 0.4f }
         };
 
-        // ===== Shy: >< squinting eyes (after ear-pinch) =====
-        if (isShy)
+        // ===== Shy: >< squinting eyes (holo only) =====
+        if (isShy && inHolo)
         {
             for (int idx = 0; idx < 2; ++idx)
             {
@@ -2301,7 +2426,6 @@ private:
                 float chevW = spacing * 0.5f;
                 float chevH = eh * 1.4f;
 
-                // Soft bloom behind
                 float bloomR = chevH * 0.5f;
                 juce::ColourGradient bloom(
                     magicPink.withAlpha(0.25f), ex, vcy,
@@ -2309,25 +2433,20 @@ private:
                 g.setGradientFill(bloom);
                 g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
 
-                // Left eye: ">" — chevron pointing right
-                // Right eye: "<" — chevron pointing left
                 juce::Path shyPath;
                 if (idx == 0)
                 {
-                    // > shape
                     shyPath.startNewSubPath(ex - chevW * 0.4f, vcy - chevH * 0.35f);
                     shyPath.lineTo(ex + chevW * 0.4f, vcy);
                     shyPath.lineTo(ex - chevW * 0.4f, vcy + chevH * 0.35f);
                 }
                 else
                 {
-                    // < shape
                     shyPath.startNewSubPath(ex + chevW * 0.4f, vcy - chevH * 0.35f);
                     shyPath.lineTo(ex - chevW * 0.4f, vcy);
                     shyPath.lineTo(ex + chevW * 0.4f, vcy + chevH * 0.35f);
                 }
 
-                // Thin neon strokes — user insists: NOT too thick!
                 g.setColour(magicPink.withAlpha(0.08f));
                 g.strokePath(shyPath, juce::PathStrokeType(5.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
                 g.setColour(magicPink.withAlpha(0.25f));
@@ -2335,130 +2454,136 @@ private:
                 g.setColour(magicPink.withAlpha(0.9f));
                 g.strokePath(shyPath, juce::PathStrokeType(1.2f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
             }
-            return;  // Skip normal eye rendering
+            return;
         }
 
-        // ===== Smile: upward "∧" chevron eyes =====
-        if (isSmiling)
+        // ===== Smile: upward "∧" chevron eyes (holo only) =====
+        if (isSmiling && inHolo)
         {
             for (int idx = 0; idx < 2; ++idx)
             {
                 float ex = eyes[idx].x;
                 float chevW = spacing * 0.75f;
                 float chevH = eh * 2.0f;
-                float tipY = vcy - chevH * 0.35f;   // tip points upward
-                float baseY = vcy + chevH * 0.35f;  // open ends at bottom
+                float tipY = vcy - chevH * 0.35f;
+                float baseY = vcy + chevH * 0.35f;
 
-                // Glow bloom behind each eye
                 float bloomR = chevH * 0.6f;
                 juce::ColourGradient bloom(
-                    eyeBlue.withAlpha(0.3f), ex, vcy,
-                    eyeBlue.withAlpha(0.0f), ex + bloomR, vcy, true);
+                    sunsetOrange.withAlpha(0.3f), ex, vcy,
+                    sunsetOrange.withAlpha(0.0f), ex + bloomR, vcy, true);
                 g.setGradientFill(bloom);
                 g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
 
                 juce::Path smilePath;
-                smilePath.startNewSubPath(ex - chevW * 0.5f, baseY);   // bottom-left
-                smilePath.lineTo(ex, tipY);                             // top tip
-                smilePath.lineTo(ex + chevW * 0.5f, baseY);            // bottom-right
+                smilePath.startNewSubPath(ex - chevW * 0.5f, baseY);
+                smilePath.lineTo(ex, tipY);
+                smilePath.lineTo(ex + chevW * 0.5f, baseY);
 
-                // 3-layer neon glow (thinner than wink for delicate smile)
-                g.setColour(eyeBlue.withAlpha(0.10f));
+                g.setColour(sunsetOrange.withAlpha(0.10f));
                 g.strokePath(smilePath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
-                g.setColour(eyeBlue.withAlpha(0.30f));
+                g.setColour(sunsetOrange.withAlpha(0.30f));
                 g.strokePath(smilePath, juce::PathStrokeType(4.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
-                g.setColour(eyeBlue.withAlpha(eyeGlow));
+                g.setColour(sunsetOrange.withAlpha(eyeGlow));
                 g.strokePath(smilePath, juce::PathStrokeType(2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
             }
-            return;  // Skip normal eye rendering
+            return;
         }
 
-        if (isWinking)
+        // ===== Wink: left=nono egg, right="<" chevron (holo only) =====
+        if (isWinking && inHolo)
         {
-            // ===== Coordinate separation =====
-            // Dividing line: cx (NONO center). Left eye stays LEFT, right eye stays RIGHT.
-            // Left eye center: eyes[0].x = cx - spacing
-            // Right eye center: eyes[1].x = cx + spacing
-            // Gap between centers = 2 * spacing = r * 0.6 * hScale
-            // We use cx as the hard boundary — nothing crosses it.
-
-            // ----- Left eye: plush-toy style small round black pupil -----
+            // Left eye: Nono-style rounded rect (sunset orange)
             {
                 float eggCX = eyes[0].x + pupilOffsetLX;
                 float eggCY = vcy + pupilOffsetLY;
-                float eyeR = r * 0.12f * hScale;  // slightly larger for wink emphasis +10%
 
-                // Solid black fill with subtle gradient
-                juce::ColourGradient pupilGrad(
-                    juce::Colour(0xFF111111), eggCX, eggCY,
-                    juce::Colour(0xFF1A1A1A), eggCX + eyeR, eggCY, true);
-                g.setGradientFill(pupilGrad);
-                g.fillEllipse(eggCX - eyeR, eggCY - eyeR, eyeR * 2.0f, eyeR * 2.0f);
+                float bloomR = juce::jmax(ew, eh) * 2.0f * (eyeGlow - 0.3f);
+                if (eyeGlow > 0.72f)
+                {
+                    juce::ColourGradient bg(
+                        sunsetOrange.withAlpha((eyeGlow - 0.5f) * 1.5f), eggCX, eggCY,
+                        sunsetOrange.withAlpha(0.0f), eggCX + bloomR, eggCY, true);
+                    g.setGradientFill(bg);
+                    g.fillEllipse(eggCX - bloomR, eggCY - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+                }
+                g.setColour(sunsetOrange.withAlpha(eyeGlow));
+                g.fillRoundedRectangle(eggCX - ew / 2.0f, eggCY - eh / 2.0f, ew, eh, ew * 0.4f);
 
-                // Crisp white highlight: upper-left, solid circle
-                float hlR = eyeR * 0.32f;
-                float hlX = eggCX - eyeR * 0.28f;
-                float hlY = eggCY - eyeR * 0.33f;
-                g.setColour(juce::Colours::white.withAlpha(0.95f));
-                g.fillEllipse(hlX - hlR, hlY - hlR, hlR * 2.0f, hlR * 2.0f);
+                g.setColour(juce::Colours::white.withAlpha(eyeGlow * 0.5f));
+                float sw = ew * 0.45f, sh = eh * 0.1f;
+                g.fillRoundedRectangle(eggCX - sw / 2.0f, eggCY - eh / 2.0f + eh * 0.08f, sw, sh, sw * 0.3f);
             }
 
-            // ----- Right eye: sharp "<" wink chevron -----
+            // Right eye: sharp "<" wink chevron
             {
-                float chevW = spacing * 0.85f;              // width = 85% of half-face, stays in right zone
-                float chevH = eh * 2.2f;                    // tall for drama
-                // Anchor: chevron tip (fold point) sits at cx + spacing*0.35 (well past center)
-                float tipX = cx + spacing * 0.35f;          // fold vertex — far from left eye
-                float tipY = vcy;                           // vertically centered
-                float openX = tipX + chevW;                 // right open end
+                float chevW = spacing * 0.85f;
+                float chevH = eh * 2.2f;
+                float tipX = cx + spacing * 0.35f;
+                float tipY = vcy;
+                float openX = tipX + chevW;
 
                 juce::Path winkPath;
-                winkPath.startNewSubPath(openX, tipY - chevH * 0.5f);   // top-right
-                winkPath.lineTo(tipX, tipY);                             // fold point
-                winkPath.lineTo(openX, tipY + chevH * 0.5f);            // bottom-right
+                winkPath.startNewSubPath(openX, tipY - chevH * 0.5f);
+                winkPath.lineTo(tipX, tipY);
+                winkPath.lineTo(openX, tipY + chevH * 0.5f);
 
-                // 3-layer glow: outer → mid → core
-                g.setColour(eyeBlue.withAlpha(0.12f));
+                g.setColour(sunsetOrange.withAlpha(0.12f));
                 g.strokePath(winkPath, juce::PathStrokeType(14.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
-                g.setColour(eyeBlue.withAlpha(0.35f));
+                g.setColour(sunsetOrange.withAlpha(0.35f));
                 g.strokePath(winkPath, juce::PathStrokeType(9.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
-                g.setColour(eyeBlue.withAlpha(eyeGlow));
+                g.setColour(sunsetOrange.withAlpha(eyeGlow));
                 g.strokePath(winkPath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
             }
-
-            return; // Skip normal eye rendering
+            return;
         }
 
+        // ===== DEFAULT EYES =====
         for (int idx = 0; idx < 2; ++idx)
         {
             auto& eye = eyes[idx];
-
-            // Mouse-tracking offset: shift the ENTIRE eye entity toward the cursor
             float pOffX = (idx == 0) ? pupilOffsetLX : pupilOffsetRX;
             float pOffY = (idx == 0) ? pupilOffsetLY : pupilOffsetRY;
             float ecx = eye.x + pOffX;
             float ecy = vcy + pOffY;
 
-            // === Plush-toy style: small round black pupil + crisp white highlight ===
-            float eyeRadius = r * 0.10f * hScale;  // compact cute eye +10% (GUOBA plush proportion)
+            if (inHolo)
+            {
+                // === HOLO: Sunset orange neon rounded-rect eyes (audio-reactive) ===
+                if (eyeGlow > 0.72f)
+                {
+                    float br = juce::jmax(eye.w, eh) * 2.0f * (eyeGlow - 0.3f);
+                    juce::ColourGradient bg(
+                        sunsetOrange.withAlpha((eyeGlow - 0.5f) * 1.5f), ecx, ecy,
+                        sunsetOrange.withAlpha(0.0f), ecx + br, ecy, true);
+                    g.setGradientFill(bg);
+                    g.fillEllipse(ecx - br, ecy - br, br * 2.0f, br * 2.0f);
+                }
 
-            // Solid black fill with very subtle gradient for depth
-            juce::ColourGradient pupilGrad(
-                juce::Colour(0xFF111111), ecx, ecy,
-                juce::Colour(0xFF1A1A1A), ecx + eyeRadius, ecy, true);
-            g.setGradientFill(pupilGrad);
-            g.fillEllipse(ecx - eyeRadius, ecy - eyeRadius,
-                          eyeRadius * 2.0f, eyeRadius * 2.0f);
+                g.setColour(sunsetOrange.withAlpha(eyeGlow));
+                g.fillRoundedRectangle(ecx - eye.w / 2.0f, ecy - eh / 2.0f, eye.w, eh, eye.corner);
 
-            // Crisp white highlight: upper-left, solid circle (like GUOBA plush)
-            float hlRadius = eyeRadius * 0.32f;
-            float hlX = ecx - eyeRadius * 0.28f;
-            float hlY = ecy - eyeRadius * 0.33f;
-            g.setColour(juce::Colours::white.withAlpha(0.95f));
-            g.fillEllipse(hlX - hlRadius, hlY - hlRadius,
-                          hlRadius * 2.0f, hlRadius * 2.0f);
+                g.setColour(juce::Colours::white.withAlpha(eyeGlow * 0.5f));
+                float sw = eye.w * 0.45f, sh = eh * 0.1f;
+                g.fillRoundedRectangle(ecx - sw / 2.0f, ecy - eh / 2.0f + eh * 0.08f, sw, sh, sw * 0.3f);
+            }
+            else
+            {
+                // === NORMAL: Plush-toy black pupil + white highlight ===
+                float eyeRadius = r * 0.10f * hScale;
+
+                g.setColour(juce::Colour(0xFF111111));
+                g.fillEllipse(ecx - eyeRadius, ecy - eyeRadius,
+                              eyeRadius * 2.0f, eyeRadius * 2.0f);
+
+                float hlRadius = eyeRadius * 0.32f;
+                float hlX = ecx - eyeRadius * 0.28f;
+                float hlY = ecy - eyeRadius * 0.33f;
+                g.setColour(juce::Colours::white.withAlpha(0.95f));
+                g.fillEllipse(hlX - hlRadius, hlY - hlRadius,
+                              hlRadius * 2.0f, hlRadius * 2.0f);
+            }
         }
-
     }
 
     //==========================================================================
@@ -2493,8 +2618,12 @@ private:
         auto visorClip = buildVisorPath(cx, vcy, r, hScale);
         g.reduceClipRegion(visorClip);
 
-        // Dark backdrop so red pixels pop against light visor fill
-        g.setColour(juce::Colour(0xFF0A0A14).withAlpha(0.92f));
+        // Gray-white gradient backdrop (matching holo visor feel, so red pixels pop)
+        juce::ColourGradient gridBg(
+            juce::Colour(0xFFF2F2F5).withAlpha(0.95f), cx, top,
+            juce::Colour(0xFFD5D5DC).withAlpha(0.95f), cx, bottom, false);
+        gridBg.addColour(0.35, juce::Colour(0xFFE8E8EC).withAlpha(0.95f));
+        g.setGradientFill(gridBg);
         g.fillRect(left, top, vw, vh);
 
         const float cell = 4.0f;
@@ -2634,7 +2763,7 @@ private:
         float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
         float transY = vcy + r * 0.05f;
 
-        auto grayFur  = juce::Colour(0xFFCCCCCC);
+        auto grayFur  = juce::Colour(0xFFCCCCCC).withAlpha(0.65f);
         auto whiteFur = juce::Colour(0xFFFFFEFA);
         float vTop = vcy - r * 1.2f;
         float vBot = vcy + r * 1.2f;
@@ -3064,6 +3193,58 @@ private:
             float py = particleOriginY + dist * std::sin(a);
             g.setColour(((i % 2 == 0) ? GoodMeterLookAndFeel::accentPink : electricBlue).withAlpha(alpha));
             g.fillEllipse(px - sz, py - sz, sz * 2.0f, sz * 2.0f);
+        }
+    }
+
+    //==========================================================================
+    // Drawing: Lightning VFX (radiates from belt badge on holo toggle)
+    //==========================================================================
+    void drawLightningVFX(juce::Graphics& g, float /*cx*/, float /*cy*/, float /*r*/)
+    {
+        float fade = 1.0f - lightningProgress;
+        float flash = fade * fade;  // quadratic falloff for snappy feel
+
+        // Central flash at badge
+        float bcx = badgeHitRect.getCentreX();
+        float bcy = badgeHitRect.getCentreY();
+        float flashR = 15.0f + lightningProgress * 40.0f;
+
+        juce::ColourGradient flashGrad(
+            electricBlue.withAlpha(0.7f * flash), bcx, bcy,
+            electricBlue.withAlpha(0.0f), bcx + flashR, bcy, true);
+        g.setGradientFill(flashGrad);
+        g.fillEllipse(bcx - flashR, bcy - flashR, flashR * 2.0f, flashR * 2.0f);
+
+        // Lightning bolts: 3-segment zigzag paths
+        for (const auto& bolt : lightningBolts)
+        {
+            float boltAlpha = bolt.brightness * flash;
+            if (boltAlpha < 0.01f) continue;
+
+            // Expand bolt length over time
+            float t = juce::jmin(1.0f, lightningProgress * 3.0f);
+            float ex = bolt.x1 + (bolt.x2 - bolt.x1) * t;
+            float ey = bolt.y1 + (bolt.y2 - bolt.y1) * t;
+            float mx = (bolt.x1 + ex) * 0.5f + bolt.midOffsetX;
+            float my = (bolt.y1 + ey) * 0.5f;
+
+            // Mid sub-segment for extra zigzag
+            float mx2 = (mx + ex) * 0.5f - bolt.midOffsetX * 0.6f;
+            float my2 = (my + ey) * 0.5f;
+
+            juce::Path boltPath;
+            boltPath.startNewSubPath(bolt.x1, bolt.y1);
+            boltPath.lineTo(mx, my);
+            boltPath.lineTo(mx2, my2);
+            boltPath.lineTo(ex, ey);
+
+            // 3-layer glow
+            g.setColour(electricBlue.withAlpha(0.08f * boltAlpha));
+            g.strokePath(boltPath, juce::PathStrokeType(6.0f));
+            g.setColour(electricBlue.withAlpha(0.3f * boltAlpha));
+            g.strokePath(boltPath, juce::PathStrokeType(3.0f));
+            g.setColour(juce::Colours::white.withAlpha(0.9f * boltAlpha));
+            g.strokePath(boltPath, juce::PathStrokeType(1.2f));
         }
     }
 
