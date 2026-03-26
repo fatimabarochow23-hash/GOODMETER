@@ -203,6 +203,9 @@ slotTargetBounds 必须通过身份反查写入，不能假设遍历顺序等于
 | 液体填充 | reduceClipRegion + fillRect，不手算宽度 |
 | 拖拽坐标 | 统一到 contentComponent 坐标系，身份反查写入 |
 | **macOS 拖拽冻结** | **见下方 #9 完整复盘（6 轮取样修复）** |
+| **Plugin 污染** | **Standalone 功能泄漏到 Plugin：见 #10** |
+| **Jiggle 卡顿** | **拖拽节流器误杀动画帧率：见 #11** |
+| **JuceLibraryCode 跨平台** | **多 .jucer 共享目录：见 #12** |
 
 ---
 
@@ -523,4 +526,106 @@ void timerCallback() override
 handlePaint < 50 采样 = 健康（2%）
 drawText in paint = 0 = 达标
 MML = 0 = 必须
+```
+
+---
+
+## 10. Plugin 模式被 Standalone 功能污染（resize grip 泄漏）
+
+### 问题
+Plugin 模式的每张 meter card 右下角出现了 resize 拖拽手柄（三条斜线），用户可以在 Plugin 模式下拖拽改变卡片大小。这是 Standalone 浮动模式的专属功能，不应出现在 Plugin 中。
+
+### 根因
+`MeterCardComponent.h` 的 resize grip 绘制条件为 `isExpanded && !isDocked`，Plugin 的卡片虽然不是 "docked"（那是 Standalone shelf 概念），但满足 `!isDocked` 条件，因此 grip 被无差别绘制。
+
+callbacks (`onResizeSnapQuery`, `onResizeEnded`) 只在 `StandaloneNonoEditor` 中 wire，Plugin 的 `PluginEditor` 不会 wire 它们。但 grip 视觉仍然存在，拖拽也会修改卡片尺寸（虽然没有 snap 效果）。
+
+### 修复
+在三个位置（paint 绘制、mouseDown hit test、mouseMove hover）都加了 `&& onResizeSnapQuery` 守卫：
+```cpp
+// paint: 只在 snap 回调被 wire 时才绘制 grip
+if (isExpanded && !isDocked && onResizeSnapQuery) { /* draw grip */ }
+
+// mouseDown: 只在 snap 回调被 wire 时才响应 grip 拖拽
+if (isExpanded && !isDocked && onResizeSnapQuery && !resizeGripRect.isEmpty()) { ... }
+
+// mouseMove: 只在 snap 回调被 wire 时才跟踪 hover
+isResizeHovered = isExpanded && onResizeSnapQuery && !resizeGripRect.isEmpty() && ...;
+```
+
+### 规则
+```
+MeterCardComponent 中的 Standalone-only 交互功能，
+必须用回调是否被 wire（!= nullptr）作为运行时守卫。
+不要用 #if 预处理器——MeterCardComponent 是共享组件，
+三个平台都编译同一份代码。
+```
+
+---
+
+## 11. Jiggle 换位模式动画卡顿（拖拽节流器误杀）
+
+### 问题
+Plugin 模式的 Jiggle 换位动画（卡片左右晃动 + 拖拽交换）明显卡顿，帧率不流畅。
+
+### 根因
+`PluginEditor.cpp` 的 `timerCallback()` 入口有一个 30Hz 降频节流器：
+```cpp
+if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+{
+    static int dragThrottleCounter = 0;
+    if (++dragThrottleCounter % 2 != 0) return;  // 跳过一半帧
+}
+```
+这个节流器本意是窗口拖拽时减少 CA compositing 压力（来自 Bug #9 第六轮的优化）。但 Jiggle 模式下用户**全程都在按住鼠标**拖卡片，导致节流器把 60Hz 削成 30Hz → jiggle 晃动变卡。
+
+### 修复
+加 `!isJiggleMode` 条件，Jiggle 模式下跳过节流：
+```cpp
+if (!isJiggleMode && juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+```
+
+### 规则
+```
+Timer 降频/节流策略必须排除所有需要满帧率的模式。
+每新增一个动画模式（jiggle、orbit、shatter 等），
+都要检查是否被已有的节流器误杀。
+```
+
+---
+
+## 12. JuceLibraryCode 跨平台污染（多 .jucer 共享目录）
+
+### 问题
+GOODMETER 有三个 .jucer 文件（Standalone、Plugin-only、iOS），但它们共享同一个 `JuceLibraryCode/` 目录。每次 `Projucer --resave` 都会根据该 .jucer 的模块列表重新生成这个目录的内容。
+
+iOS .jucer 没有 `juce_audio_plugin_client`（因为它是 guiapp），所以 resave iOS 后会**删除** `include_juce_audio_plugin_client_*.cpp` 文件。之后编 macOS standalone/plugin 就会失败（缺少 plugin client 文件）。反之，resave standalone 后编 iOS 也会因多出 plugin client 文件导致链接问题。
+
+### 尝试的无效修复
+在 iOS .jucer 中设置 `userFilesDirectory="JuceLibraryCode_iOS"` → Projucer 忽略了这个属性，仍然写入 `JuceLibraryCode/`。
+
+### 修复
+创建 `build.sh` 脚本，核心机制：
+```
+.jlcode_cache/
+├── standalone/   ← rsync snapshot of JuceLibraryCode after resave GOODMETER.jucer
+├── plugin/       ← rsync snapshot after resave GOODMETER_Plugin.jucer
+└── ios/          ← rsync snapshot after resave GOODMETER_iOS.jucer
+```
+
+每次构建前，脚本用 `rsync --delete` 恢复对应的快照到 `JuceLibraryCode/`。首次运行 `./build.sh resave <target>` 生成快照。
+
+### 验证
+```
+./build.sh plugin   → BUILD SUCCEEDED
+./build.sh ios-sim  → BUILD SUCCEEDED
+./build.sh plugin   → BUILD SUCCEEDED (零污染)
+```
+
+### 规则
+```
+多 .jucer 项目禁止手动 Projucer --resave。
+始终通过 build.sh 管理 JuceLibraryCode 快照。
+新增 .jucer 时，先运行 ./build.sh resave <name> 建立缓存。
+.jlcode_cache/ 应加入 .gitignore。
 ```

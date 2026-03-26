@@ -205,8 +205,15 @@ public:
     std::atomic<bool> useSystemAudio { false };
 #endif
 
-    // Retroactive recording — always-on 60s audio history buffer
+    // Retroactive recording — always-on audio history buffer
     AudioHistoryBuffer audioHistoryBuffer;
+
+    // Rewind duration setting (seconds): 30, 60, 120, 300
+    std::atomic<int> rewindSeconds { 60 };
+
+    // Shared audio device manager (set by StandaloneApp, used by AudioLab preview)
+    // Avoids creating a second CoreAudio device that conflicts with the main app.
+    juce::AudioDeviceManager* sharedDeviceManager = nullptr;
 
     // Export last N seconds of audio to WAV file (called from GUI)
     void exportRetrospectiveRecording(int secondsToSave = 60,

@@ -547,6 +547,20 @@ public:
         }
     }
 
+    //==========================================================================
+    // Skin system: delegate to HoloNonoComponent
+    //==========================================================================
+    void setSkin(HoloNonoComponent::SkinType s)
+    {
+        if (holoNono != nullptr)
+            holoNono->setSkin(s);
+    }
+
+    HoloNonoComponent::SkinType getSkin() const
+    {
+        return (holoNono != nullptr) ? holoNono->getSkin() : HoloNonoComponent::SkinType::Guoba;
+    }
+
 private:
     GOODMETERAudioProcessor& audioProcessor;
     GoodMeterLookAndFeel customLookAndFeel;
@@ -1214,7 +1228,7 @@ private:
         hoverBtnProgress = 1.0f;
         hoverBtnHotIndex = -1;
 
-        auto* content = new AudioLabContent(getRecordingDirectory());
+        auto* content = new AudioLabContent(getRecordingDirectory(), audioProcessor.sharedDeviceManager);
         content->setSize(680, 520);
         content->setLookAndFeel(&customLookAndFeel);
 
@@ -1276,8 +1290,10 @@ private:
     //==========================================================================
     void handleRewindButtonClick()
     {
-        // 1. Trigger export of last 60 seconds to user's configured directory
-        audioProcessor.exportRetrospectiveRecording(60, getRecordingDirectory());
+        // 1. Trigger export of last N seconds to user's configured directory
+        audioProcessor.exportRetrospectiveRecording(
+            audioProcessor.rewindSeconds.load(std::memory_order_relaxed),
+            getRecordingDirectory());
 
         // 2. Trigger Nono time-rewind holographic face animation (1 second)
         if (holoNono != nullptr)

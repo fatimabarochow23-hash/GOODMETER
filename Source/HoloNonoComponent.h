@@ -30,11 +30,15 @@ struct NonoAnalysisResult
 
 //==============================================================================
 class HoloNonoComponent : public juce::Component,
-                           public juce::Timer,
-                           public juce::FileDragAndDropTarget
+                           public juce::Timer
+#if ! JUCE_IOS
+                         , public juce::FileDragAndDropTarget
+#endif
 {
 public:
     //==========================================================================
+    enum class SkinType { Guoba, Nono };
+
     HoloNonoComponent(GOODMETERAudioProcessor& processor)
         : audioProcessor(processor)
     {
@@ -44,6 +48,10 @@ public:
         // Load GUOBA sprite from BinaryData
         guobaSprite = juce::ImageCache::getFromMemory(
             BinaryData::guoba_png, BinaryData::guoba_pngSize);
+
+        // Load GUOBA nose sprite
+        guobaNose = juce::ImageCache::getFromMemory(
+            BinaryData::guoba_nose_png, BinaryData::guoba_nose_pngSize);
 
         lastScreenPos = getScreenPosition();
         lastW = getWidth();
@@ -94,6 +102,43 @@ public:
     // Callback: ear-pinch flip back from analysis/back state
     std::function<void()> onEarFlipBack;
 
+    // Skin system
+    SkinType currentSkin = SkinType::Guoba;
+    void setSkin(SkinType s)
+    {
+        if (s == currentSkin) return;
+        currentSkin = s;
+        // Reset holo visor when switching skins
+        isHoloVisor = false;
+        holoTransition = 0.0f;
+        repaint();
+    }
+    SkinType getSkin() const { return currentSkin; }
+    bool isGuoba() const { return currentSkin == SkinType::Guoba; }
+
+    // Skin selector ComboBox (for embedding in MeterCard header)
+    juce::ComboBox& getSkinMenu() { return skinMenu; }
+
+    void initSkinMenu()
+    {
+        skinMenu.addItem("Nono", 1);
+        skinMenu.addItem("Guoba", 2);
+        skinMenu.setSelectedId(currentSkin == SkinType::Nono ? 1 : 2, juce::dontSendNotification);
+        skinMenu.setJustificationType(juce::Justification::centredRight);
+        skinMenu.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
+        skinMenu.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+        skinMenu.setColour(juce::ComboBox::arrowColourId, juce::Colours::transparentBlack);
+        skinMenu.onChange = [this]() {
+            switch (skinMenu.getSelectedId())
+            {
+                case 1: setSkin(SkinType::Nono);  break;
+                case 2: setSkin(SkinType::Guoba); break;
+                default: break;
+            }
+        };
+        addAndMakeVisible(skinMenu);
+    }
+
     /** Force-cancel an orbit in progress (called when animation launch fails) */
     void cancelOrbit()
     {
@@ -103,6 +148,26 @@ public:
         orbitProgress = 0.0f;
         smileFramesLeft = 0;
         orbitLockFramesLeft = 0;
+    }
+
+    /** Programmatic file analysis — callable from iOS page or external code.
+        Flips to back, runs offline LUFS analysis, shows results. */
+    void analyzeFile(const juce::File& file)
+    {
+        if (!file.existsAsFile()) return;
+
+        // If on front, flip to back first then analyze
+        if (nonoState == NonoState::Front || nonoState == NonoState::ShowingResults)
+        {
+            pendingAnalysisFile = file;
+            flipTarget = 1.0f;
+            nonoState = NonoState::Flipping;
+            flipDestination = NonoState::Analyzing;
+        }
+        else
+        {
+            startAnalysis(file);
+        }
     }
 
     /** Trigger shy expression (>< eyes) for 1.5 seconds — callable from editor */
@@ -278,8 +343,9 @@ public:
     }
 
     //==========================================================================
-    // Drag & Drop
+    // Drag & Drop (desktop only — iOS uses UIDocumentPicker via FileChooser)
     //==========================================================================
+#if ! JUCE_IOS
     bool isInterestedInFileDrag(const juce::StringArray& files) override
     {
         for (const auto& f : files)
@@ -332,6 +398,7 @@ public:
             }
         }
     }
+#endif // ! JUCE_IOS
 
     //==========================================================================
     // Paint
@@ -372,14 +439,19 @@ public:
         const float cy = nonoDrawArea.getCentreY() - radius * 0.3f + idleOffsetY + collisionOffsetY + orbitOY;
 
         // Update hit test regions
-        // GUOBA body hit rect: based on sprite bounds (trimmed bottom 20% to avoid
-        // overlapping with hover buttons positioned below the character)
+        if (isGuoba())
         {
+            // GUOBA body hit rect: based on sprite bounds (trimmed bottom 20%)
             float spriteH = radius * 4.0f;
             float spriteW = spriteH;
             float anchorY = cy - radius * 0.1f;
             float spriteY = anchorY - spriteH * 0.38f;
             bodyHitRect = { cx - spriteW * 0.5f, spriteY, spriteW, spriteH * 0.80f };
+        }
+        else
+        {
+            // NONO body hit rect: elliptical body
+            bodyHitRect = { cx - radius, cy - radius, radius * 2.0f, radius * 2.0f };
         }
         float htX = cx + radius * 1.7f;
         float htY = cy - radius * 0.1f;
@@ -411,13 +483,14 @@ public:
 
         hScale = juce::jmax(0.02f, hScale);
 
-        // GUOBA ear hit rects — ears are connected to head, need generous hit regions
+        // Ear hit rects — skin-dependent
+        if (isGuoba())
         {
+            // GUOBA ears at ~(24%, 5%) and (76%, 5%) in the PNG — top of head
             float spriteH = radius * 4.0f;
             float spriteW = spriteH;
             float anchorY = cy - radius * 0.1f;
             float spriteY = anchorY - spriteH * 0.38f;
-            // GUOBA ears at ~(24%, 5%) and (76%, 5%) in the PNG — top of head
             float earLX = cx - spriteW * 0.5f * hScale + spriteW * 0.24f * hScale;
             float earRX = cx - spriteW * 0.5f * hScale + spriteW * 0.76f * hScale;
             float earY = spriteY + spriteH * 0.05f;
@@ -425,6 +498,20 @@ public:
             float earH = radius * 0.9f;
             earHitRect[0] = { earLX - earW * 0.5f, earY - earH * 0.3f, earW, earH };
             earHitRect[1] = { earRX - earW * 0.5f, earY - earH * 0.3f, earW, earH };
+        }
+        else
+        {
+            // NONO ears: positioned at holographic blade anchors
+            const float sphereTop = cy - radius;
+            float earSpecs[2][2] = { {-0.72f, -0.18f}, {0.72f, -0.18f} };
+            for (int i = 0; i < 2; ++i)
+            {
+                float eax = cx + radius * earSpecs[i][0] * hScale;
+                float eay = sphereTop + radius * earSpecs[i][1] + earBobOffset;
+                float earW = radius * 0.35f * hScale;
+                float earH = radius * 0.75f;
+                earHitRect[i] = { eax - earW * 0.5f, eay - earH * 0.5f, earW, earH };
+            }
         }
 
         // Lightning badge hit rect: belt buckle at ~(50%, 78%) of sprite
@@ -466,7 +553,7 @@ public:
         // Drag hover highlight
         if (isDragHovering)
         {
-            g.setColour(electricBlue.withAlpha(0.25f));
+            g.setColour(accentCol().withAlpha(0.25f));
             g.drawEllipse(cx - radius * hScale - 4.0f, cy - radius - 4.0f,
                           radius * hScale * 2.0f + 8.0f, radius * 2.0f + 8.0f, 3.0f);
         }
@@ -499,9 +586,31 @@ public:
     {
         auto pt = juce::Point<float>(static_cast<float>(x), static_cast<float>(y));
 
-        // GUOBA body: rectangle check (sprite is not elliptical)
-        if (!bodyHitRect.isEmpty() && bodyHitRect.contains(pt))
-            return true;
+        // Body hit test — skin-dependent
+        if (!bodyHitRect.isEmpty())
+        {
+            if (isGuoba())
+            {
+                // GUOBA: rectangle check (sprite is not elliptical)
+                if (bodyHitRect.contains(pt))
+                    return true;
+            }
+            else
+            {
+                // NONO: elliptical check (more accurate)
+                float bcx = bodyHitRect.getCentreX();
+                float bcy = bodyHitRect.getCentreY();
+                float rx = bodyHitRect.getWidth() * 0.5f;
+                float ry = bodyHitRect.getHeight() * 0.5f;
+                if (rx > 0.0f && ry > 0.0f)
+                {
+                    float dx = (pt.x - bcx) / rx;
+                    float dy = (pt.y - bcy) / ry;
+                    if (dx * dx + dy * dy <= 1.0f)
+                        return true;
+                }
+            }
+        }
 
         // Lightning badge on belt buckle
         if (!badgeHitRect.isEmpty() && badgeHitRect.contains(pt))
@@ -1156,17 +1265,24 @@ private:
     };
     TubeBubble tubeBubbles[8];
 
-    // Colors
-    static inline const juce::Colour electricBlue = juce::Colour(0xFFF9E353);
-    static inline const juce::Colour eyeBlue     = juce::Colour(0xFF00D4FF);
-    static inline const juce::Colour sunsetOrange = juce::Colour(0xFFFF7B3A);  // holo-mode eye color
+    // Colors — skin-dependent accent via accentCol()
+    static inline const juce::Colour guobaGold    = juce::Colour(0xFFF9E353);  // Guoba: yellow/gold frame
+    static inline const juce::Colour nonoBlue     = juce::Colour(0xFF00AAFF);  // Nono: electric blue
+    static inline const juce::Colour sunsetOrange = juce::Colour(0xFFFF7B3A);  // Guoba holo-mode eye color
     static inline const juce::Colour bodyEdge     = juce::Colour(0xFFD0D0D8);
     static inline const juce::Colour screenDark   = juce::Colour(0xFF0E0E1E);
     static inline const juce::Colour magicPink    = juce::Colour(0xFFFF2A7F);
     static inline const juce::Colour neonGreen    = juce::Colour(0xFF39FF14);
 
+    /** Skin-aware accent color: gold for Guoba, blue for Nono */
+    juce::Colour accentCol() const { return isGuoba() ? guobaGold : nonoBlue; }
+
     // GUOBA sprite image
     juce::Image guobaSprite;
+    juce::Image guobaNose;
+
+    // Skin selector dropdown
+    juce::ComboBox skinMenu;
 
     // Visor mask fade animation (0=hidden, 1=fully visible)
     float visorAlpha = 1.0f;
@@ -1186,7 +1302,9 @@ private:
 
         // ==========================================
         // 慢速轨道 (10Hz)：每6帧查一次岗，避开OS跨进程IPC锁竞争
+        // (Desktop only — no window movement tracking on iOS)
         // ==========================================
+#if ! JUCE_IOS
         osQueryCounter++;
         if (osQueryCounter >= 6)
         {
@@ -1209,6 +1327,7 @@ private:
             lastW = currentW;
             lastH = currentH;
         }
+#endif // ! JUCE_IOS
 
         // ==========================================
         // 高速轨道 (60Hz)：自然衰减 + 状态机
@@ -1269,13 +1388,19 @@ private:
 
         targetEyeOpenness = 0.3f + audioLevel * 0.7f;
 
-        // Idle figure-8 (disabled — GUOBA stands still; keep code for future re-enable)
-        // idlePhase += 0.015f;
-        // if (idlePhase > 628.0f) idlePhase -= 628.0f;
-        // idleOffsetX = 1.5f * std::sin(2.0f * idlePhase);
-        // idleOffsetY = 2.5f * std::sin(idlePhase);
-        idleOffsetX = 0.0f;
-        idleOffsetY = 0.0f;
+        // Idle figure-8: Nono floats; Guoba stands still (sprite doesn't suit floating)
+        if (isGuoba())
+        {
+            idleOffsetX = 0.0f;
+            idleOffsetY = 0.0f;
+        }
+        else
+        {
+            idlePhase += 0.015f;
+            if (idlePhase > 628.0f) idlePhase -= 628.0f;
+            idleOffsetX = 1.5f * std::sin(2.0f * idlePhase);
+            idleOffsetY = 2.5f * std::sin(idlePhase);
+        }
 
         // Visor fade animation (~0.3s transition)
         visorAlpha += (visorAlphaTarget - visorAlpha) * 0.12f;
@@ -1832,8 +1957,8 @@ private:
     {
         const float glowY = cy + r + r * 0.08f;
         juce::ColourGradient grad(
-            electricBlue.withAlpha(0.18f), cx, glowY,
-            electricBlue.withAlpha(0.0f), cx, glowY + r * 0.7f, false);
+            accentCol().withAlpha(0.18f), cx, glowY,
+            accentCol().withAlpha(0.0f), cx, glowY + r * 0.7f, false);
         g.setGradientFill(grad);
         g.fillEllipse(cx - r * 0.8f, glowY, r * 1.6f, r * 0.65f);
     }
@@ -1846,31 +1971,141 @@ private:
 
     void drawBody(juce::Graphics& g, float cx, float cy, float r, float hScale)
     {
-        if (hScale < 0.1f || guobaSprite.isNull()) return;
+        if (isGuoba())
+        {
+            // === GUOBA: sprite image ===
+            if (hScale < 0.1f || guobaSprite.isNull()) return;
 
-        // GUOBA sprite: height = r * 4.0 (2x Nono body diameter)
-        float spriteH = r * 4.0f;
-        float spriteW = spriteH; // 1:1 aspect ratio
+            float spriteH = r * 4.0f;
+            float spriteW = spriteH;
+            float anchorY = cy - r * 0.1f;
+            float spriteY = anchorY - spriteH * 0.38f;
+            float sw = spriteW * hScale;
+            g.setOpacity(1.0f);
+            g.drawImage(guobaSprite,
+                cx - sw * 0.5f, spriteY, sw, spriteH,
+                0, 0, guobaSprite.getWidth(), guobaSprite.getHeight());
+        }
+        else
+        {
+            // === NONO: elliptical gradient body ===
+            float rx = r * hScale;
 
-        // Nose anchor at (50%, 38%) of PNG, aligned to visor center (cx, cy - r*0.1)
-        float anchorY = cy - r * 0.1f;
-        float spriteY = anchorY - spriteH * 0.38f;
+            juce::ColourGradient bodyGrad(
+                juce::Colour(0xFFFFFFFF), cx - rx * 0.35f, cy - r * 0.4f,
+                juce::Colour(0xFFC0C4CE), cx + rx * 0.55f, cy + r * 0.6f, true);
+            bodyGrad.addColour(0.45, juce::Colour(0xFFF0F1F5));
+            bodyGrad.addColour(0.8,  juce::Colour(0xFFD5D8E0));
+            g.setGradientFill(bodyGrad);
+            g.fillEllipse(cx - rx, cy - r, rx * 2.0f, r * 2.0f);
 
-        // hScale: horizontal squash during flip animation
-        float sw = spriteW * hScale;
-        // Ensure full opacity (prior gradient fills may leave residual alpha state)
-        g.setOpacity(1.0f);
-        g.drawImage(guobaSprite,
-            cx - sw * 0.5f, spriteY, sw, spriteH,
-            0, 0, guobaSprite.getWidth(), guobaSprite.getHeight());
+            g.setColour(juce::Colour(0xFFB8BCC8));
+            g.drawEllipse(cx - rx, cy - r, rx * 2.0f, r * 2.0f, 1.5f);
+
+            if (hScale > 0.5f)
+            {
+                juce::ColourGradient specGrad(
+                    juce::Colours::white.withAlpha(0.65f), cx - rx * 0.3f, cy - r * 0.4f,
+                    juce::Colours::white.withAlpha(0.0f),  cx + rx * 0.05f, cy - r * 0.05f, true);
+                g.setGradientFill(specGrad);
+                g.fillEllipse(cx - rx * 0.6f, cy - r * 0.7f, rx * 0.7f, r * 0.5f);
+            }
+
+            if (hScale > 0.5f)
+            {
+                juce::ColourGradient rimGrad(
+                    juce::Colours::white.withAlpha(0.0f), cx, cy,
+                    juce::Colour(0xFFDDE0EA).withAlpha(0.35f), cx + rx * 0.7f, cy + r * 0.6f, true);
+                g.setGradientFill(rimGrad);
+                g.fillEllipse(cx + rx * 0.15f, cy + r * 0.2f, rx * 0.7f, r * 0.55f);
+            }
+        }
     }
 
     //==========================================================================
     // Drawing: Holographic Ears (Seer-style solid base + energy blade)
     //==========================================================================
-    void drawHolographicEars(juce::Graphics&, float, float, float, float)
+    void drawHolographicEars(juce::Graphics& g, float cx, float cy, float r, float hScale)
     {
-        // GUOBA: ears are part of the sprite image, no code drawing needed
+        if (isGuoba())
+            return;  // GUOBA: ears are part of the sprite image
+
+        // === NONO: Seer-style solid base capsule + energy blade ===
+        if (hScale < 0.3f) return;
+
+        const juce::Colour baseCol(0xFFE0E5EC);
+        const juce::Colour bladeCol(0xFF00E5FF);
+        const float tiltAngle = juce::degreesToRadians(15.0f);
+        const float sphereTop = cy - r;
+
+        struct EarSpec { float xOff, yOff, scale, bob; };
+        EarSpec specs[2] = {
+            { -0.72f, -0.18f, 0.95f, earBobOffset },
+            {  0.72f, -0.18f, 0.95f, earBobOffset }
+        };
+
+        for (int i = 0; i < 2; ++i)
+        {
+            int side = (i == 0) ? -1 : 1;
+            float sc = specs[i].scale;
+
+            float baseW = r * 0.22f * hScale * sc;
+            float baseH = r * 0.32f * sc;
+            float bladeW = r * 0.13f * hScale * sc;
+            float bladeH = r * 0.6f * sc;
+
+            float anchorX = cx + r * specs[i].xOff * hScale;
+            float anchorY = sphereTop + r * specs[i].yOff + specs[i].bob;
+            float angle = tiltAngle * static_cast<float>(side);
+
+            auto xform = juce::AffineTransform::rotation(angle, anchorX, anchorY);
+
+            // Solid base (capsule)
+            juce::Path basePath;
+            basePath.addRoundedRectangle(
+                anchorX - baseW / 2.0f, anchorY - baseH / 2.0f,
+                baseW, baseH, baseW * 0.45f);
+            basePath.applyTransform(xform);
+
+            g.setColour(baseCol);
+            g.fillPath(basePath);
+            g.setColour(bodyEdge);
+            g.strokePath(basePath, juce::PathStrokeType(1.5f));
+
+            // Holographic blade
+            float bladeBot = anchorY - baseH * 0.3f;
+            float bladeTop = bladeBot - bladeH;
+            float bw = bladeW;
+
+            juce::Path bladePath;
+            bladePath.startNewSubPath(anchorX - bw / 2.0f, bladeBot);
+            bladePath.cubicTo(
+                anchorX - bw * 0.55f, bladeBot - bladeH * 0.4f,
+                anchorX - bw * 0.2f,  bladeBot - bladeH * 0.75f,
+                anchorX,              bladeTop);
+            bladePath.cubicTo(
+                anchorX + bw * 0.2f,  bladeBot - bladeH * 0.75f,
+                anchorX + bw * 0.55f, bladeBot - bladeH * 0.4f,
+                anchorX + bw / 2.0f,  bladeBot);
+            bladePath.closeSubPath();
+            bladePath.applyTransform(xform);
+
+            g.setColour(bladeCol.withAlpha(0.1f));
+            g.strokePath(bladePath, juce::PathStrokeType(8.0f * sc));
+            g.setColour(bladeCol.withAlpha(0.25f));
+            g.strokePath(bladePath, juce::PathStrokeType(4.0f * sc));
+
+            auto gradBot = juce::Point<float>(anchorX, bladeBot).transformedBy(xform);
+            auto gradTop = juce::Point<float>(anchorX, bladeTop).transformedBy(xform);
+            juce::ColourGradient bladeGrad(
+                bladeCol.withAlpha(0.85f), gradBot.x, gradBot.y,
+                bladeCol.withAlpha(0.3f),  gradTop.x, gradTop.y, false);
+            g.setGradientFill(bladeGrad);
+            g.fillPath(bladePath);
+
+            g.setColour(bladeCol.withAlpha(0.7f));
+            g.strokePath(bladePath, juce::PathStrokeType(1.2f));
+        }
     }
 
     //==========================================================================
@@ -2020,6 +2255,151 @@ private:
         float triW = 4.5f, triH = 5.5f;
 
         g.setColour(deepBlue.withAlpha(blinkAlpha * 0.9f));
+        juce::Path tri1;
+        tri1.addTriangle(indX + triW, indY, indX + triW, indY + triH,
+                          indX, indY + triH * 0.5f);
+        g.fillPath(tri1);
+        juce::Path tri2;
+        float off2 = triW * 1.1f;
+        tri2.addTriangle(indX + off2 + triW, indY, indX + off2 + triW, indY + triH,
+                          indX + off2, indY + triH * 0.5f);
+        g.fillPath(tri2);
+
+        g.restoreState();
+    }
+
+    //==========================================================================
+    // Drawing: Time-Rewind face (NONO original) — cyan + red glitch, ellipse clip
+    //==========================================================================
+    void drawRewindFaceNono(juce::Graphics& g, float cx, float vcy, float r, float hScale)
+    {
+        if (hScale < 0.3f) return;
+
+        // Visor geometry (elliptical — original Nono visor)
+        float vw = r * 1.7f * hScale;
+        float vh = r * 1.4f;
+
+        float left   = cx - vw / 2.0f;
+        float top    = vcy - vh / 2.0f;
+        float right  = cx + vw / 2.0f;
+        float bottom = vcy + vh / 2.0f;
+
+        // Clip to visor ellipse
+        g.saveState();
+        juce::Path visorClip;
+        visorClip.addEllipse(left, top, vw, vh);
+        g.reduceClipRegion(visorClip);
+
+        auto holoCyan  = juce::Colour(0xFF00FFFF);
+        auto glitchRed = juce::Colour(0xFFFF2A3A);
+        const float cell = 4.0f;
+
+        // ── 1. Faint grid lines ──
+        g.setColour(juce::Colours::white.withAlpha(0.06f));
+        for (float gx = left; gx <= right; gx += cell)
+            g.fillRect(gx, top, 0.5f, vh);
+        for (float gy = top; gy <= bottom; gy += cell)
+            g.fillRect(left, gy, vw, 0.5f);
+
+        // ── 2. Bottom baseline ──
+        float baselineY = bottom - vh * 0.08f - 12.0f;
+        g.setColour(holoCyan.withAlpha(0.25f));
+        g.fillRect(left, baselineY - 0.5f, vw, 1.0f);
+
+        // ── 3. Reverse-scrolling histogram from rewindSnapshot ──
+        int numCols = static_cast<int>(vw / cell);
+        float maxDrawH = vh * 0.70f;
+        int maxCells = static_cast<int>(maxDrawH / cell);
+        int snapSize = static_cast<int>(rewindSnapshot.size());
+
+        if (snapSize > 0)
+        {
+            float t = 1.0f - static_cast<float>(rewindFramesLeft) / 90.0f;
+            t = juce::jlimit(0.0f, 1.0f, t);
+            int scrollOffset = static_cast<int>(t * static_cast<float>(snapSize) * 3.0f);
+
+            for (int col = 0; col < numCols; ++col)
+            {
+                float colX = right - (static_cast<float>(col) + 1.0f) * cell;
+                int rawIdx = snapSize - 1 - col - scrollOffset;
+                int histIdx = ((rawIdx % snapSize) + snapSize) % snapSize;
+
+                const auto& colData = rewindSnapshot[static_cast<size_t>(histIdx)];
+                float amplitude = colData.level;
+                uint32_t colSeed = colData.randomSeed;
+
+                int activeCells = juce::jmax(0, static_cast<int>(amplitude * static_cast<float>(maxCells)));
+                if (activeCells == 0) continue;
+
+                for (int row = 0; row < activeCells; ++row)
+                {
+                    float cellY = baselineY - static_cast<float>(row + 1) * cell;
+                    float dist = static_cast<float>(row)
+                               / static_cast<float>(juce::jmax(1, activeCells));
+
+                    juce::Random cellRng(colSeed + static_cast<uint32_t>(row) * 7919u);
+                    bool isRedGlitch = cellRng.nextFloat() < 0.12f;
+                    bool isHollow = cellRng.nextFloat() < 0.35f;
+
+                    if (dist > 0.75f)
+                    {
+                        float edgeAlpha = cellRng.nextFloat() > 0.5f ? 0.5f : 0.3f;
+                        if (isRedGlitch)
+                            g.setColour(glitchRed.withAlpha(edgeAlpha * 0.8f));
+                        else
+                            g.setColour(holoCyan.withAlpha(edgeAlpha));
+
+                        if (isHollow)
+                            g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                        else
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                    }
+                    else
+                    {
+                        if (isRedGlitch)
+                        {
+                            g.setColour(glitchRed.withAlpha(0.75f));
+                            if (isHollow)
+                                g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                            else
+                                g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                        }
+                        else
+                        {
+                            g.setColour(holoCyan.withAlpha(0.8f));
+                            g.fillRect(colX, cellY, cell - 1.0f, cell - 1.0f);
+                        }
+                    }
+                }
+
+                juce::Random scatterRng(colSeed + 99991u);
+                if (scatterRng.nextFloat() < 0.12f)
+                {
+                    int extraRow = activeCells + 1 + scatterRng.nextInt(4);
+                    float cellY = baselineY - static_cast<float>(extraRow + 1) * cell;
+                    bool redScatter = scatterRng.nextFloat() < 0.25f;
+                    g.setColour(redScatter ? glitchRed.withAlpha(0.2f)
+                                           : holoCyan.withAlpha(0.15f));
+                    g.drawRect(colX, cellY, cell - 1.0f, cell - 1.0f, 0.8f);
+                }
+            }
+        }
+
+        // ── 4. Scanline interference (reversed sweep) ──
+        float ms = static_cast<float>(juce::Time::getMillisecondCounterHiRes());
+        float scanY = bottom - std::fmod(ms * 0.08f, vh + 8.0f) + 4.0f;
+        g.setColour(holoCyan.withAlpha(0.08f));
+        g.fillRect(left, scanY, vw, 2.0f);
+        g.setColour(glitchRed.withAlpha(0.03f));
+        g.fillRect(left, scanY + 2.0f, vw, 1.0f);
+
+        // ── 5. Rewind indicator — pulsing cyan ◀◀ ──
+        float blinkAlpha = 0.5f + 0.5f * std::sin(ms * 0.012f);
+        float indX = left + 18.0f;
+        float indY = top + 12.0f;
+        float triW = 4.5f, triH = 5.5f;
+
+        g.setColour(holoCyan.withAlpha(blinkAlpha * 0.9f));
         juce::Path tri1;
         tri1.addTriangle(indX + triW, indY, indX + triW, indY + triH,
                           indX, indY + triH * 0.5f);
@@ -2231,6 +2611,26 @@ private:
     //==========================================================================
     void drawVisor(juce::Graphics& g, float cx, float cy, float r, float hScale)
     {
+        if (!isGuoba())
+        {
+            // === NONO: dark elliptical visor with blue neon frame ===
+            float vw = r * 1.7f * hScale;
+            float vh = r * 1.4f;
+            float vcy = cy - r * 0.1f;
+
+            g.setColour(screenDark);
+            g.fillEllipse(cx - vw / 2.0f, vcy - vh / 2.0f, vw, vh);
+
+            g.setColour(accentCol().withAlpha(0.08f));
+            g.drawEllipse(cx - vw / 2.0f, vcy - vh / 2.0f, vw, vh, 8.0f);
+            g.setColour(accentCol().withAlpha(0.30f));
+            g.drawEllipse(cx - vw / 2.0f, vcy - vh / 2.0f, vw, vh, 3.5f);
+            g.setColour(accentCol().withAlpha(0.85f));
+            g.drawEllipse(cx - vw / 2.0f, vcy - vh / 2.0f, vw, vh, 1.5f);
+            return;
+        }
+
+        // === GUOBA: fur pattern / holo visor with yellow frame ===
         if (visorAlpha < 0.01f) return;
 
         float vcy = cy - r * 0.06f;  // shifted up slightly
@@ -2261,9 +2661,9 @@ private:
             float rightEyeX = cx + r * 0.30f * hScale;
             float baseY       = vcy + r * 0.15f;
             float cheekCtrlY  = vcy - r * 0.10f;
-            float noseCtrlY   = vcy - r * 0.40f;
-            float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;
-            float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
+            float noseCtrlY   = vcy - r * 0.22f;
+            float leftEyeInnerX  = leftEyeX  - r * 0.02f * hScale;
+            float rightEyeInnerX = rightEyeX + r * 0.02f * hScale;
             float transY = vcy + r * 0.05f;
 
             // White base
@@ -2296,7 +2696,7 @@ private:
                 float rightEyeX = cx + r * 0.30f * hScale;
                 float baseY       = vcy + r * 0.15f;
                 float cheekCtrlY  = vcy - r * 0.10f;
-                float noseCtrlY   = vcy - r * 0.40f;
+                float noseCtrlY   = vcy - r * 0.22f;
                 float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;
                 float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
                 float transY = vcy + r * 0.05f;
@@ -2331,11 +2731,11 @@ private:
         g.restoreState();
 
         // Yellow visor frame glow rings (always visible)
-        g.setColour(electricBlue.withAlpha(0.08f * visorAlpha));
+        g.setColour(accentCol().withAlpha(0.08f * visorAlpha));
         g.strokePath(visorPath, juce::PathStrokeType(8.0f));
-        g.setColour(electricBlue.withAlpha(0.30f * visorAlpha));
+        g.setColour(accentCol().withAlpha(0.30f * visorAlpha));
         g.strokePath(visorPath, juce::PathStrokeType(3.5f));
-        g.setColour(electricBlue.withAlpha(0.85f * visorAlpha));
+        g.setColour(accentCol().withAlpha(0.85f * visorAlpha));
         g.strokePath(visorPath, juce::PathStrokeType(1.5f));
     }
 
@@ -2343,13 +2743,230 @@ private:
     {
         if (hScale < 0.3f) return;
 
-        float vcy = cy - r * 0.06f;  // shifted up (matching visor)
+        float vcy = isGuoba() ? (cy - r * 0.06f) : (cy - r * 0.1f);
         float spacing = r * 0.30f * hScale;
         float ew = r * 0.13f * hScale;
 
         float maxH = r * 0.5f, minH = r * 0.08f;
         float eh = juce::jmap(juce::jlimit(0.2f, 1.0f, eyeOpenness), 0.2f, 1.0f, minH, maxH);
 
+        // ===== NONO SKIN: original blue neon eyes + all expressions always active =====
+        if (!isGuoba())
+        {
+            auto eyeCol = accentCol();  // blue for Nono
+
+            // TIME-REWIND
+            if (isRewinding)
+            {
+                drawRewindFaceNono(g, cx, vcy, r, hScale);
+                return;
+            }
+
+            // VIDEO EXTRACTION
+            if (isExtractingVideo)
+            {
+                drawExtractFace(g, cx, vcy, r, hScale);
+                return;
+            }
+
+            // Dizzy: spinning spiral
+            if (isDizzy)
+            {
+                float angle = static_cast<float>(juce::Time::getMillisecondCounterHiRes()) * 0.015f;
+                for (int idx = 0; idx < 2; ++idx)
+                {
+                    float ex = (idx == 0) ? (cx - spacing) : (cx + spacing);
+                    float spiralR = r * 0.22f;
+                    float eyeAngle = (idx == 0) ? angle : -angle;
+
+                    juce::ColourGradient bloom(
+                        eyeCol.withAlpha(0.3f), ex, vcy,
+                        eyeCol.withAlpha(0.0f), ex + spiralR * 1.5f, vcy, true);
+                    g.setGradientFill(bloom);
+                    g.fillEllipse(ex - spiralR * 1.5f, vcy - spiralR * 1.5f,
+                                  spiralR * 3.0f, spiralR * 3.0f);
+
+                    juce::Path spiral;
+                    const float turns = 3.0f;
+                    const float mxAngle = turns * juce::MathConstants<float>::twoPi;
+                    bool first = true;
+                    for (float a = 0.0f; a <= mxAngle; a += 0.15f)
+                    {
+                        float t = a / mxAngle;
+                        float sr = spiralR * t;
+                        float px = ex + sr * std::cos(a);
+                        float py = vcy + sr * std::sin(a);
+                        if (first) { spiral.startNewSubPath(px, py); first = false; }
+                        else spiral.lineTo(px, py);
+                    }
+
+                    g.saveState();
+                    g.addTransform(juce::AffineTransform::rotation(eyeAngle, ex, vcy));
+                    g.setColour(eyeCol.withAlpha(0.1f));
+                    g.strokePath(spiral, juce::PathStrokeType(6.0f));
+                    g.setColour(eyeCol.withAlpha(0.35f));
+                    g.strokePath(spiral, juce::PathStrokeType(3.0f));
+                    g.setColour(eyeCol.withAlpha(0.9f));
+                    g.strokePath(spiral, juce::PathStrokeType(1.5f));
+                    g.restoreState();
+                }
+                return;
+            }
+
+            struct EyeParams { float x, w, corner; };
+            EyeParams nonoEyes[2] = {
+                { cx - spacing, ew, ew * 0.4f },
+                { cx + spacing, ew, ew * 0.4f }
+            };
+
+            // Shy: >< squinting
+            if (isShy)
+            {
+                for (int idx = 0; idx < 2; ++idx)
+                {
+                    float ex = nonoEyes[idx].x;
+                    float chevW = spacing * 0.5f;
+                    float chevH = eh * 1.4f;
+
+                    float bloomR = chevH * 0.5f;
+                    juce::ColourGradient bloom(
+                        magicPink.withAlpha(0.25f), ex, vcy,
+                        magicPink.withAlpha(0.0f), ex + bloomR, vcy, true);
+                    g.setGradientFill(bloom);
+                    g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                    juce::Path shyPath;
+                    if (idx == 0)
+                    {
+                        shyPath.startNewSubPath(ex - chevW * 0.4f, vcy - chevH * 0.35f);
+                        shyPath.lineTo(ex + chevW * 0.4f, vcy);
+                        shyPath.lineTo(ex - chevW * 0.4f, vcy + chevH * 0.35f);
+                    }
+                    else
+                    {
+                        shyPath.startNewSubPath(ex + chevW * 0.4f, vcy - chevH * 0.35f);
+                        shyPath.lineTo(ex - chevW * 0.4f, vcy);
+                        shyPath.lineTo(ex + chevW * 0.4f, vcy + chevH * 0.35f);
+                    }
+
+                    g.setColour(magicPink.withAlpha(0.08f));
+                    g.strokePath(shyPath, juce::PathStrokeType(5.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(magicPink.withAlpha(0.25f));
+                    g.strokePath(shyPath, juce::PathStrokeType(2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(magicPink.withAlpha(0.9f));
+                    g.strokePath(shyPath, juce::PathStrokeType(1.2f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                }
+                return;
+            }
+
+            // Smile: upward chevron
+            if (isSmiling)
+            {
+                for (int idx = 0; idx < 2; ++idx)
+                {
+                    float ex = nonoEyes[idx].x;
+                    float chevW = spacing * 0.75f;
+                    float chevH = eh * 2.0f;
+                    float tipY = vcy - chevH * 0.35f;
+                    float baseY = vcy + chevH * 0.35f;
+
+                    float bloomR = chevH * 0.6f;
+                    juce::ColourGradient bloom(
+                        eyeCol.withAlpha(0.3f), ex, vcy,
+                        eyeCol.withAlpha(0.0f), ex + bloomR, vcy, true);
+                    g.setGradientFill(bloom);
+                    g.fillEllipse(ex - bloomR, vcy - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                    juce::Path smilePath;
+                    smilePath.startNewSubPath(ex - chevW * 0.5f, baseY);
+                    smilePath.lineTo(ex, tipY);
+                    smilePath.lineTo(ex + chevW * 0.5f, baseY);
+
+                    g.setColour(eyeCol.withAlpha(0.10f));
+                    g.strokePath(smilePath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(eyeCol.withAlpha(0.30f));
+                    g.strokePath(smilePath, juce::PathStrokeType(4.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(eyeCol.withAlpha(eyeGlow));
+                    g.strokePath(smilePath, juce::PathStrokeType(2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                }
+                return;
+            }
+
+            // Wink: left egg + right "<" chevron
+            if (isWinking)
+            {
+                {
+                    float eggCX = nonoEyes[0].x + pupilOffsetLX;
+                    float eggCY = vcy + pupilOffsetLY;
+                    float eggW = ew * 1.3f;
+                    float eggH = eh * 1.8f;
+
+                    float bloomR = eggH * 0.9f;
+                    juce::ColourGradient bloom(
+                        eyeCol.withAlpha(0.35f), eggCX, eggCY,
+                        eyeCol.withAlpha(0.0f), eggCX + bloomR, eggCY, true);
+                    g.setGradientFill(bloom);
+                    g.fillEllipse(eggCX - bloomR, eggCY - bloomR, bloomR * 2.0f, bloomR * 2.0f);
+
+                    g.setColour(eyeCol.withAlpha(eyeGlow));
+                    g.fillEllipse(eggCX - eggW * 0.5f, eggCY - eggH * 0.5f, eggW, eggH);
+
+                    g.setColour(juce::Colours::white.withAlpha(0.55f));
+                    float specW = eggW * 0.4f, specH = eggH * 0.12f;
+                    g.fillEllipse(eggCX - specW * 0.5f, eggCY - eggH * 0.5f + eggH * 0.1f, specW, specH);
+                }
+                {
+                    float chevW = spacing * 0.85f;
+                    float chevH = eh * 2.2f;
+                    float tipX = cx + spacing * 0.35f;
+                    float tipY2 = vcy;
+                    float openX = tipX + chevW;
+
+                    juce::Path winkPath;
+                    winkPath.startNewSubPath(openX, tipY2 - chevH * 0.5f);
+                    winkPath.lineTo(tipX, tipY2);
+                    winkPath.lineTo(openX, tipY2 + chevH * 0.5f);
+
+                    g.setColour(eyeCol.withAlpha(0.12f));
+                    g.strokePath(winkPath, juce::PathStrokeType(14.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(eyeCol.withAlpha(0.35f));
+                    g.strokePath(winkPath, juce::PathStrokeType(9.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                    g.setColour(eyeCol.withAlpha(eyeGlow));
+                    g.strokePath(winkPath, juce::PathStrokeType(7.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
+                }
+                return;
+            }
+
+            // Default: blue neon rounded-rect eyes (audio-reactive)
+            for (int idx = 0; idx < 2; ++idx)
+            {
+                auto& eye = nonoEyes[idx];
+                float pOffX = (idx == 0) ? pupilOffsetLX : pupilOffsetRX;
+                float pOffY = (idx == 0) ? pupilOffsetLY : pupilOffsetRY;
+                float ecx = eye.x + pOffX;
+                float ecy = vcy + pOffY;
+
+                if (eyeGlow > 0.72f)
+                {
+                    float br = juce::jmax(eye.w, eh) * 2.0f * (eyeGlow - 0.3f);
+                    juce::ColourGradient bg(
+                        eyeCol.withAlpha((eyeGlow - 0.5f) * 1.5f), ecx, ecy,
+                        eyeCol.withAlpha(0.0f), ecx + br, ecy, true);
+                    g.setGradientFill(bg);
+                    g.fillEllipse(ecx - br, ecy - br, br * 2.0f, br * 2.0f);
+                }
+
+                g.setColour(eyeCol.withAlpha(eyeGlow));
+                g.fillRoundedRectangle(ecx - eye.w / 2.0f, ecy - eh / 2.0f, eye.w, eh, eye.corner);
+
+                g.setColour(juce::Colours::white.withAlpha(eyeGlow * 0.5f));
+                float sw = eye.w * 0.45f, sh = eh * 0.1f;
+                g.fillRoundedRectangle(ecx - sw / 2.0f, ecy - eh / 2.0f + eh * 0.08f, sw, sh, sw * 0.3f);
+            }
+            return;
+        }
+
+        // ===== GUOBA SKIN: plush eyes (normal) / sunset orange eyes + expressions (holo) =====
         bool inHolo = (holoTransition > 0.5f);
 
         // ===== TIME-REWIND: Reverse holographic bar waveform (highest priority) =====
@@ -2584,14 +3201,29 @@ private:
                               hlRadius * 2.0f, hlRadius * 2.0f);
             }
         }
+
+        // ===== GUOBA NOSE (normal mode only) =====
+        if (!inHolo && !guobaNose.isNull())
+        {
+            // Position: centered between eyes, slightly below eye line
+            // Nose width ≈ 40% of eye spacing, aspect ratio preserved from source image
+            float noseW = spacing * 0.715f;
+            float noseAspect = static_cast<float>(guobaNose.getHeight())
+                             / static_cast<float>(guobaNose.getWidth());
+            float noseH = noseW * noseAspect;
+            float noseX = cx - noseW * 0.5f;
+            float noseY = vcy - r * 0.02f;  // between eyes, slightly above center
+
+            g.setOpacity(1.0f);
+            g.drawImage(guobaNose,
+                noseX, noseY, noseW, noseH,
+                0, 0, guobaNose.getWidth(), guobaNose.getHeight());
+        }
     }
 
     //==========================================================================
     // Drawing: Recording Glitch Grid Waveform (replaces eyes during recording)
     //
-    // Fills Nono's visor with a retro transient analyzer:
-    //   - White pixel-art base + 10% random red glitch squares
-    //   - Unipolar bottom-up histogram (NOT bipolar symmetric)
     //   - Driven by first-order difference energy (high-frequency bias)
     //   - Sparse texture: mixed fillRect/drawRect for data-loss aesthetic
     //   - Clipped to visor ellipse so nothing bleeds outside the face
@@ -2747,6 +3379,52 @@ private:
     {
         if (hScale < 0.2f) return;
 
+        if (!isGuoba())
+        {
+            // === NONO: dark elliptical back + circular ring + cross ===
+            float rx = r * hScale * 0.85f;
+            g.setColour(juce::Colour(0xFF1A1A28));
+            g.fillEllipse(cx - rx, cy - r * 0.85f, rx * 2.0f, r * 1.7f);
+
+            if (nonoState != NonoState::Back && nonoState != NonoState::Analyzing)
+                return;
+
+            float breath = 0.65f + 0.35f * std::sin(neonBreathPhase);
+            float ringR = r * 0.55f * hScale;
+
+            juce::Path circlePath;
+            circlePath.addEllipse(cx - ringR, cy - ringR, ringR * 2.0f, ringR * 2.0f);
+
+            g.setColour(accentCol().withAlpha(0.12f * breath));
+            g.strokePath(circlePath, juce::PathStrokeType(8.0f * hScale));
+            g.setColour(accentCol().withAlpha(0.35f * breath));
+            g.strokePath(circlePath, juce::PathStrokeType(4.0f * hScale));
+            g.setColour(accentCol().withAlpha(0.9f * breath));
+            g.strokePath(circlePath, juce::PathStrokeType(1.5f * hScale));
+
+            float crossLen = ringR * 0.55f;
+            float crossThickBase = r * 0.04f * hScale;
+
+            juce::Path hBar;
+            hBar.addRoundedRectangle(cx - crossLen, cy - crossThickBase / 2.0f,
+                                      crossLen * 2.0f, crossThickBase, crossThickBase * 0.3f);
+            juce::Path vBar;
+            vBar.addRoundedRectangle(cx - crossThickBase / 2.0f, cy - crossLen,
+                                      crossThickBase, crossLen * 2.0f, crossThickBase * 0.3f);
+
+            g.setColour(accentCol().withAlpha(0.15f * breath));
+            g.strokePath(hBar, juce::PathStrokeType(6.0f * hScale));
+            g.strokePath(vBar, juce::PathStrokeType(6.0f * hScale));
+            g.setColour(accentCol().withAlpha(0.4f * breath));
+            g.strokePath(hBar, juce::PathStrokeType(3.0f * hScale));
+            g.strokePath(vBar, juce::PathStrokeType(3.0f * hScale));
+            g.setColour(accentCol().withAlpha(0.95f * breath));
+            g.fillPath(hBar);
+            g.fillPath(vBar);
+            return;
+        }
+
+        // === GUOBA: fur-patterned visor back face ===
         float vcy = cy - r * 0.06f;  // shifted up (matching visor)
         auto visorPath = buildVisorPath(cx, vcy, r, hScale);
 
@@ -2758,9 +3436,9 @@ private:
 
         float baseY       = vcy + r * 0.15f;
         float cheekCtrlY  = vcy - r * 0.10f;
-        float noseCtrlY   = vcy - r * 0.40f;
-        float leftEyeInnerX  = leftEyeX  + r * 0.15f * hScale;
-        float rightEyeInnerX = rightEyeX - r * 0.15f * hScale;
+        float noseCtrlY   = vcy - r * 0.22f;
+        float leftEyeInnerX  = leftEyeX  - r * 0.02f * hScale;
+        float rightEyeInnerX = rightEyeX + r * 0.02f * hScale;
         float transY = vcy + r * 0.05f;
 
         auto grayFur  = juce::Colour(0xFFCCCCCC).withAlpha(0.65f);
@@ -2807,11 +3485,11 @@ private:
         float breath = 0.65f + 0.35f * std::sin(neonBreathPhase);
 
         // --- Holographic ring: 3-layer glow (traces visor shape) ---
-        g.setColour(electricBlue.withAlpha(0.12f * breath));
+        g.setColour(accentCol().withAlpha(0.12f * breath));
         g.strokePath(visorPath, juce::PathStrokeType(8.0f * hScale));
-        g.setColour(electricBlue.withAlpha(0.35f * breath));
+        g.setColour(accentCol().withAlpha(0.35f * breath));
         g.strokePath(visorPath, juce::PathStrokeType(4.0f * hScale));
-        g.setColour(electricBlue.withAlpha(0.9f * breath));
+        g.setColour(accentCol().withAlpha(0.9f * breath));
         g.strokePath(visorPath, juce::PathStrokeType(1.5f * hScale));
 
         // --- Neon cross "+" centered in visor ---
@@ -2828,15 +3506,15 @@ private:
                                   crossThickBase, crossLen * 2.0f, crossThickBase * 0.3f);
 
         // Cross layer 1: wide soft glow
-        g.setColour(electricBlue.withAlpha(0.15f * breath));
+        g.setColour(accentCol().withAlpha(0.15f * breath));
         g.strokePath(hBar, juce::PathStrokeType(6.0f * hScale));
         g.strokePath(vBar, juce::PathStrokeType(6.0f * hScale));
         // Cross layer 2: medium glow
-        g.setColour(electricBlue.withAlpha(0.4f * breath));
+        g.setColour(accentCol().withAlpha(0.4f * breath));
         g.strokePath(hBar, juce::PathStrokeType(3.0f * hScale));
         g.strokePath(vBar, juce::PathStrokeType(3.0f * hScale));
         // Cross layer 3: bright core fill
-        g.setColour(electricBlue.withAlpha(0.95f * breath));
+        g.setColour(accentCol().withAlpha(0.95f * breath));
         g.fillPath(hBar);
         g.fillPath(vBar);
     }
@@ -2852,7 +3530,7 @@ private:
             float phase = std::fmod(ripplePhase + static_cast<float>(i) / static_cast<float>(numRipples), 1.0f);
             float rippleR = r * 0.4f + phase * r * 2.5f;
             float alpha = (1.0f - phase) * 0.35f;
-            g.setColour(electricBlue.withAlpha(alpha));
+            g.setColour(accentCol().withAlpha(alpha));
             g.drawEllipse(cx - rippleR, cy - rippleR, rippleR * 2.0f, rippleR * 2.0f, 2.0f);
         }
     }
@@ -2881,7 +3559,7 @@ private:
         auto body = area.withTrimmedTop(tailH).reduced(4.0f, 0.0f);
         g.setColour(juce::Colour(0xFFF5F7FA).withMultipliedAlpha(fade));
         g.fillRoundedRectangle(body, 8.0f);
-        g.setColour(electricBlue.withAlpha(0.5f * fade));
+        g.setColour(accentCol().withAlpha(0.5f * fade));
         g.drawRoundedRectangle(body, 8.0f, 1.5f);
         g.strokePath(tail, juce::PathStrokeType(1.5f));
 
@@ -2898,9 +3576,9 @@ private:
             float badgeH = badgeFontSize + 4.0f;
             auto badgeRect = juce::Rectangle<float>(body.getRight() - badgeW - 6.0f,
                                                      body.getY() + 4.0f, badgeW, badgeH);
-            g.setColour(electricBlue.withAlpha(0.2f * fade));
+            g.setColour(accentCol().withAlpha(0.2f * fade));
             g.fillRoundedRectangle(badgeRect, 4.0f);
-            g.setColour(electricBlue.withAlpha(0.9f * fade));
+            g.setColour(accentCol().withAlpha(0.9f * fade));
             g.drawText(chStr, badgeRect.toNearestInt(), juce::Justification::centred, false);
         }
 
@@ -2949,7 +3627,7 @@ private:
 
             // Value (electric blue, center channel uses magicPink accent)
             g.setFont(juce::Font(fontSize, juce::Font::bold));
-            g.setColour((i == 4 ? magicPink : electricBlue).withMultipliedAlpha(fade));
+            g.setColour((i == 4 ? magicPink : accentCol()).withMultipliedAlpha(fade));
             juce::String valStr = (baseMetrics[i].value <= -99.0f)
                                    ? juce::String(juce::CharPointer_UTF8(u8"\u2013\u221e"))
                                    : juce::String(baseMetrics[i].value, 1);
@@ -3029,10 +3707,10 @@ private:
                 // Glass shard: white core + cyan edge glow
                 g.setColour(juce::Colours::white.withAlpha(0.7f * alpha));
                 g.fillPath(shard);
-                g.setColour(electricBlue.withAlpha(0.5f * alpha));
+                g.setColour(accentCol().withAlpha(0.5f * alpha));
                 g.strokePath(shard, juce::PathStrokeType(1.5f));
                 // Outer glow
-                g.setColour(electricBlue.withAlpha(0.15f * alpha));
+                g.setColour(accentCol().withAlpha(0.15f * alpha));
                 g.strokePath(shard, juce::PathStrokeType(4.0f));
             }
 
@@ -3191,7 +3869,7 @@ private:
             float a = static_cast<float>(i) * juce::MathConstants<float>::twoPi / static_cast<float>(numP);
             float px = particleOriginX + dist * std::cos(a);
             float py = particleOriginY + dist * std::sin(a);
-            g.setColour(((i % 2 == 0) ? GoodMeterLookAndFeel::accentPink : electricBlue).withAlpha(alpha));
+            g.setColour(((i % 2 == 0) ? GoodMeterLookAndFeel::accentPink : accentCol()).withAlpha(alpha));
             g.fillEllipse(px - sz, py - sz, sz * 2.0f, sz * 2.0f);
         }
     }
@@ -3210,8 +3888,8 @@ private:
         float flashR = 15.0f + lightningProgress * 40.0f;
 
         juce::ColourGradient flashGrad(
-            electricBlue.withAlpha(0.7f * flash), bcx, bcy,
-            electricBlue.withAlpha(0.0f), bcx + flashR, bcy, true);
+            accentCol().withAlpha(0.7f * flash), bcx, bcy,
+            accentCol().withAlpha(0.0f), bcx + flashR, bcy, true);
         g.setGradientFill(flashGrad);
         g.fillEllipse(bcx - flashR, bcy - flashR, flashR * 2.0f, flashR * 2.0f);
 
@@ -3239,9 +3917,9 @@ private:
             boltPath.lineTo(ex, ey);
 
             // 3-layer glow
-            g.setColour(electricBlue.withAlpha(0.08f * boltAlpha));
+            g.setColour(accentCol().withAlpha(0.08f * boltAlpha));
             g.strokePath(boltPath, juce::PathStrokeType(6.0f));
-            g.setColour(electricBlue.withAlpha(0.3f * boltAlpha));
+            g.setColour(accentCol().withAlpha(0.3f * boltAlpha));
             g.strokePath(boltPath, juce::PathStrokeType(3.0f));
             g.setColour(juce::Colours::white.withAlpha(0.9f * boltAlpha));
             g.strokePath(boltPath, juce::PathStrokeType(1.2f));

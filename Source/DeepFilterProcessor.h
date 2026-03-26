@@ -113,6 +113,8 @@ public:
         // Process each channel independently through the full DFN3 pipeline
         for (int ch = 0; ch < numCh; ++ch)
         {
+          try
+          {
             float chBase = static_cast<float>(ch) / static_cast<float>(numCh);
             float chSpan = 1.0f / static_cast<float>(numCh);
 
@@ -192,6 +194,19 @@ public:
                 dst[s] = wet[s] * w + dry[s] * d;
 
             progress.store(chBase + chSpan);
+          }
+          catch (const std::bad_alloc&)
+          {
+              DBG("DeepFilter: out of memory on channel " << ch << " — passing through original");
+              result.copyFrom(ch, 0, input, ch, 0, inputLen);
+              progress.store(static_cast<float>(ch + 1) / static_cast<float>(numCh));
+          }
+          catch (const Ort::Exception& e)
+          {
+              DBG("DeepFilter: ONNX error on channel " << ch << ": " << e.what());
+              result.copyFrom(ch, 0, input, ch, 0, inputLen);
+              progress.store(static_cast<float>(ch + 1) / static_cast<float>(numCh));
+          }
         }
 
         progress.store(1.0f);

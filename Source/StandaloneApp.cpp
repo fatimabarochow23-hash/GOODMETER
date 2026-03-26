@@ -24,6 +24,7 @@
 #include "PluginProcessor.h"
 #include "GoodMeterLookAndFeel.h"
 #include "AudioLabComponent.h"
+#include "StandaloneNonoEditor.h"
 
 #if JUCE_MAC
  #include <objc/message.h>
@@ -129,6 +130,9 @@ public:
     {
         juce::JUCEApplication::getInstance()->systemRequestedQuit();
     }
+
+    /** Access the editor for skin switching etc. */
+    juce::AudioProcessorEditor* getEditor() const { return editor.get(); }
 
     //==========================================================================
     // Hit test: THE OS-level gate for click-through.
@@ -322,6 +326,10 @@ public:
         // input buffer with zeros. We are a metering app — we NEED live input.
         pluginHolder->getMuteInputValue().setValue(false);
 
+        // Share device manager with AudioLab preview — avoids CoreAudio conflict
+        if (auto* proc = dynamic_cast<GOODMETERAudioProcessor*>(pluginHolder->processor.get()))
+            proc->sharedDeviceManager = &pluginHolder->deviceManager;
+
         mainWindow = std::make_unique<DesktopPetWindow>(
             getApplicationName(),
             std::move(pluginHolder)
@@ -366,7 +374,7 @@ public:
     //==========================================================================
     juce::StringArray getMenuBarNames() override
     {
-        return { "Recording", "Audio Source", "Audio Lab" };
+        return { "Recording", "Audio Source", "Audio Lab", "Character" };
     }
 
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
@@ -420,7 +428,20 @@ public:
 
         menu.addSeparator();
 
-        // ── 4. Set Recording Location... ──
+        // ── 4. Rewind Duration sub-menu ──
+        {
+            juce::PopupMenu rewindMenu;
+            int curSec = (proc != nullptr) ? proc->rewindSeconds.load(std::memory_order_relaxed) : 60;
+            rewindMenu.addItem(610, "30 s",  true, curSec == 30);
+            rewindMenu.addItem(611, "1 min", true, curSec == 60);
+            rewindMenu.addItem(612, "2 min", true, curSec == 120);
+            rewindMenu.addItem(613, "5 min", true, curSec == 300);
+            menu.addSubMenu(juce::CharPointer_UTF8(u8"\u23ea Rewind Duration"), rewindMenu);
+        }
+
+        menu.addSeparator();
+
+        // ── 5. Set Recording Location... ──
         menu.addItem(60, "Set Recording Location...");
 
         // Show current location as greyed-out hint
@@ -446,6 +467,15 @@ public:
             menu.addItem(800, "Export Both",          true, mode == 1);
             menu.addItem(801, "Export Clean Only",    true, mode == 2);
             menu.addItem(802, "Export RoomTone Only", true, mode == 3);
+        }
+        else if (menuIndex == 3)
+        {
+            // ── Character skin selection ──
+            auto currentSkin = getCurrentSkin();
+            menu.addItem(900, juce::CharPointer_UTF8(u8"\u9505\u5df4 (Guoba)"),
+                         true, currentSkin == HoloNonoComponent::SkinType::Guoba);
+            menu.addItem(901, "Nono",
+                         true, currentSkin == HoloNonoComponent::SkinType::Nono);
         }
 
         return menu;
@@ -508,6 +538,16 @@ public:
 
             if (target.existsAsFile())
                 target.revealToUser();
+        }
+        else if (menuItemID >= 610 && menuItemID <= 613)
+        {
+            // Rewind Duration: 610=30s, 611=60s, 612=120s, 613=300s
+            static constexpr int durations[] = { 30, 60, 120, 300 };
+            int idx = menuItemID - 610;
+            auto* proc = getProcessor();
+            if (proc != nullptr)
+                proc->rewindSeconds.store(durations[idx], std::memory_order_relaxed);
+            menuItemsChanged();
         }
         else if (menuItemID == 60)
         {
@@ -576,6 +616,16 @@ public:
             AudioLabContent::exportMode = menuItemID - 800 + 1;
             menuItemsChanged();
         }
+        else if (menuItemID == 900)
+        {
+            setCurrentSkin(HoloNonoComponent::SkinType::Guoba);
+            menuItemsChanged();
+        }
+        else if (menuItemID == 901)
+        {
+            setCurrentSkin(HoloNonoComponent::SkinType::Nono);
+            menuItemsChanged();
+        }
     }
 
 private:
@@ -590,6 +640,29 @@ private:
         if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
             return dynamic_cast<GOODMETERAudioProcessor*>(mainWindow->pluginHolder->processor.get());
         return nullptr;
+    }
+
+    /** Safely get the standalone editor for skin switching */
+    StandaloneNonoEditor* getStandaloneEditor() const
+    {
+        if (mainWindow != nullptr)
+            return dynamic_cast<StandaloneNonoEditor*>(mainWindow->getEditor());
+        return nullptr;
+    }
+
+    /** Get current skin from the editor */
+    HoloNonoComponent::SkinType getCurrentSkin() const
+    {
+        if (auto* ed = getStandaloneEditor())
+            return ed->getSkin();
+        return HoloNonoComponent::SkinType::Guoba;
+    }
+
+    /** Set skin on the editor */
+    void setCurrentSkin(HoloNonoComponent::SkinType skin)
+    {
+        if (auto* ed = getStandaloneEditor())
+            ed->setSkin(skin);
     }
 
     /** Get the current recording directory (persisted in PropertiesFile).

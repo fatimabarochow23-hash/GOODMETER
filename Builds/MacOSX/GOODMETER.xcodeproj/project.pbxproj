@@ -116,6 +116,7 @@
 		477B905673014DB8A21EB92B /* AU */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.component; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A083AA4F293CE59F1C5FE51 /* guoba.png */ /* guoba.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba.png; path = ../../guoba.png; sourceTree = SOURCE_ROOT; };
 		4EB4089F706DCB7AC8DCFEBD /* VST3 */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.vst3; sourceTree = BUILT_PRODUCTS_DIR; };
+		519AFDF014306BEB3643783D /* guoba_nose.png */ /* guoba_nose.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba_nose.png; path = ../../guoba_nose.png; sourceTree = SOURCE_ROOT; };
 		55B967DFBCAD0AE0F81E71D8 /* juce_dsp */ /* juce_dsp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_dsp; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_dsp; sourceTree = "<absolute>"; };
 		5601F5084588B7882643E6D8 /* Accelerate.framework */ /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		5BCBDDEF18EACBAFBBF61366 /* include_juce_graphics.mm */ /* include_juce_graphics.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_graphics.mm; path = ../../JuceLibraryCode/include_juce_graphics.mm; sourceTree = SOURCE_ROOT; };
@@ -418,6 +419,7 @@
 				ECE27860C6FA2B4BFC27C6B0,
 				FBAA28BAFB9557EC38D65074,
 				4A083AA4F293CE59F1C5FE51,
+				519AFDF014306BEB3643783D,
 				FB7A31B6B0A86DB96E59D233,
 			);
 			name = GOODMETER;
@@ -1003,7 +1005,6 @@
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GENERATE_PKGINFO_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1129,7 +1130,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1292,7 +1292,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1406,7 +1405,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1567,7 +1565,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1682,7 +1679,6 @@
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GENERATE_PKGINFO_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1808,7 +1804,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -1921,7 +1916,6 @@
 				);
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -2036,7 +2030,6 @@
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GENERATE_PKGINFO_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",
@@ -2153,7 +2146,6 @@
 				GCC_VERSION = com.apple.compilers.llvm.clang.1_0;
 				GENERATE_PKGINFO_FILE = YES;
 				HEADER_SEARCH_PATHS = (
-					"/Users/MediaStorm/Desktop/GOODMETER/ThirdParty/onnxruntime-osx-arm64-1.20.1/include",
 					"/Users/MediaStorm/Downloads/JUCE/modules/juce_audio_processors/format_types/VST3_SDK",
 					"$(SRCROOT)/../../JuceLibraryCode",
 					"/Users/MediaStorm/Downloads/JUCE/modules",

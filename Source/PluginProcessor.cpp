@@ -10,8 +10,15 @@
   ==============================================================================
 */
 
+#if JUCE_IOS
+#include "iOS/iOSPluginDefines.h"
+#endif
+
 #include "PluginProcessor.h"
+
+#if ! JUCE_IOS
 #include "PluginEditor.h"
+#endif
 
 #if JucePlugin_Build_Standalone
 #include "StandaloneNonoEditor.h"
@@ -650,7 +657,7 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     // All metering data has already been extracted from the input above.
     // Without this, input passes straight to output → speakers → mic → howl.
     //==========================================================================
-#if JucePlugin_Build_Standalone
+#if JucePlugin_Build_Standalone && ! JUCE_IOS
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
         buffer.clear(ch, 0, numSamples);
 #endif
@@ -659,7 +666,9 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 //==============================================================================
 juce::AudioProcessorEditor* GOODMETERAudioProcessor::createEditor()
 {
-#if JucePlugin_Build_Standalone
+#if JUCE_IOS
+    return nullptr;  // iOS: UI managed externally by iOSMainComponent
+#elif JucePlugin_Build_Standalone
     return new StandaloneNonoEditor(*this);
 #else
     return new GOODMETERAudioProcessorEditor(*this);

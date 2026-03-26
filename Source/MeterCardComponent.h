@@ -221,8 +221,9 @@ public:
             }
         }
 
-        // Resize grip triangle (bottom-right corner, only when expanded + floating)
-        if (isExpanded && !isDocked)
+        // Resize grip triangle (bottom-right corner, only when expanded + floating + resize wired)
+        // Guard: only show when parent has wired onResizeSnapQuery (Standalone floating only)
+        if (isExpanded && !isDocked && onResizeSnapQuery)
         {
             auto cr2 = getCardRect();
             float gripSz = isMiniMode ? 10.0f : 14.0f;
@@ -306,8 +307,8 @@ public:
     {
         if (inJiggleMode) return;
 
-        // Check resize grip hit (highest priority — only when expanded + floating)
-        if (isExpanded && !isDocked && !resizeGripRect.isEmpty())
+        // Check resize grip hit (highest priority — only when expanded + floating + resize wired)
+        if (isExpanded && !isDocked && onResizeSnapQuery && !resizeGripRect.isEmpty())
         {
             if (resizeGripRect.contains(static_cast<float>(event.x),
                                           static_cast<float>(event.y)))
@@ -463,8 +464,8 @@ public:
                           && arrowHitRect.contains(static_cast<float>(event.x),
                                                     static_cast<float>(event.y));
 
-        // Track resize grip hover
-        isResizeHovered = isExpanded && !resizeGripRect.isEmpty()
+        // Track resize grip hover (only when resize is wired)
+        isResizeHovered = isExpanded && onResizeSnapQuery && !resizeGripRect.isEmpty()
                           && resizeGripRect.contains(static_cast<float>(event.x),
                                                       static_cast<float>(event.y));
 

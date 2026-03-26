@@ -39,6 +39,8 @@
           file="video_extract_icon.png"/>
     <FILE id="GuobaSprite1" name="guoba.png" compile="0" resource="1"
           file="guoba.png"/>
+    <FILE id="GuobaNose1" name="guoba_nose.png" compile="0" resource="1"
+          file="guoba_nose.png"/>
     <GROUP id="{BAB75B8F-DC22-7029-A0C0-25796381529F}" name="Source">
       <FILE id="PlugProc1" name="PluginProcessor.cpp" compile="1" resource="0"
             file="Source/PluginProcessor.cpp"/>

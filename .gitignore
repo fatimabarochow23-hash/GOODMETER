@@ -1,11 +1,14 @@
 # Xcode
 Builds/MacOSX/build/
+Builds/MacOSX_Plugin/build/
+Builds/iOS/build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 DerivedData/
 
 # JUCE
 JuceLibraryCode/
+.jlcode_cache/
 
 # Compiled files
 *.o
@@ -33,3 +36,13 @@ reference-ui/.vite/
 # Temporary files
 *.log
 *.tmp
+
+# ThirdParty archives and debug symbols (large binaries)
+ThirdParty/*.tar.gz
+ThirdParty/*.tgz
+ThirdParty/**/*.dSYM/
+ThirdParty/tmp/
+
+# Personal notes
+memory260307*.md
+暗房作战*.md

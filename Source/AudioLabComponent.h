@@ -33,7 +33,8 @@ public:
     // Export mode: 1=Both, 2=Clean only, 3=RoomTone only (set from macOS menu bar)
     static inline int exportMode = 1;
 
-    AudioLabContent(const juce::File& exportDir = {})
+    AudioLabContent(const juce::File& exportDir = {},
+                    juce::AudioDeviceManager* sharedDevMgr = nullptr)
         : thumbnail(512, formatManager, thumbCache),
           exportDirectory(exportDir)
     {
@@ -134,7 +135,18 @@ public:
         };
 
         // ── Audio device for preview playback ──
-        audioDeviceManager.initialiseWithDefaultDevices(0, 2);
+        // Use shared device manager if provided (avoids CoreAudio conflict with main app).
+        // Fall back to creating own device manager if none provided (e.g. plugin mode).
+        if (sharedDevMgr != nullptr)
+        {
+            deviceMgr = sharedDevMgr;
+        }
+        else
+        {
+            ownDeviceManager = std::make_unique<juce::AudioDeviceManager>();
+            ownDeviceManager->initialiseWithDefaultDevices(0, 2);
+            deviceMgr = ownDeviceManager.get();
+        }
         audioSourcePlayer.setSource(&previewSource);
 
         // Allow spacebar shortcut
@@ -146,6 +158,9 @@ public:
 
     ~AudioLabContent() override
     {
+        // Invalidate alive flag FIRST — any pending callAsync will bail out
+        aliveFlag->store(false);
+
         // Reset title bar flags when dialog closes
         GoodMeterLookAndFeel::holoTitleBar = false;
         GoodMeterLookAndFeel::spectroTitleBar = false;
@@ -155,7 +170,7 @@ public:
         // Stop preview playback
         stopPlayback();
         audioSourcePlayer.setSource(nullptr);
-        audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
+        deviceMgr->removeAudioCallback(&audioSourcePlayer);
         // Wait for processing thread to finish
         if (processingThread.joinable())
             processingThread.join();
@@ -1238,8 +1253,10 @@ private:
 
                 processingProgress.store(1.0f);
 
-                juce::MessageManager::callAsync([this]()
+                auto flag = aliveFlag;
+                juce::MessageManager::callAsync([this, flag]()
                 {
+                    if (!flag->load()) return;
                     processBtn.setEnabled(true);
                     exportBtn.setEnabled(true);
                     previewToggle.setEnabled(true);
@@ -1320,8 +1337,10 @@ private:
 
                 processingProgress.store(1.0f);
 
-                juce::MessageManager::callAsync([this]()
+                auto flag = aliveFlag;
+                juce::MessageManager::callAsync([this, flag]()
                 {
+                    if (!flag->load()) return;
                     processBtn.setEnabled(true);
                     exportBtn.setEnabled(true);
                     previewToggle.setEnabled(true);
@@ -1432,8 +1451,10 @@ private:
                 }
             }
 
-            juce::MessageManager::callAsync([this, dir]()
+            auto flag = aliveFlag;
+            juce::MessageManager::callAsync([this, flag, dir]()
             {
+                if (!flag->load()) return;
                 exportBtn.setEnabled(true);
                 dir.revealToUser();
             });
@@ -1560,6 +1581,7 @@ private:
                         const juce::AudioBuffer<float>* processed,
                         double sr, float blend = 1.0f)
         {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
             origBuf = original;
             procBuf = processed;
             sampleRate = sr;
@@ -1588,6 +1610,7 @@ private:
 
         void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override
         {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
             bufferToFill.clearActiveBufferRegion();
 
             if (!origBuf || origBuf->getNumSamples() == 0)
@@ -1706,11 +1729,14 @@ private:
         bool showProcessed = false;
         int soloChannel = -1;   // -1 = all channels, >= 0 = mono solo
         std::atomic<bool> finished { false };
+        juce::SpinLock bufferLock;  // protects origBuf/procBuf against concurrent access
     };
 
     PreviewAudioSource previewSource;
-    juce::AudioDeviceManager audioDeviceManager;
+    juce::AudioDeviceManager* deviceMgr = nullptr;                       // shared or owned
+    std::unique_ptr<juce::AudioDeviceManager> ownDeviceManager;          // fallback if no shared
     juce::AudioSourcePlayer audioSourcePlayer;
+    std::shared_ptr<std::atomic<bool>> aliveFlag = std::make_shared<std::atomic<bool>>(true);
     bool isPlaying = false;
     bool playheadVisible = false;  // becomes true after first click on waveform
 
@@ -1736,7 +1762,7 @@ private:
         previewSource.setPreviewProcessed(previewProcessed);
         previewSource.setSoloChannel(selectedChannel);
 
-        audioDeviceManager.addAudioCallback(&audioSourcePlayer);
+        deviceMgr->addAudioCallback(&audioSourcePlayer);
         isPlaying = true;
         playheadVisible = true;
         playBtn.setButtonText("Stop");
@@ -1748,7 +1774,7 @@ private:
 
     void stopPlayback()
     {
-        audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
+        deviceMgr->removeAudioCallback(&audioSourcePlayer);
         isPlaying = false;
         playBtn.setButtonText("Play");
     }

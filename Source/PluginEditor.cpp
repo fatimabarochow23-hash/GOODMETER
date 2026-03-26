@@ -121,7 +121,9 @@ GOODMETERAudioProcessorEditor::GOODMETERAudioProcessorEditor(GOODMETERAudioProce
 
     // Create HoloNono companion robot and transfer ownership to card
     holoNono = new HoloNonoComponent(audioProcessor);
+    holoNono->initSkinMenu();
     nonoCard->setContentComponent(std::unique_ptr<juce::Component>(holoNono));
+    nonoCard->setHeaderWidget(&holoNono->getSkinMenu());
 
     // Wire NONO test tube double-click → enter jiggle mode
     holoNono->onTestTubeDoubleClicked = [this]() { enterJiggleMode(); };
@@ -377,7 +379,8 @@ void GOODMETERAudioProcessorEditor::resized()
 void GOODMETERAudioProcessorEditor::timerCallback()
 {
     // 60Hz → 30Hz smart throttle during mouse drag (host window move etc.)
-    if (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+    // But NOT during jiggle mode — jiggle wobble + drag-swap needs full 60Hz
+    if (!isJiggleMode && juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
     {
         static int dragThrottleCounter = 0;
         if (++dragThrottleCounter % 2 != 0) return;

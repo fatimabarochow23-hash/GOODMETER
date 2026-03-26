@@ -12,7 +12,7 @@
       - Any thread:   exportLastSeconds() — copies snapshot, launches async WAV writer
       - No mutex, no lock, no allocation on the audio thread
 
-    Memory: 65s × 48kHz × 2ch × 4 bytes = ~24.4 MB (constant, no growth)
+    Memory: 305s × 48kHz × 2ch × 4 bytes = ~111 MB (constant, no growth)
   ==============================================================================
 */
 
@@ -24,7 +24,7 @@
 class AudioHistoryBuffer
 {
 public:
-    static constexpr int kCapacitySeconds = 65;  // 60s max export + 5s safety margin
+    static constexpr int kCapacitySeconds = 305;  // 5min max export + 5s safety margin
 
     AudioHistoryBuffer() = default;
 
