@@ -37,6 +37,10 @@ public:
     // Mini mode: compact layout with aggressive space squeezing
     bool isMiniMode = false;
 
+    // Mobile list mode: no drag/resize/undock, only tap header to expand/collapse
+    bool mobileListMode = false;
+    bool mobileAllowHeaderToggle = true;
+
     // Floating mode callbacks (wired by StandaloneNonoEditor for undock/drag)
     std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onUndockDragStarted;
     std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onFloatingDragging;
@@ -102,7 +106,7 @@ public:
         // Header hover highlight
         if (isHeaderHovered)
         {
-            g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.08f));
+            g.setColour(GoodMeterLookAndFeel::chartInk(0.12f));
             g.fillRect(headerBounds.toFloat());
         }
 
@@ -124,37 +128,22 @@ public:
         auto dotY = headerBounds.getCentreY() - dd * 0.5f;
         GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dd, statusColour);
 
-        // Title + arrow: blit from pre-rendered cache (zero drawText in hot path)
+        // Title + arrow
         {
             int cacheW = static_cast<int>(headerBounds.getWidth());
             bool arrowHidden = isArrowHovered && showDetachButton && !isDocked;
-            bool needsRebuild = headerTextCache.isNull() ||
-                                lastHeaderCacheW != cacheW ||
-                                lastHeaderCacheMini != isMiniMode ||
-                                lastHeaderCacheExpanded != isExpanded ||
-                                lastHeaderCacheDocked != isDocked ||
-                                lastHeaderCacheArrowHidden != arrowHidden;
-
-            if (needsRebuild)
+            if (GoodMeterLookAndFeel::preferDirectChartText())
             {
-                lastHeaderCacheW = cacheW;
-                lastHeaderCacheMini = isMiniMode;
-                lastHeaderCacheExpanded = isExpanded;
-                lastHeaderCacheDocked = isDocked;
-                lastHeaderCacheArrowHidden = arrowHidden;
-                headerTextCache = juce::Image(juce::Image::ARGB, cacheW, hh, true, juce::SoftwareImageType());
-                juce::Graphics tg(headerTextCache);
-
-                // Title text
-                float titleFont = isMiniMode ? 10.0f : 15.0f;
+                float titleFont = GoodMeterLookAndFeel::chartFont(isMiniMode ? 10.0f : 15.0f);
                 float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
                 float localDd = isMiniMode ? 8.0f : dotDiameter;
                 auto textArea = juce::Rectangle<int>(
                     static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
                     cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
-                tg.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
-                tg.setFont(juce::Font(titleFont, juce::Font::bold));
-                tg.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
+                textArea.translate(static_cast<int>(headerBounds.getX()), static_cast<int>(headerBounds.getY()));
+                g.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
+                g.setFont(juce::Font(titleFont, juce::Font::bold));
+                g.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
 
                 // Expand/collapse arrow — hidden when docked OR when showing ✕ detach
                 if (!isDocked && !arrowHidden)
@@ -162,11 +151,8 @@ public:
                     float localArrowW = isMiniMode ? 20.0f : 40.0f;
                     auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
                                                            static_cast<int>(localArrowW), hh);
-                    float arrowFont = isMiniMode ? 9.0f : 14.0f;
-                    tg.setFont(juce::Font(arrowFont, juce::Font::bold));
-                    tg.drawText(isExpanded ? juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xbc"))
-                                           : juce::String(juce::CharPointer_UTF8(u8"\xe2\x96\xb6")),
-                                arrowArea, juce::Justification::centred, false);
+                    arrowArea.translate(static_cast<int>(headerBounds.getX()), static_cast<int>(headerBounds.getY()));
+                    drawDisclosureArrow(g, arrowArea.toFloat(), isExpanded, GoodMeterLookAndFeel::textMain);
                 }
                 else if (isDocked)
                 {
@@ -177,17 +163,83 @@ public:
                     float dotR = isMiniMode ? 1.5f : 2.5f;
                     float gapX = isMiniMode ? 4.0f : 6.0f;
                     float gapY = isMiniMode ? 3.5f : 5.0f;
-                    tg.setColour(GoodMeterLookAndFeel::textMuted);
+                    g.setColour(GoodMeterLookAndFeel::chartMuted());
                     for (int row = -1; row <= 1; ++row)
                         for (int col = 0; col < 2; ++col)
-                            tg.fillEllipse(gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
-                                           gripCY + static_cast<float>(row) * gapY - dotR,
-                                           dotR * 2.0f, dotR * 2.0f);
+                            g.fillEllipse(headerBounds.getX() + gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
+                                          headerBounds.getY() + gripCY + static_cast<float>(row) * gapY - dotR,
+                                          dotR * 2.0f, dotR * 2.0f);
                 }
             }
-            g.drawImageAt(headerTextCache,
-                          static_cast<int>(headerBounds.getX()),
-                          static_cast<int>(headerBounds.getY()));
+            else
+            {
+                bool needsRebuild = headerTextCache.isNull() ||
+                                    lastHeaderCacheW != cacheW ||
+                                    lastHeaderCacheMini != isMiniMode ||
+                                    lastHeaderCacheExpanded != isExpanded ||
+                                    lastHeaderCacheDocked != isDocked ||
+                                    lastHeaderCacheArrowHidden != arrowHidden ||
+                                    std::abs(lastHeaderCacheScale - juce::Component::getApproximateScaleFactorForComponent(this)) > 0.01f;
+
+                if (needsRebuild)
+                {
+                    const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+                    lastHeaderCacheW = cacheW;
+                    lastHeaderCacheMini = isMiniMode;
+                    lastHeaderCacheExpanded = isExpanded;
+                    lastHeaderCacheDocked = isDocked;
+                    lastHeaderCacheArrowHidden = arrowHidden;
+                    lastHeaderCacheScale = scale;
+                    headerTextCache = juce::Image(juce::Image::ARGB,
+                                                  juce::jmax(1, juce::roundToInt(static_cast<float>(cacheW) * scale)),
+                                                  juce::jmax(1, juce::roundToInt(static_cast<float>(hh) * scale)),
+                                                  true, juce::SoftwareImageType());
+                    juce::Graphics tg(headerTextCache);
+                    tg.addTransform(juce::AffineTransform::scale(scale));
+
+                    float titleFont = GoodMeterLookAndFeel::chartFont(isMiniMode ? 10.0f : 15.0f);
+                    float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
+                    float localDd = isMiniMode ? 8.0f : dotDiameter;
+                    auto textArea = juce::Rectangle<int>(
+                        static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
+                        cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
+                    tg.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
+                    tg.setFont(juce::Font(titleFont, juce::Font::bold));
+                    tg.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
+
+                    if (!isDocked && !arrowHidden)
+                    {
+                        float localArrowW = isMiniMode ? 20.0f : 40.0f;
+                        auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
+                                                               static_cast<int>(localArrowW), hh);
+                        drawDisclosureArrow(tg, arrowArea.toFloat(), isExpanded, GoodMeterLookAndFeel::textMain);
+                    }
+                    else if (isDocked)
+                    {
+                        float localArrowW = isMiniMode ? 20.0f : 40.0f;
+                        float gripCX = static_cast<float>(cacheW) - localArrowW * 0.5f;
+                        float gripCY = static_cast<float>(hh) * 0.5f;
+                        float dotR = isMiniMode ? 1.5f : 2.5f;
+                        float gapX = isMiniMode ? 4.0f : 6.0f;
+                        float gapY = isMiniMode ? 3.5f : 5.0f;
+                        tg.setColour(GoodMeterLookAndFeel::chartMuted());
+                        for (int row = -1; row <= 1; ++row)
+                            for (int col = 0; col < 2; ++col)
+                                tg.fillEllipse(gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
+                                               gripCY + static_cast<float>(row) * gapY - dotR,
+                                               dotR * 2.0f, dotR * 2.0f);
+                    }
+                }
+
+                g.drawImage(headerTextCache,
+                            static_cast<int>(headerBounds.getX()),
+                            static_cast<int>(headerBounds.getY()),
+                            static_cast<int>(headerBounds.getWidth()),
+                            static_cast<int>(headerBounds.getHeight()),
+                            0, 0,
+                            headerTextCache.getWidth(),
+                            headerTextCache.getHeight());
+            }
         }
 
         // Arrow area: compute hit rect + draw ✕ overlay when hovered (detach mode)
@@ -236,7 +288,7 @@ public:
 
             // Draw 3 diagonal lines (classic resize grip)
             float alpha = isResizeHovered ? 0.7f : 0.35f;
-            g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(alpha));
+            g.setColour(GoodMeterLookAndFeel::chartMuted(alpha));
             for (int ln = 0; ln < 3; ++ln)
             {
                 float off = static_cast<float>(ln) * (gripSz / 3.0f);
@@ -293,7 +345,34 @@ public:
     {
         headerWidget = widget;
         if (headerWidget != nullptr)
+        {
+            headerWidget->setViewportIgnoreDragFlag(mobileListMode);
             addAndMakeVisible(headerWidget);
+        }
+    }
+
+    void setMobileListMode(bool shouldUseMobileListMode)
+    {
+        mobileListMode = shouldUseMobileListMode;
+
+        if (mobileListMode)
+        {
+            isCardHovered = false;
+            isHeaderHovered = false;
+            isArrowHovered = false;
+            isResizeHovered = false;
+            currentHoverOffset = 4.0f;
+            stopTimer();
+        }
+
+        if (contentComponent != nullptr)
+        {
+            contentComponent->setInterceptsMouseClicks(!mobileListMode, !mobileListMode);
+            contentComponent->setViewportIgnoreDragFlag(mobileListMode);
+        }
+
+        if (headerWidget != nullptr)
+            headerWidget->setViewportIgnoreDragFlag(mobileListMode);
     }
 
     //==========================================================================
@@ -306,6 +385,28 @@ public:
     void mouseDown(const juce::MouseEvent& event) override
     {
         if (inJiggleMode) return;
+
+        if (mobileListMode)
+        {
+            auto cr = getCardRect();
+            if (!cr.contains(static_cast<float>(event.x), static_cast<float>(event.y)))
+                return;
+
+            if (headerWidget != nullptr)
+            {
+                auto widgetBounds = headerWidget->getBounds();
+                if (widgetBounds.contains(event.x, event.y))
+                    return;
+            }
+
+            isDragTracking = true;
+            isDragActivated = false;
+            dragScreenStart = event.getScreenPosition();
+            mobileScrollStartY = 0;
+            if (auto* vp = findParentComponentOfClass<juce::Viewport>())
+                mobileScrollStartY = vp->getViewPositionY();
+            return;
+        }
 
         // Check resize grip hit (highest priority — only when expanded + floating + resize wired)
         if (isExpanded && !isDocked && onResizeSnapQuery && !resizeGripRect.isEmpty())
@@ -361,6 +462,22 @@ public:
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
+        if (mobileListMode)
+        {
+            if (!isDragTracking) return;
+
+            auto delta = event.getScreenPosition() - dragScreenStart;
+            if (std::abs(delta.y) > 4 || std::abs(delta.x) > 6)
+                isDragActivated = true;
+
+            if (isDragActivated)
+                if (auto* vp = findParentComponentOfClass<juce::Viewport>())
+                    vp->setViewPosition(0,
+                                        juce::jmax(0, mobileScrollStartY - delta.y));
+
+            return;
+        }
+
         // Resize drag takes priority
         if (isResizeDragging)
         {
@@ -418,6 +535,26 @@ public:
 
     void mouseUp(const juce::MouseEvent& event) override
     {
+        if (mobileListMode)
+        {
+            if (!isDragTracking) return;
+
+            bool wasDragActivated = isDragActivated;
+            isDragTracking = false;
+            isDragActivated = false;
+
+            if (!wasDragActivated && mobileAllowHeaderToggle)
+            {
+                auto cr = getCardRect();
+                const int hh = getActiveHeaderHeight();
+                float localY = static_cast<float>(event.y) - cr.getY();
+                if (localY >= 0 && localY <= static_cast<float>(hh))
+                    setExpanded(!isExpanded, true);
+            }
+
+            return;
+        }
+
         if (isResizeDragging)
         {
             isResizeDragging = false;
@@ -448,6 +585,7 @@ public:
 
     void mouseMove(const juce::MouseEvent& event) override
     {
+        if (mobileListMode) return;
         if (isDocked) return;
 
         bool wasHovered = isHeaderHovered;
@@ -476,6 +614,7 @@ public:
 
     void mouseEnter(const juce::MouseEvent&) override
     {
+        if (mobileListMode) return;
         if (isDocked) return;
         isCardHovered = true;
         ensureTimerRunning();
@@ -483,6 +622,7 @@ public:
 
     void mouseExit(const juce::MouseEvent&) override
     {
+        if (mobileListMode) return;
         if (isDocked) return;
         isCardHovered = false;
         isHeaderHovered = false;
@@ -507,6 +647,8 @@ public:
         {
             addAndMakeVisible(contentComponent.get());
             contentComponent->setVisible(isExpanded);
+            contentComponent->setInterceptsMouseClicks(!mobileListMode, !mobileListMode);
+            contentComponent->setViewportIgnoreDragFlag(mobileListMode);
 
             // CRITICAL: Recalculate heights with new content
             // This must happen AFTER content is set, not in constructor
@@ -706,6 +848,7 @@ private:
     juce::Point<int> resizeDragStart;
     int resizeStartW = 0;
     int resizeStartH = 0;
+    int mobileScrollStartY = 0;
 
     // Drag tracking state (unified for undock-drag and floating-drag)
     bool isDragTracking = false;
@@ -720,6 +863,7 @@ private:
     // === Offscreen header text cache (rebuild on resize/mode/expand/dock/arrowHover change) ===
     juce::Image headerTextCache;
     int lastHeaderCacheW = 0;
+    float lastHeaderCacheScale = 0.0f;
     bool lastHeaderCacheMini = false;
     bool lastHeaderCacheExpanded = false;
     bool lastHeaderCacheDocked = false;
@@ -742,6 +886,57 @@ private:
     static constexpr int minResizeContentH = 80;      // minimum content height during resize
 
     int getActiveHeaderHeight() const { return isMiniMode ? miniHeaderHeight : normalHeaderHeight; }
+
+    static void drawDisclosureArrow(juce::Graphics& g,
+                                    juce::Rectangle<float> area,
+                                    bool expanded,
+                                    juce::Colour colour)
+    {
+        auto icon = area.reduced(area.getWidth() * 0.40f, area.getHeight() * 0.36f);
+        g.setColour(colour);
+
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Path chevron;
+            const float stroke = area.getHeight() <= 24.0f ? 1.35f : 1.6f;
+
+            if (expanded)
+            {
+                chevron.startNewSubPath(icon.getX(), icon.getY());
+                chevron.lineTo(icon.getCentreX(), icon.getBottom());
+                chevron.lineTo(icon.getRight(), icon.getY());
+            }
+            else
+            {
+                chevron.startNewSubPath(icon.getX(), icon.getY());
+                chevron.lineTo(icon.getRight(), icon.getCentreY());
+                chevron.lineTo(icon.getX(), icon.getBottom());
+            }
+
+            g.strokePath(chevron, juce::PathStrokeType(stroke,
+                                                       juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+        }
+        else
+        {
+            juce::Path arrow;
+
+            if (expanded)
+            {
+                arrow.addTriangle(icon.getX(), icon.getY(),
+                                  icon.getRight(), icon.getY(),
+                                  icon.getCentreX(), icon.getBottom());
+            }
+            else
+            {
+                arrow.addTriangle(icon.getX(), icon.getY(),
+                                  icon.getX(), icon.getBottom(),
+                                  icon.getRight(), icon.getCentreY());
+            }
+
+            g.fillPath(arrow);
+        }
+    }
 
     //==========================================================================
     /** Compute the card body rectangle (excludes shadow area) */

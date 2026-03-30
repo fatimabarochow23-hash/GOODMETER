@@ -38,6 +38,7 @@ public:
      * Ownership stays with this component — card just positions it.
      */
     juce::ComboBox& getTargetMenu() { return targetMenu; }
+    void setForceVerticalMiniLayout(bool shouldForce) { forceVerticalMiniLayout = shouldForce; }
 
     /**
      * Initialize the target menu (call after addAndMakeVisible)
@@ -86,7 +87,7 @@ public:
 
         // Layout mode threshold: horizontal bars need ~120px minimum
         // (16px top pad + 28px barL + 12px gap + 28px barR + 14px tick labels + spacing + info panel)
-        const bool useVerticalLayout = bounds.getHeight() < 140;
+        const bool useVerticalLayout = shouldUseVerticalLayout(bounds);
 
         if (useVerticalLayout)
         {
@@ -198,7 +199,7 @@ public:
             auto bounds = getLocalBounds();
             if (!bounds.isEmpty())
             {
-                const bool useVerticalLayout = bounds.getHeight() < 140;
+                const bool useVerticalLayout = shouldUseVerticalLayout(bounds);
                 int infoW, infoH;
 
                 if (useVerticalLayout)
@@ -245,6 +246,7 @@ public:
 private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
+    bool forceVerticalMiniLayout = false;
 
     // Target menu (ComboBox, positioned by MeterCard in header)
     juce::ComboBox targetMenu;
@@ -301,14 +303,29 @@ private:
     juce::Image tickTextCache;
     int lastTickWidth = 0;
     int lastTickHeight = 0;
+    float lastTickScale = 0.0f;
     int lastLufsWidth = 0;
     int lastLufsHeight = 0;
+    float lastLufsScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override
     {
         // Peak hold decay is handled in updateMetrics()
         // This timer just ensures smooth repaints
+    }
+
+    //==========================================================================
+    bool shouldUseVerticalLayout(juce::Rectangle<int> bounds) const
+    {
+        if (forceVerticalMiniLayout)
+            return true;
+
+        const bool mobileCharts = GoodMeterLookAndFeel::isMobileCharts();
+        const int heightThreshold = mobileCharts ? 148 : 140;
+        const int widthThreshold = mobileCharts ? 210 : 0;
+        return bounds.getHeight() < heightThreshold
+            || (mobileCharts && bounds.getWidth() < widthThreshold);
     }
 
     //==========================================================================
@@ -341,7 +358,7 @@ private:
 
         // Border (Levels.tsx line 83-86)
         g.setColour(GoodMeterLookAndFeel::border);
-        g.drawRect(b, 2.0f);
+        g.drawRect(b, GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.4f));
 
         // Calculate X positions
         const float currentX = dbToX(currentPeak, width);
@@ -382,7 +399,7 @@ private:
 
             auto targetBounds = juce::Rectangle<float>(targetX - 2.0f, b.getY(), 4.0f, b.getHeight());
 
-            if (glowIntensity > 0.01f)
+            if (!GoodMeterLookAndFeel::isMobileCharts() && glowIntensity > 0.01f)
             {
                 g.setColour(baseOrange.withAlpha(glowIntensity * 0.6f));
                 g.fillRoundedRectangle(targetBounds.expanded(3.0f + 6.0f * glowIntensity), 2.0f);
@@ -395,7 +412,7 @@ private:
             dashPath.startNewSubPath(targetX, b.getY());
             dashPath.lineTo(targetX, b.getBottom());
             float dashLengths[2] = { 8.0f, 8.0f };
-            juce::PathStrokeType strokeType(4.0f);
+            juce::PathStrokeType strokeType(GoodMeterLookAndFeel::chartStroke(4.0f, 1.15f, 4.5f));
             strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
             g.strokePath(dashPath, strokeType);
         }
@@ -407,7 +424,12 @@ private:
      */
     void drawPeakBars(juce::Graphics& g, const juce::Rectangle<int>& bounds)
     {
-        auto area = bounds.reduced(20, 0).withTrimmedTop(16);
+        const bool useTopTicksOnCompactMobile = GoodMeterLookAndFeel::isMobileCharts()
+                                             && bounds.getHeight() <= 110;
+        const int tickLabelHeight = useTopTicksOnCompactMobile ? 14 : 0;
+        const int topPadding = useTopTicksOnCompactMobile ? 30 : 16;
+
+        auto area = bounds.reduced(20, 0).withTrimmedTop(topPadding);
 
         // 确保两根柱子等高: 总高减去间隙后平分
         int bh = juce::jmin(barHeight, (area.getHeight() - barGap) / 2);
@@ -421,10 +443,10 @@ private:
         drawPeakBar(g, barR, displayPeakR, peakHoldR);
 
         // Draw scale ticks (Levels.tsx lines 154-161)
-        g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.1f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
 
         float lineTop = static_cast<float>(barL.getY());
-        float lineBottom = static_cast<float>(barR.getBottom() + 4);
+        float lineBottom = static_cast<float>(barR.getBottom() + (useTopTicksOnCompactMobile ? 0 : 4));
 
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
@@ -433,11 +455,31 @@ private:
             g.drawVerticalLine(static_cast<int>(x), lineTop, lineBottom);
         }
 
-        // Blit pre-rendered tick labels (rendered in updateMetrics)
-        if (!tickTextCache.isNull())
+        const int tickTextY = useTopTicksOnCompactMobile
+                            ? barL.getY() - tickLabelHeight - 2
+                            : static_cast<int>(lineBottom + 2.0f);
+
+        if (GoodMeterLookAndFeel::preferDirectChartText() || useTopTicksOnCompactMobile)
         {
-            int tickY = static_cast<int>(lineBottom + 2);
-            g.drawImageAt(tickTextCache, barL.getX(), tickY);
+            g.setFont(GoodMeterLookAndFeel::chartFont(10.0f));
+            for (int db : tickDbs)
+            {
+                float x = static_cast<float>(barL.getX()) + dbToX(static_cast<float>(db), static_cast<float>(barL.getWidth()));
+                g.setColour(GoodMeterLookAndFeel::chartMuted());
+                g.drawText(juce::String(db),
+                           static_cast<int>(x - 15), tickTextY,
+                           30, 12,
+                           juce::Justification::centred, false);
+            }
+        }
+        else if (!tickTextCache.isNull())
+        {
+            int tickY = tickTextY;
+            g.drawImage(tickTextCache,
+                        barL.getX(), tickY,
+                        barL.getWidth(), 14,
+                        0, 0,
+                        tickTextCache.getWidth(), tickTextCache.getHeight());
         }
     }
 
@@ -470,7 +512,7 @@ private:
         drawVerticalBar(g, barR, displayPeakR, peakHoldR);
 
         // Draw horizontal tick marks and labels
-        g.setFont(juce::jlimit(7.0f, 10.0f, tickLabelH * 0.7f));
+            g.setFont(GoodMeterLookAndFeel::chartFont(juce::jlimit(7.0f, 10.0f, tickLabelH * 0.7f)));
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
         {
@@ -478,12 +520,12 @@ private:
             float tickY = barL.getBottom() - norm * barHeight;
 
             // Tick line across both bars
-            g.setColour(GoodMeterLookAndFeel::border.withAlpha(0.15f));
+            g.setColour(GoodMeterLookAndFeel::chartInk(0.2f));
             g.drawHorizontalLine(static_cast<int>(tickY),
                                 barL.getX(), barR.getRight());
 
             // Label to the right of bars
-            g.setColour(GoodMeterLookAndFeel::textMuted);
+            g.setColour(GoodMeterLookAndFeel::chartMuted());
             g.drawText(juce::String(db),
                       static_cast<int>(barR.getRight() + 2),
                       static_cast<int>(tickY - 5),
@@ -509,7 +551,7 @@ private:
 
         // Border
         g.setColour(GoodMeterLookAndFeel::border);
-        g.drawRect(barBounds, 1.5f);
+        g.drawRect(barBounds, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.9f));
 
         // Fill height (bottom-up)
         float currentNorm = juce::jlimit(0.0f, 1.0f, (currentPeak - minDb) / (maxDb - minDb));
@@ -556,7 +598,7 @@ private:
 
             auto targetBounds = juce::Rectangle<float>(barBounds.getX(), targetY - 2.0f, w, 4.0f);
 
-            if (glowIntensity > 0.01f)
+            if (!GoodMeterLookAndFeel::isMobileCharts() && glowIntensity > 0.01f)
             {
                 g.setColour(baseOrange.withAlpha(glowIntensity * 0.6f));
                 g.fillRoundedRectangle(targetBounds.expanded(3.0f + 6.0f * glowIntensity), 2.0f);
@@ -569,7 +611,7 @@ private:
             dashPath.startNewSubPath(barBounds.getX(), targetY);
             dashPath.lineTo(barBounds.getRight(), targetY);
             float dashLengths[2] = { 4.0f, 4.0f };
-            juce::PathStrokeType strokeType(4.0f);
+            juce::PathStrokeType strokeType(GoodMeterLookAndFeel::chartStroke(4.0f, 1.15f, 4.5f));
             strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
             g.strokePath(dashPath, strokeType);
         }
@@ -592,9 +634,19 @@ private:
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f, 2.0f);
 
-        // Blit pre-rendered text cache (rendered in updateMetrics, NOT here)
-        if (!lufsTextCache.isNull())
-            g.drawImageAt(lufsTextCache, bounds.getX(), bounds.getY());
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::translation(static_cast<float>(bounds.getX()),
+                                                              static_cast<float>(bounds.getY())));
+            renderLUFSText(g, bounds.getWidth(), bounds.getHeight());
+        }
+        else if (!lufsTextCache.isNull())
+            g.drawImage(lufsTextCache,
+                        bounds.getX(), bounds.getY(),
+                        bounds.getWidth(), bounds.getHeight(),
+                        0, 0,
+                        lufsTextCache.getWidth(), lufsTextCache.getHeight());
     }
 
     //==========================================================================
@@ -606,15 +658,23 @@ private:
     {
         if (w < 30 || h < 20) return;
 
-        if (lufsTextCache.isNull() || lastLufsWidth != w || lastLufsHeight != h)
+        const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+        if (lufsTextCache.isNull() || lastLufsWidth != w || lastLufsHeight != h
+            || std::abs(lastLufsScale - scale) > 0.01f)
         {
-            lufsTextCache = juce::Image(juce::Image::ARGB, w, h, true, juce::SoftwareImageType());
+            lufsTextCache = juce::Image(juce::Image::ARGB,
+                                        juce::jmax(1, juce::roundToInt(static_cast<float>(w) * scale)),
+                                        juce::jmax(1, juce::roundToInt(static_cast<float>(h) * scale)),
+                                        true, juce::SoftwareImageType());
             lastLufsWidth = w;
             lastLufsHeight = h;
+            lastLufsScale = scale;
         }
 
         lufsTextCache.clear(lufsTextCache.getBounds());
         juce::Graphics tg(lufsTextCache);
+        tg.addTransform(juce::AffineTransform::scale(scale));
         renderLUFSText(tg, w, h);
     }
 
@@ -625,18 +685,26 @@ private:
     void prerenderTickText(int barWidth)
     {
         if (barWidth < 10) return;
-        if (!tickTextCache.isNull() && lastTickWidth == barWidth) return;
+        const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+        if (!tickTextCache.isNull() && lastTickWidth == barWidth
+            && std::abs(lastTickScale - scale) <= 0.01f) return;
 
         lastTickWidth = barWidth;
-        tickTextCache = juce::Image(juce::Image::ARGB, barWidth, 14, true, juce::SoftwareImageType());
+        lastTickHeight = 14;
+        lastTickScale = scale;
+        tickTextCache = juce::Image(juce::Image::ARGB,
+                                    juce::jmax(1, juce::roundToInt(static_cast<float>(barWidth) * scale)),
+                                    juce::jmax(1, juce::roundToInt(static_cast<float>(lastTickHeight) * scale)),
+                                    true, juce::SoftwareImageType());
         juce::Graphics tg(tickTextCache);
-        tg.setFont(10.0f);
+        tg.addTransform(juce::AffineTransform::scale(scale));
+        tg.setFont(GoodMeterLookAndFeel::chartFont(10.0f));
 
         const int tickDbs[] = { -60, -40, -20, -10, -6, -3, 0 };
         for (int db : tickDbs)
         {
             float x = dbToX(static_cast<float>(db), static_cast<float>(barWidth));
-            tg.setColour(GoodMeterLookAndFeel::textMuted);
+            tg.setColour(GoodMeterLookAndFeel::chartMuted());
             tg.drawText(juce::String(db),
                         static_cast<int>(x - 15), 0, 30, 12,
                         juce::Justification::centred, false);
@@ -660,11 +728,13 @@ private:
 
         const float valueFontByH = static_cast<float>(rowHeight) * 0.38f;
         const float valueFontByW = static_cast<float>(colWidth) * 0.35f;
-        const float valueFontSize = juce::jlimit(13.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW));
+        const float valueFontSize = GoodMeterLookAndFeel::chartFont(
+            juce::jlimit(13.0f, 22.0f, juce::jmin(valueFontByH, valueFontByW)));
 
         const float labelFontByH = static_cast<float>(rowHeight) * 0.22f;
         const float labelFontByW = static_cast<float>(colWidth) * 0.14f;
-        const float labelFontSize = juce::jlimit(8.0f, 13.0f, juce::jmin(labelFontByH, labelFontByW));
+        const float labelFontSize = GoodMeterLookAndFeel::chartFont(
+            juce::jlimit(8.0f, 13.0f, juce::jmin(labelFontByH, labelFontByW)));
 
         const float labelRatio = (colWidth < 120) ? 0.25f : 0.4f;
         const bool showUnit = colWidth > 180;
@@ -687,7 +757,7 @@ private:
             auto labelArea = cellBounds.removeFromLeft(static_cast<int>(cellBounds.getWidth() * labelRatio));
             auto valueArea = cellBounds;
 
-            g.setColour(GoodMeterLookAndFeel::textMain.withAlpha(0.55f));
+            g.setColour(GoodMeterLookAndFeel::chartMuted(0.92f));
             g.setFont(labelFont);
             g.drawText(label, labelArea,
                       juce::Justification::centredLeft, false);

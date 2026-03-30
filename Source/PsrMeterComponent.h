@@ -100,6 +100,8 @@ private:
     juce::Image readoutTextCache;
     int lastGridW = 0, lastGridH = 0;
     int lastReadoutW = 0, lastReadoutH = 0;
+    float lastGridScale = 0.0f;
+    float lastReadoutScale = 0.0f;
 
     // Electro-cyan palette
     static inline const juce::Colour techCyan = juce::Colour(0xFF20C997);
@@ -195,13 +197,8 @@ private:
         int bh = static_cast<int>(bounds.getHeight());
         if (bw < 2 || bh < 2) return;
 
-        if (gridTextCache.isNull() || lastGridW != bw || lastGridH != bh)
+        auto drawGridInto = [this, bw, bh](juce::Graphics& tg)
         {
-            lastGridW = bw;
-            lastGridH = bh;
-            gridTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
-            juce::Graphics tg(gridTextCache);
-
             const float centerY = static_cast<float>(bh) / 2.0f;
             const float halfH = static_cast<float>(bh) / 2.0f;
             const float labelFontSize = juce::jlimit(7.0f, 10.0f, halfH * 0.08f);
@@ -213,19 +210,49 @@ private:
                 float yTop = centerY - yOffset;
                 float yBot = centerY + yOffset;
 
-                tg.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.15f));
+                tg.setColour(GoodMeterLookAndFeel::chartInk(0.14f));
                 tg.drawHorizontalLine(static_cast<int>(yTop), 0.0f, static_cast<float>(bw));
                 tg.drawHorizontalLine(static_cast<int>(yBot), 0.0f, static_cast<float>(bw));
 
-                tg.setFont(juce::Font(labelFontSize));
-                tg.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.3f));
+                tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize)));
+                tg.setColour(GoodMeterLookAndFeel::chartMuted());
                 tg.drawText(juce::String(static_cast<int>(val)),
                            2, static_cast<int>(yTop - 6), 20, 12,
                            juce::Justification::centredLeft, false);
             }
-        }
+        };
 
-        g.drawImageAt(gridTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::translation(bounds.getX(), bounds.getY()));
+            drawGridInto(g);
+        }
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+            if (gridTextCache.isNull() || lastGridW != bw || lastGridH != bh
+                || std::abs(lastGridScale - scale) > 0.01f)
+            {
+                lastGridW = bw;
+                lastGridH = bh;
+                lastGridScale = scale;
+                gridTextCache = juce::Image(juce::Image::ARGB,
+                                            juce::jmax(1, juce::roundToInt(static_cast<float>(bw) * scale)),
+                                            juce::jmax(1, juce::roundToInt(static_cast<float>(bh) * scale)),
+                                            true, juce::SoftwareImageType());
+                juce::Graphics tg(gridTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+                drawGridInto(tg);
+            }
+
+            g.drawImage(gridTextCache,
+                        static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()),
+                        bw, bh,
+                        0, 0,
+                        gridTextCache.getWidth(), gridTextCache.getHeight());
+        }
     }
 
     //==========================================================================
@@ -249,7 +276,7 @@ private:
             dashPath.startNewSubPath(bounds.getX(), dangerTop);
             dashPath.lineTo(bounds.getRight(), dangerTop);
             float dashLengths[2] = { 6.0f, 4.0f };
-            juce::PathStrokeType strokeType(1.0f);
+            juce::PathStrokeType strokeType(GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f));
             strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
             g.strokePath(dashPath, strokeType);
         }
@@ -260,13 +287,13 @@ private:
             dashPath.startNewSubPath(bounds.getX(), dangerBot);
             dashPath.lineTo(bounds.getRight(), dangerBot);
             float dashLengths[2] = { 6.0f, 4.0f };
-            juce::PathStrokeType strokeType(1.0f);
+            juce::PathStrokeType strokeType(GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f));
             strokeType.createDashedStroke(dashPath, dashPath, dashLengths, 2);
             g.strokePath(dashPath, strokeType);
         }
 
         // Faint danger zone fill (area INSIDE the threshold = over-compressed)
-        g.setColour(GoodMeterLookAndFeel::accentPink.withAlpha(0.04f));
+        g.setColour(GoodMeterLookAndFeel::accentPink.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.025f : 0.04f));
         g.fillRect(bounds.getX(), dangerTop, bounds.getWidth(), dangerBot - dangerTop);
     }
 
@@ -343,16 +370,18 @@ private:
 
                 // --- Crisp dark edge stroke ---
                 g.setColour(juce::Colour(0xFF1A1A24));
-                g.strokePath(segPath, juce::PathStrokeType(1.0f));
+                g.strokePath(segPath, juce::PathStrokeType(
+                    GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f)));
             }
             else
             {
                 // --- Normal segment: solid cyan fill + stroke ---
-                g.setColour(techCyan.withAlpha(0.25f));
+                g.setColour(techCyan.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.32f : 0.25f));
                 g.fillPath(segPath);
 
                 g.setColour(techCyan);
-                g.strokePath(segPath, juce::PathStrokeType(1.0f));
+                g.strokePath(segPath, juce::PathStrokeType(
+                    GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f)));
             }
 
             segStart = segEnd;
@@ -373,7 +402,7 @@ private:
     void drawCenterLine(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
         const float centerY = bounds.getCentreY();
-        g.setColour(GoodMeterLookAndFeel::textMuted.withAlpha(0.25f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(0.22f));
         g.drawHorizontalLine(static_cast<int>(centerY), bounds.getX(), bounds.getRight());
     }
 
@@ -423,33 +452,56 @@ private:
      */
     void drawReadout(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
-        if (!readoutTextCache.isNull())
-            g.drawImageAt(readoutTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::translation(bounds.getX(), bounds.getY()));
+            renderReadoutText(g, static_cast<int>(bounds.getWidth()), static_cast<int>(bounds.getHeight()));
+        }
+        else if (!readoutTextCache.isNull())
+            g.drawImage(readoutTextCache,
+                        static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()),
+                        static_cast<int>(bounds.getWidth()), static_cast<int>(bounds.getHeight()),
+                        0, 0,
+                        readoutTextCache.getWidth(), readoutTextCache.getHeight());
     }
 
     void prerenderReadout(int w, int h)
     {
         if (w < 10 || h < 10) return;
-        if (readoutTextCache.isNull() || lastReadoutW != w || lastReadoutH != h)
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+            return;
+        const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+        if (readoutTextCache.isNull() || lastReadoutW != w || lastReadoutH != h
+            || std::abs(lastReadoutScale - scale) > 0.01f)
         {
-            readoutTextCache = juce::Image(juce::Image::ARGB, w, h, true, juce::SoftwareImageType());
+            readoutTextCache = juce::Image(juce::Image::ARGB,
+                                           juce::jmax(1, juce::roundToInt(static_cast<float>(w) * scale)),
+                                           juce::jmax(1, juce::roundToInt(static_cast<float>(h) * scale)),
+                                           true, juce::SoftwareImageType());
             lastReadoutW = w;
             lastReadoutH = h;
+            lastReadoutScale = scale;
         }
         readoutTextCache.clear(readoutTextCache.getBounds());
         juce::Graphics tg(readoutTextCache);
+        tg.addTransform(juce::AffineTransform::scale(scale));
+        renderReadoutText(tg, w, h);
+    }
 
+    void renderReadoutText(juce::Graphics& tg, int w, int h)
+    {
         const float fontSize = juce::jlimit(12.0f, 22.0f, static_cast<float>(h) * 0.75f);
         const float labelFontSize = juce::jlimit(8.0f, 12.0f, static_cast<float>(h) * 0.45f);
 
-        tg.setColour(GoodMeterLookAndFeel::textMuted);
-        tg.setFont(juce::Font(labelFontSize, juce::Font::bold));
+        tg.setColour(GoodMeterLookAndFeel::chartMuted());
+        tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
         tg.drawText("PEAK-TO-SHORT", 4, 0, static_cast<int>(w * 0.5f), h,
                     juce::Justification::centredLeft, false);
 
         bool isDanger = lastShownPsr < dangerThreshold && lastShownPsr > 0.1f;
         tg.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : techCyan);
-        tg.setFont(juce::Font(fontSize, juce::Font::bold));
+        tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(fontSize), juce::Font::bold));
 
         juce::String valueStr;
         if (lastShownPsr < 0.1f)

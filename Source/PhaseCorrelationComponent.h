@@ -60,6 +60,12 @@ public:
     {
         smoothedPhase += (correlation - smoothedPhase) * 0.1f;
 
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            repaint();
+            return;
+        }
+
         // Pre-render value text to offscreen cache
         auto bounds = getLocalBounds();
         if (!bounds.isEmpty())
@@ -69,15 +75,24 @@ public:
             int lw = bounds.getWidth() - static_cast<int>(padX) * 2;
             if (lw > 10 && labelH > 5)
             {
-                if (valueTextCache.isNull() || lastValueW != lw || lastValueH != labelH)
+                const float cacheScale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+                if (valueTextCache.isNull() || lastValueW != lw || lastValueH != labelH
+                    || std::abs(lastValueScale - cacheScale) > 0.01f)
                 {
-                    valueTextCache = juce::Image(juce::Image::ARGB, lw, labelH, true, juce::SoftwareImageType());
+                    valueTextCache = juce::Image(juce::Image::ARGB,
+                                                 juce::jmax(1, juce::roundToInt(static_cast<float>(lw) * cacheScale)),
+                                                 juce::jmax(1, juce::roundToInt(static_cast<float>(labelH) * cacheScale)),
+                                                 true, juce::SoftwareImageType());
                     lastValueW = lw;
                     lastValueH = labelH;
+                    lastValueScale = cacheScale;
                 }
                 valueTextCache.clear(valueTextCache.getBounds());
                 juce::Graphics tg(valueTextCache);
-                const float valueFont = juce::jlimit(11.0f, 19.0f, labelH * 0.7f);
+                tg.addTransform(juce::AffineTransform::scale(cacheScale));
+                const float valueFont = GoodMeterLookAndFeel::chartFont(
+                    juce::jlimit(11.0f, 19.0f, labelH * 0.7f));
                 tg.setColour(GoodMeterLookAndFeel::textMain);
                 tg.setFont(juce::Font(valueFont, juce::Font::bold));
                 tg.drawText(juce::String(smoothedPhase, 2), 0, 0, lw, labelH, juce::Justification::centred, false);
@@ -101,6 +116,8 @@ private:
     juce::Image valueTextCache;    // DYNAMIC: correlation value
     int lastSideLabelsW = 0, lastSideLabelsH = 0;
     int lastValueW = 0, lastValueH = 0;
+    float lastSideLabelsScale = 0.0f;
+    float lastValueScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override {}
@@ -183,33 +200,41 @@ private:
     {
         auto jacketRect = juce::Rectangle<float>(jx, jy, jw, jh);
 
-        // Cyan outer glow (subtle, always-on for condenser identity)
-        g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.08f));
-        g.drawRoundedRectangle(jacketRect.expanded(3.0f), cornerR + 2.0f, 4.0f);
+        // Cyan outer glow (desktop only — mobile removes halo blur)
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+        {
+            g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.08f));
+            g.drawRoundedRectangle(jacketRect.expanded(3.0f), cornerR + 2.0f, 4.0f);
+        }
 
         // Glass vessel outline
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
-        g.drawRoundedRectangle(jacketRect, cornerR, 1.5f);
+        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
+        g.drawRoundedRectangle(jacketRect, cornerR,
+                               GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
-        // Glass highlight
-        g.setColour(juce::Colours::white.withAlpha(0.15f));
-        g.drawRoundedRectangle(jacketRect.reduced(1.0f), cornerR - 0.5f, 0.8f);
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.15f));
+            g.drawRoundedRectangle(jacketRect.reduced(1.0f), cornerR - 0.5f, 0.8f);
+        }
 
         // Inlet pipe (top) — two vertical lines going up
         const float inletTopY = jy - pipeH;
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
-        g.drawLine(inletL, jy, inletL, inletTopY, 1.5f);
-        g.drawLine(inletR, jy, inletR, inletTopY, 1.5f);
+        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
+        g.drawLine(inletL, jy, inletL, inletTopY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
+        g.drawLine(inletR, jy, inletR, inletTopY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
         // Outlet pipe (bottom) — two vertical lines going down
         const float outletBottomY = jy + jh + pipeH;
-        g.drawLine(outletL, jy + jh, outletL, outletBottomY, 1.5f);
-        g.drawLine(outletR, jy + jh, outletR, outletBottomY, 1.5f);
+        g.drawLine(outletL, jy + jh, outletL, outletBottomY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
+        g.drawLine(outletR, jy + jh, outletR, outletBottomY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
-        // Pipe cyan glow highlights
-        g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.06f));
-        g.drawLine(inletL + 1.0f, jy, inletL + 1.0f, inletTopY, 3.0f);
-        g.drawLine(outletR - 1.0f, jy + jh, outletR - 1.0f, outletBottomY, 3.0f);
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+        {
+            g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.06f));
+            g.drawLine(inletL + 1.0f, jy, inletL + 1.0f, inletTopY, 3.0f);
+            g.drawLine(outletR - 1.0f, jy + jh, outletR - 1.0f, outletBottomY, 3.0f);
+        }
     }
 
     //==========================================================================
@@ -254,7 +279,7 @@ private:
         auto innerPath = createInnerTubePath(startX, endX, cy, condenserWidth, amplitude);
 
         // Dark outline
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.22f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.22f));
         g.strokePath(innerPath, juce::PathStrokeType(outerStroke, juce::PathStrokeType::curved));
 
         // White fill (glass interior)
@@ -262,8 +287,11 @@ private:
         g.strokePath(innerPath, juce::PathStrokeType(innerStroke, juce::PathStrokeType::curved));
 
         // Subtle highlight on tube
-        g.setColour(juce::Colours::white.withAlpha(0.3f));
-        g.strokePath(innerPath, juce::PathStrokeType(innerStroke * 0.4f, juce::PathStrokeType::curved));
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.3f));
+            g.strokePath(innerPath, juce::PathStrokeType(innerStroke * 0.4f, juce::PathStrokeType::curved));
+        }
     }
 
     //==========================================================================
@@ -305,8 +333,8 @@ private:
 
         auto innerPath = createInnerTubePath(startX, startX + condenserWidth,
                                               cy, condenserWidth, amplitude);
-        // Glow layer (wider)
-        g.strokePath(innerPath, juce::PathStrokeType(innerStroke + 4.0f, juce::PathStrokeType::curved));
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+            g.strokePath(innerPath, juce::PathStrokeType(innerStroke + 4.0f, juce::PathStrokeType::curved));
 
         // Core liquid
         juce::ColourGradient coreGrad(
@@ -340,7 +368,7 @@ private:
         juce::PathStrokeType strokeType(strokeW);
         strokeType.createDashedStroke(centerLine, centerLine, dashLengths, 2);
 
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.25f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(0.22f));
         g.strokePath(centerLine, strokeType);
     }
 
@@ -356,29 +384,69 @@ private:
         int lh = labelBounds.getHeight();
         if (lw < 10 || lh < 5) return;
 
-        // Static side labels (rebuild on resize only)
-        if (sideLabelsCache.isNull() || lastSideLabelsW != lw || lastSideLabelsH != lh)
+        if (GoodMeterLookAndFeel::preferDirectChartText())
         {
-            lastSideLabelsW = lw;
-            lastSideLabelsH = lh;
-            sideLabelsCache = juce::Image(juce::Image::ARGB, lw, lh, true, juce::SoftwareImageType());
-            juce::Graphics tg(sideLabelsCache);
-
-            const float labelFont = juce::jlimit(9.0f, 14.0f, lh * 0.5f);
+            const float labelFont = GoodMeterLookAndFeel::chartFont(
+                juce::jlimit(9.0f, 14.0f, lh * 0.5f));
             const int sideW = juce::jlimit(30, 80, static_cast<int>(lw * 0.2f));
 
-            tg.setFont(juce::Font(labelFont, juce::Font::bold));
-            tg.setColour(GoodMeterLookAndFeel::accentPink);
-            tg.drawText("-1.0", 0, 0, sideW, lh, juce::Justification::centredLeft, false);
+            g.setFont(juce::Font(labelFont, juce::Font::bold));
+            g.setColour(GoodMeterLookAndFeel::accentPink);
+            g.drawText("-1.0", labelBounds.getX(), labelBounds.getY(), sideW, lh,
+                       juce::Justification::centredLeft, false);
 
-            tg.setColour(GoodMeterLookAndFeel::accentCyan);
-            tg.drawText("+1.0", lw - sideW, 0, sideW, lh, juce::Justification::centredRight, false);
+            g.setColour(GoodMeterLookAndFeel::accentCyan);
+            g.drawText("+1.0", labelBounds.getRight() - sideW, labelBounds.getY(), sideW, lh,
+                       juce::Justification::centredRight, false);
+
+            const float valueFont = GoodMeterLookAndFeel::chartFont(
+                juce::jlimit(11.0f, 19.0f, static_cast<float>(lh) * 0.7f));
+            g.setColour(GoodMeterLookAndFeel::textMain);
+            g.setFont(juce::Font(valueFont, juce::Font::bold));
+            g.drawText(juce::String(smoothedPhase, 2), labelBounds,
+                       juce::Justification::centred, false);
         }
-        g.drawImageAt(sideLabelsCache, labelBounds.getX(), labelBounds.getY());
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
 
-        // Dynamic value (pre-rendered in updateCorrelation)
-        if (!valueTextCache.isNull())
-            g.drawImageAt(valueTextCache, labelBounds.getX(), labelBounds.getY());
+            if (sideLabelsCache.isNull() || lastSideLabelsW != lw || lastSideLabelsH != lh
+                || std::abs(lastSideLabelsScale - scale) > 0.01f)
+            {
+                lastSideLabelsW = lw;
+                lastSideLabelsH = lh;
+                lastSideLabelsScale = scale;
+                sideLabelsCache = juce::Image(juce::Image::ARGB,
+                                              juce::jmax(1, juce::roundToInt(static_cast<float>(lw) * scale)),
+                                              juce::jmax(1, juce::roundToInt(static_cast<float>(lh) * scale)),
+                                              true, juce::SoftwareImageType());
+                juce::Graphics tg(sideLabelsCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+
+                const float labelFont = GoodMeterLookAndFeel::chartFont(
+                    juce::jlimit(9.0f, 14.0f, lh * 0.5f));
+                const int sideW = juce::jlimit(30, 80, static_cast<int>(lw * 0.2f));
+
+                tg.setFont(juce::Font(labelFont, juce::Font::bold));
+                tg.setColour(GoodMeterLookAndFeel::accentPink);
+                tg.drawText("-1.0", 0, 0, sideW, lh, juce::Justification::centredLeft, false);
+
+                tg.setColour(GoodMeterLookAndFeel::accentCyan);
+                tg.drawText("+1.0", lw - sideW, 0, sideW, lh, juce::Justification::centredRight, false);
+            }
+            g.drawImage(sideLabelsCache,
+                        labelBounds.getX(), labelBounds.getY(),
+                        lw, lh,
+                        0, 0,
+                        sideLabelsCache.getWidth(), sideLabelsCache.getHeight());
+
+            if (!valueTextCache.isNull())
+                g.drawImage(valueTextCache,
+                            labelBounds.getX(), labelBounds.getY(),
+                            lw, lh,
+                            0, 0,
+                            valueTextCache.getWidth(), valueTextCache.getHeight());
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PhaseCorrelationComponent)

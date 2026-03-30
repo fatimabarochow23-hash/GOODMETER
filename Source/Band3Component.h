@@ -65,6 +65,7 @@ private:
     // Offscreen label cache (STATIC — rebuild on resize only)
     juce::Image vesselLabelCache;
     int lastVesselLabelW = 0, lastVesselLabelH = 0;
+    float lastVesselLabelScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override
@@ -130,30 +131,62 @@ private:
         drawCylinder(g, cylinderCol, displayMid, GoodMeterLookAndFeel::accentYellow, "MID");
         drawFlask(g, flaskCol, displayHigh, GoodMeterLookAndFeel::accentGreen, "HIGH");
 
-        // Blit cached vessel labels (static, rebuild on resize)
         int areaW = static_cast<int>(area.getWidth());
         int labelH = static_cast<int>(labelSpace * 1.6f + 4.0f);
-        if (vesselLabelCache.isNull() || lastVesselLabelW != areaW || lastVesselLabelH != labelH)
-        {
-            lastVesselLabelW = areaW;
-            lastVesselLabelH = labelH;
-            vesselLabelCache = juce::Image(juce::Image::ARGB, areaW, labelH, true, juce::SoftwareImageType());
-            juce::Graphics tg(vesselLabelCache);
 
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
             const juce::String labels[] = { "LOW", "MID", "HIGH" };
             for (int i = 0; i < 3; ++i)
             {
-                float colX = i * (colWidth + gap);
-                const float fontSize = juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f);
-                tg.setColour(GoodMeterLookAndFeel::textMain);
-                tg.setFont(juce::Font(fontSize, juce::Font::bold));
-                tg.drawText(labels[i],
-                           static_cast<int>(colX), 2,
+                float colX = area.getX() + i * (colWidth + gap);
+                const float fontSize = GoodMeterLookAndFeel::chartFont(
+                    juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f));
+                g.setColour(GoodMeterLookAndFeel::textMain);
+                g.setFont(juce::Font(fontSize, juce::Font::bold));
+                g.drawText(labels[i],
+                           static_cast<int>(colX), static_cast<int>(area.getY() + vesselHeight + 2.0f),
                            static_cast<int>(colWidth), static_cast<int>(fontSize * 1.6f),
                            juce::Justification::centred, false);
             }
         }
-        g.drawImageAt(vesselLabelCache, static_cast<int>(area.getX()), static_cast<int>(area.getY() + vesselHeight));
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+            if (vesselLabelCache.isNull() || lastVesselLabelW != areaW || lastVesselLabelH != labelH
+                || std::abs(lastVesselLabelScale - scale) > 0.01f)
+            {
+                lastVesselLabelW = areaW;
+                lastVesselLabelH = labelH;
+                lastVesselLabelScale = scale;
+                vesselLabelCache = juce::Image(juce::Image::ARGB,
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(areaW) * scale)),
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(labelH) * scale)),
+                                               true, juce::SoftwareImageType());
+                juce::Graphics tg(vesselLabelCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+
+                const juce::String labels[] = { "LOW", "MID", "HIGH" };
+                for (int i = 0; i < 3; ++i)
+                {
+                    float colX = i * (colWidth + gap);
+                    const float fontSize = GoodMeterLookAndFeel::chartFont(
+                        juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f));
+                    tg.setColour(GoodMeterLookAndFeel::textMain);
+                    tg.setFont(juce::Font(fontSize, juce::Font::bold));
+                    tg.drawText(labels[i],
+                               static_cast<int>(colX), 2,
+                               static_cast<int>(colWidth), static_cast<int>(fontSize * 1.6f),
+                               juce::Justification::centred, false);
+                }
+            }
+            g.drawImage(vesselLabelCache,
+                        static_cast<int>(area.getX()), static_cast<int>(area.getY() + vesselHeight),
+                        areaW, labelH,
+                        0, 0,
+                        vesselLabelCache.getWidth(), vesselLabelCache.getHeight());
+        }
     }
 
     //==========================================================================
@@ -292,13 +325,13 @@ private:
         drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
 
         // Mini graduation marks (right side of cylinder body)
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.12f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
         const int numTicks = 10;
         for (int t = 1; t < numTicks; ++t)
         {
             float tickY = cy + ch * (1.0f - static_cast<float>(t) / static_cast<float>(numTicks));
             float tickLen = (t % 5 == 0) ? cw * 0.45f : cw * 0.25f;
-            float tickStroke = (t % 5 == 0) ? 1.0f : 0.6f;
+            float tickStroke = GoodMeterLookAndFeel::chartStroke((t % 5 == 0) ? 1.0f : 0.6f, 1.2f, 1.0f);
             g.drawLine(cx + cw - tickLen, tickY, cx + cw, tickY, tickStroke);
         }
     }
@@ -370,20 +403,20 @@ private:
             float fillY = vesselArea.getBottom() - fillHeight;
 
             // Liquid body fill
-            g.setColour(liquidColor.withAlpha(0.65f));
+            g.setColour(liquidColor.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.78f : 0.65f));
             g.fillRect(vesselArea.getX() - 2.0f, fillY,
                        vesselArea.getWidth() + 4.0f, fillHeight + 1.0f);
 
             // Meniscus highlight (bright line at liquid surface)
             if (fillHeight > 3.0f)
             {
-                g.setColour(liquidColor.brighter(0.6f).withAlpha(0.5f));
+                g.setColour(liquidColor.brighter(0.35f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.26f : 0.5f));
                 g.fillRect(vesselArea.getX() - 2.0f, fillY, vesselArea.getWidth() + 4.0f, 2.0f);
             }
         }
 
-        // === 2. Subtle outer glow (neon halo) ===
-        if (levelNorm > 0.05f)
+        // === 2. Subtle outer glow (desktop only — mobile keeps edges crisp) ===
+        if (!GoodMeterLookAndFeel::isMobileCharts() && levelNorm > 0.05f)
         {
             float glowAlpha = juce::jlimit(0.0f, 0.12f, levelNorm * 0.12f);
             g.setColour(liquidColor.withAlpha(glowAlpha));
@@ -391,12 +424,16 @@ private:
         }
 
         // === 3. Glass vessel outline (elegant thin stroke) ===
-        g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.20f));
-        g.strokePath(vesselPath, juce::PathStrokeType(1.5f));
+        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.36f : 0.20f));
+        g.strokePath(vesselPath, juce::PathStrokeType(
+            GoodMeterLookAndFeel::chartStroke(1.5f, 1.22f, 1.9f)));
 
-        // === 4. Glass highlight (subtle white reflection on left edge) ===
-        g.setColour(juce::Colours::white.withAlpha(0.20f));
-        g.strokePath(vesselPath, juce::PathStrokeType(0.8f));
+        // === 4. Glass highlight (desktop only — mobile removes the milky double edge) ===
+        if (!GoodMeterLookAndFeel::isMobileCharts())
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.20f));
+            g.strokePath(vesselPath, juce::PathStrokeType(0.8f));
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Band3Component)

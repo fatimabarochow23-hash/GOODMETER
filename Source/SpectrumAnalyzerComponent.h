@@ -47,7 +47,7 @@ public:
             return;
 
         g.setColour(GoodMeterLookAndFeel::border);
-        g.drawRect(bounds, 2.0f);
+        g.drawRect(bounds, GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.3f));
 
         if (hasValidData)
             drawSpectrum(g, bounds);
@@ -101,6 +101,7 @@ private:
     // Offscreen text cache (STATIC — rebuild on resize only)
     juce::Image freqGridTextCache;
     int lastFreqGridW = 0, lastFreqGridH = 0;
+    float lastFreqGridScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override
@@ -195,7 +196,7 @@ private:
 
         // Gradient fill
         juce::ColourGradient gradient(
-            GoodMeterLookAndFeel::accentPink.withAlpha(0.4f),
+            GoodMeterLookAndFeel::accentPink.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.24f : 0.4f),
             bounds.getCentreX(), bounds.getY(),
             GoodMeterLookAndFeel::accentPink.withAlpha(0.0f),
             bounds.getCentreX(), bounds.getBottom(),
@@ -206,7 +207,8 @@ private:
 
         // Stroke
         g.setColour(GoodMeterLookAndFeel::accentPink);
-        g.strokePath(spectrumPath, juce::PathStrokeType(2.0f));
+        g.strokePath(spectrumPath, juce::PathStrokeType(
+            GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.3f)));
     }
 
     //==========================================================================
@@ -216,42 +218,34 @@ private:
         int bh = static_cast<int>(bounds.getHeight());
         if (bw < 4 || bh < 4) return;
 
-        if (freqGridTextCache.isNull() || lastFreqGridW != bw || lastFreqGridH != bh)
+        auto drawGridInto = [this, bw, bh](juce::Graphics& tg)
         {
-            lastFreqGridW = bw;
-            lastFreqGridH = bh;
-            freqGridTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
-            juce::Graphics tg(freqGridTextCache);
-
             const float width = static_cast<float>(bw);
             const float height = static_cast<float>(bh);
 
-            // ---- Horizontal dB grid lines (Pro-Q style: every 10 dB) ----
             const float dbLines[] = { -90.0f, -80.0f, -70.0f, -60.0f, -50.0f,
                                       -40.0f, -30.0f, -20.0f, -10.0f, 0.0f };
 
-            tg.setFont(juce::Font(9.0f));
+            tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(9.0f)));
             for (float db : dbLines)
             {
                 float y = dbToY(db, height, 0.0f);
                 if (y < 0.0f || y > height) continue;
 
                 // Subtle horizontal line
-                tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.12f));
+                tg.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
                 tg.drawHorizontalLine(static_cast<int>(y), 0.0f, width);
 
                 // dB label on the left
-                tg.setColour(GoodMeterLookAndFeel::textMuted);
+                tg.setColour(GoodMeterLookAndFeel::chartMuted());
                 tg.drawText(juce::String(static_cast<int>(db)),
                            2, static_cast<int>(y - 6), 28, 12,
                            juce::Justification::centredLeft, false);
             }
 
-            // ---- Vertical frequency grid lines ----
             const float frequencies[] = { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f,
                                          1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            // Key frequency accent colors: 100=green, 1k=yellow, 10k=orange
             auto getFreqColour = [](float freq) -> juce::Colour
             {
                 if (std::abs(freq - 100.0f)   < 1.0f) return juce::Colour(0xFF00D084);  // green
@@ -260,7 +254,7 @@ private:
                 return juce::Colour(0x00000000);  // no accent
             };
 
-            tg.setFont(juce::Font(10.0f));
+            tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(10.0f)));
 
             for (float freq : frequencies)
             {
@@ -270,17 +264,25 @@ private:
 
                 if (hasAccent)
                 {
-                    // Glow layers: wide soft → narrow bright
-                    tg.setColour(accent.withAlpha(0.06f));
-                    tg.fillRect(x - 4.0f, 0.0f, 8.0f, height);
-                    tg.setColour(accent.withAlpha(0.15f));
-                    tg.fillRect(x - 1.5f, 0.0f, 3.0f, height);
-                    tg.setColour(accent.withAlpha(0.5f));
-                    tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
+                    if (GoodMeterLookAndFeel::isMobileCharts())
+                    {
+                        tg.setColour(accent.withAlpha(0.72f));
+                        tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
+                    }
+                    else
+                    {
+                        // Glow layers: wide soft → narrow bright
+                        tg.setColour(accent.withAlpha(0.06f));
+                        tg.fillRect(x - 4.0f, 0.0f, 8.0f, height);
+                        tg.setColour(accent.withAlpha(0.15f));
+                        tg.fillRect(x - 1.5f, 0.0f, 3.0f, height);
+                        tg.setColour(accent.withAlpha(0.5f));
+                        tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
+                    }
                 }
                 else
                 {
-                    tg.setColour(GoodMeterLookAndFeel::border.withAlpha(0.2f));
+                    tg.setColour(GoodMeterLookAndFeel::chartInk(0.18f));
                     tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
                 }
 
@@ -291,17 +293,46 @@ private:
                 else
                     label = juce::String(static_cast<int>(freq));
 
-                // Clamp label rect so rightmost labels don't clip
                 int labelX = juce::jlimit(0, bw - 30, static_cast<int>(x - 15));
-                tg.setColour(hasAccent ? accent.withAlpha(0.9f) : GoodMeterLookAndFeel::textMuted);
+                tg.setColour(hasAccent ? accent.withAlpha(0.9f) : GoodMeterLookAndFeel::chartMuted());
                 tg.drawText(label,
                           labelX, bh - 20,
                           30, 16,
                           juce::Justification::centred, false);
             }
-        }
+        };
 
-        g.drawImageAt(freqGridTextCache, static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()));
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::translation(bounds.getX(), bounds.getY()));
+            drawGridInto(g);
+        }
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+            if (freqGridTextCache.isNull() || lastFreqGridW != bw || lastFreqGridH != bh
+                || std::abs(lastFreqGridScale - scale) > 0.01f)
+            {
+                lastFreqGridW = bw;
+                lastFreqGridH = bh;
+                lastFreqGridScale = scale;
+                freqGridTextCache = juce::Image(juce::Image::ARGB,
+                                                juce::jmax(1, juce::roundToInt(static_cast<float>(bw) * scale)),
+                                                juce::jmax(1, juce::roundToInt(static_cast<float>(bh) * scale)),
+                                                true, juce::SoftwareImageType());
+                juce::Graphics tg(freqGridTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+                drawGridInto(tg);
+            }
+
+            g.drawImage(freqGridTextCache,
+                        static_cast<int>(bounds.getX()), static_cast<int>(bounds.getY()),
+                        bw, bh,
+                        0, 0,
+                        freqGridTextCache.getWidth(), freqGridTextCache.getHeight());
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpectrumAnalyzerComponent)

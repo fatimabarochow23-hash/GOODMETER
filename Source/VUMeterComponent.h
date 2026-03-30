@@ -48,48 +48,58 @@ public:
 
         int bw = getWidth(), bh = getHeight();
 
-        // Rebuild text cache only on resize
-        if (vuTextCache.isNull() || lastVuCacheW != bw || lastVuCacheH != bh)
+        if (!GoodMeterLookAndFeel::preferDirectChartText())
         {
-            lastVuCacheW = bw;
-            lastVuCacheH = bh;
-            vuTextCache = juce::Image(juce::Image::ARGB, bw, bh, true, juce::SoftwareImageType());
-            juce::Graphics tg(vuTextCache);
+            // Rebuild text cache only on resize
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
 
-            // Recompute geometry (same as below)
-            const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
-            const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);
-            const float topPad = juce::jlimit(5.0f, 15.0f, bounds.getHeight() * 0.05f);
-            const float sidePad = 15.0f;
-            float cx = bounds.getCentreX();
-            float cy = bounds.getBottom() - bottomPad - vuTextH;
-            float topSpace = juce::jmax(10.0f, cy - bounds.getY() - topPad);
-            float sideSpace = juce::jmax(10.0f, bounds.getWidth() / 2.0f - sidePad);
-            float radiusV = topSpace * 0.90f;
-            float sinVal = juce::jlimit(0.0f, 0.99f, sideSpace / juce::jmax(1.0f, radiusV));
-            float naturalHalfAngle = std::asin(sinVal);
-            float halfAngle = juce::jlimit(
-                juce::MathConstants<float>::pi / 3.5f,
-                juce::MathConstants<float>::pi * 0.44f,
-                naturalHalfAngle);
-            float radiusH = sideSpace / std::sin(halfAngle);
-            float radius = juce::jmax(15.0f, juce::jmin(radiusV, radiusH));
-            float minAngle = -halfAngle;
-            float maxAngle =  halfAngle;
+            if (vuTextCache.isNull() || lastVuCacheW != bw || lastVuCacheH != bh
+                || std::abs(lastVuCacheScale - scale) > 0.01f)
+            {
+                lastVuCacheW = bw;
+                lastVuCacheH = bh;
+                lastVuCacheScale = scale;
+                vuTextCache = juce::Image(juce::Image::ARGB,
+                                          juce::jmax(1, juce::roundToInt(static_cast<float>(bw) * scale)),
+                                          juce::jmax(1, juce::roundToInt(static_cast<float>(bh) * scale)),
+                                          true, juce::SoftwareImageType());
+                juce::Graphics tg(vuTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
 
-            // Draw tick labels to cache
-            drawTicksAndLabels(tg, cx, cy, radius, minAngle, maxAngle);
+                // Recompute geometry (same as below)
+                const float vuTextH = juce::jlimit(14.0f, 35.0f, bounds.getHeight() * 0.1f);
+                const float bottomPad = juce::jlimit(3.0f, 12.0f, bounds.getHeight() * 0.03f);
+                const float topPad = juce::jlimit(5.0f, 15.0f, bounds.getHeight() * 0.05f);
+                const float sidePad = 15.0f;
+                float cx = bounds.getCentreX();
+                float cy = bounds.getBottom() - bottomPad - vuTextH;
+                float topSpace = juce::jmax(10.0f, cy - bounds.getY() - topPad);
+                float sideSpace = juce::jmax(10.0f, bounds.getWidth() / 2.0f - sidePad);
+                float radiusV = topSpace * 0.90f;
+                float sinVal = juce::jlimit(0.0f, 0.99f, sideSpace / juce::jmax(1.0f, radiusV));
+                float naturalHalfAngle = std::asin(sinVal);
+                float halfAngle = juce::jlimit(
+                    juce::MathConstants<float>::pi / 3.5f,
+                    juce::MathConstants<float>::pi * 0.44f,
+                    naturalHalfAngle);
+                float radiusH = sideSpace / std::sin(halfAngle);
+                float radius = juce::jmax(15.0f, juce::jmin(radiusV, radiusH));
+                float minAngle = -halfAngle;
+                float maxAngle =  halfAngle;
 
-            // Draw "VU" text to cache
-            const float vuFontSize = juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f);
-            tg.setColour(GoodMeterLookAndFeel::border);
-            tg.setFont(juce::Font(vuFontSize, juce::Font::bold));
-            tg.drawText("VU",
-                      static_cast<int>(bounds.getX()),
-                      static_cast<int>(cy + 2.0f),
-                      static_cast<int>(bounds.getWidth()),
-                      static_cast<int>(vuTextH),
-                      juce::Justification::centred, false);
+                drawTicksAndLabels(tg, cx, cy, radius, minAngle, maxAngle);
+
+                const float vuFontSize = GoodMeterLookAndFeel::chartFont(
+                    juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f));
+                tg.setColour(GoodMeterLookAndFeel::border);
+                tg.setFont(juce::Font(vuFontSize, juce::Font::bold));
+                tg.drawText("VU",
+                          static_cast<int>(bounds.getX()),
+                          static_cast<int>(cy + 2.0f),
+                          static_cast<int>(bounds.getWidth()),
+                          static_cast<int>(vuTextH),
+                          juce::Justification::centred, false);
+            }
         }
 
         // VU text space
@@ -120,8 +130,28 @@ public:
         drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, arcThickness);
         drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, arcThickness);
 
-        // Blit cached text (tick labels + "VU")
-        g.drawImageAt(vuTextCache, 0, 0);
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            drawTicksAndLabels(g, cx, cy, radius, minAngle, maxAngle);
+            const float vuFontSize = GoodMeterLookAndFeel::chartFont(
+                juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f));
+            g.setColour(GoodMeterLookAndFeel::border);
+            g.setFont(juce::Font(vuFontSize, juce::Font::bold));
+            g.drawText("VU",
+                       static_cast<int>(bounds.getX()),
+                       static_cast<int>(cy + 2.0f),
+                       static_cast<int>(bounds.getWidth()),
+                       static_cast<int>(vuTextH),
+                       juce::Justification::centred, false);
+        }
+        else
+        {
+            g.drawImage(vuTextCache,
+                        0, 0, bw, bh,
+                        0, 0,
+                        vuTextCache.getWidth(),
+                        vuTextCache.getHeight());
+        }
 
         // Draw needle (dynamic, no text)
         drawNeedle(g, cx, cy, radius, minAngle, maxAngle);
@@ -181,6 +211,7 @@ private:
     juce::Image vuTextCache;
     int lastVuCacheW = 0;
     int lastVuCacheH = 0;
+    float lastVuCacheScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override
@@ -204,7 +235,7 @@ private:
                              true);  // startAsNewSubPath
 
         g.setColour(colour);
-        g.strokePath(arcPath, juce::PathStrokeType(lineWidth));
+        g.strokePath(arcPath, juce::PathStrokeType(GoodMeterLookAndFeel::chartStroke(lineWidth, 1.18f, lineWidth)));
     }
 
     //==========================================================================
@@ -238,7 +269,8 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border).withAlpha(0.25f));
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border)
+                            .withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.25f));
             g.drawLine(x1, y1, x2, y2, tinyTickWidth);
         }
 
@@ -255,7 +287,8 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border).withAlpha(0.45f));
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border)
+                            .withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.45f));
             g.drawLine(x1, y1, x2, y2, smallTickWidth);
         }
 
@@ -282,7 +315,7 @@ private:
             juce::String labelText = (tickVu > 0) ? ("+" + juce::String(tickVu)) : juce::String(tickVu);
 
             g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
-            g.setFont(juce::Font(labelFontSize, juce::Font::bold));
+            g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
             g.drawText(labelText,
                       static_cast<int>(lx - 15), static_cast<int>(ly - 8),
                       30, 16,
@@ -313,7 +346,7 @@ private:
             juce::String labelText = juce::String(tickVu);
 
             g.setColour(GoodMeterLookAndFeel::border);
-            g.setFont(juce::Font(labelFontSize, juce::Font::bold));
+            g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
             g.drawText(labelText,
                       static_cast<int>(lx - 15), static_cast<int>(ly - 8),
                       30, 16,
@@ -435,12 +468,15 @@ private:
                                         0.0f, a1, a0, false);
                     slice.closeSubPath();
 
-                    // Layer 1: wide soft bloom (outer haze)
-                    g.setColour(sliceColour.withAlpha(0.12f * intensity));
-                    g.strokePath(slice, juce::PathStrokeType(6.0f));
+                    if (!GoodMeterLookAndFeel::isMobileCharts())
+                    {
+                        // Layer 1: wide soft bloom (outer haze)
+                        g.setColour(sliceColour.withAlpha(0.12f * intensity));
+                        g.strokePath(slice, juce::PathStrokeType(GoodMeterLookAndFeel::chartStroke(6.0f, 1.15f, 6.5f)));
+                    }
 
                     // Layer 2: core fill
-                    g.setColour(sliceColour.withAlpha(0.55f * intensity));
+                    g.setColour(sliceColour.withAlpha((GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.55f) * intensity));
                     g.fillPath(slice);
                 }
                 } // gappedSpread guard
@@ -456,7 +492,7 @@ private:
         g.addTransform(juce::AffineTransform::rotation(mappedAngle, centerX, centerY));
 
         g.setColour(juce::Colours::red);
-        g.strokePath(needle, juce::PathStrokeType(3.0f));
+        g.strokePath(needle, juce::PathStrokeType(GoodMeterLookAndFeel::chartStroke(3.0f, 1.22f, 3.6f)));
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VUMeterComponent)

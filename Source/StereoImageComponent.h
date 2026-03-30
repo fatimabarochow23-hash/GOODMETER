@@ -81,7 +81,11 @@ public:
             {
                 juce::Graphics::ScopedSaveState state(g);
                 g.reduceClipRegion(diamond);
-                g.drawImageAt(goniometerImage, rightBounds.getX(), rightBounds.getY());
+                g.drawImage(goniometerImage,
+                            rightBounds.getX(), rightBounds.getY(),
+                            rightBounds.getWidth(), rightBounds.getHeight(),
+                            0, 0,
+                            goniometerImage.getWidth(), goniometerImage.getHeight());
             }
 
             // Grid overlay (lightweight lines only)
@@ -178,6 +182,7 @@ private:
     juce::Image goniometerImage;
     float lastGoniometerWidth = 0.0f;
     float lastGoniometerHeight = 0.0f;
+    float lastGoniometerScale = 0.0f;
 
     // Responsive layout: cached rects computed in resized()
     bool compactMode = false;                   // true = Lissajous hidden, tubes fill width
@@ -195,6 +200,9 @@ private:
     int lastLrmsW = 0, lastLrmsH = 0;
     int lastGonGridW = 0, lastGonGridH = 0;
     int lastDbScaleW = 0, lastDbScaleH = 0;
+    float lastLrmsScale = 0.0f;
+    float lastGonGridScale = 0.0f;
+    float lastDbScaleScale = 0.0f;
 
     //==========================================================================
     void timerCallback() override
@@ -283,22 +291,32 @@ private:
             { "S", normLevel(displayS), GoodMeterLookAndFeel::accentGreen }
         };
 
-        // Pre-render labels if size changed
-        int lrmsKey = static_cast<int>(area.getWidth()) * 1000 + static_cast<int>(area.getHeight());
-        if (lrmsTextCache.isNull() || lastLrmsW != static_cast<int>(area.getWidth()) || lastLrmsH != static_cast<int>(area.getHeight()))
+        if (!GoodMeterLookAndFeel::preferDirectChartText())
         {
-            lastLrmsW = static_cast<int>(area.getWidth());
-            lastLrmsH = static_cast<int>(area.getHeight());
-            lrmsTextCache = juce::Image(juce::Image::ARGB, lastLrmsW, static_cast<int>(labelSpace + 2), true, juce::SoftwareImageType());
-            juce::Graphics tg(lrmsTextCache);
-            const juce::String labels[] = { "L", "R", "M", "S" };
-            for (int i = 0; i < 4; ++i)
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+            if (lrmsTextCache.isNull() || lastLrmsW != static_cast<int>(area.getWidth()) || lastLrmsH != static_cast<int>(area.getHeight())
+                || std::abs(lastLrmsScale - scale) > 0.01f)
             {
-                float colX = i * (colWidth + gap);
-                const float fontSize = juce::jlimit(8.0f, 12.0f, labelSpace * 0.55f);
-                tg.setColour(GoodMeterLookAndFeel::textMain);
-                tg.setFont(juce::Font(fontSize, juce::Font::bold));
-                tg.drawText(labels[i], static_cast<int>(colX), 0, static_cast<int>(colWidth), static_cast<int>(labelSpace), juce::Justification::centred, false);
+                lastLrmsW = static_cast<int>(area.getWidth());
+                lastLrmsH = static_cast<int>(area.getHeight());
+                lastLrmsScale = scale;
+                lrmsTextCache = juce::Image(juce::Image::ARGB,
+                                            juce::jmax(1, juce::roundToInt(static_cast<float>(lastLrmsW) * scale)),
+                                            juce::jmax(1, juce::roundToInt((labelSpace + 2.0f) * scale)),
+                                            true, juce::SoftwareImageType());
+                juce::Graphics tg(lrmsTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+                const juce::String labels[] = { "L", "R", "M", "S" };
+                for (int i = 0; i < 4; ++i)
+                {
+                    float colX = i * (colWidth + gap);
+                    const float fontSize = GoodMeterLookAndFeel::chartFont(
+                        juce::jlimit(8.0f, 12.0f, labelSpace * 0.55f));
+                    tg.setColour(GoodMeterLookAndFeel::textMain);
+                    tg.setFont(juce::Font(fontSize, juce::Font::bold));
+                    tg.drawText(labels[i], static_cast<int>(colX), 0, static_cast<int>(colWidth), static_cast<int>(labelSpace), juce::Justification::centred, false);
+                }
             }
         }
 
@@ -328,19 +346,19 @@ private:
                 float fillH = th * tube.level;
                 float fillY = ty + th - fillH;
 
-                g.setColour(tube.color.withAlpha(0.65f));
+                g.setColour(tube.color.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.78f : 0.65f));
                 g.fillRect(tx - 1.0f, fillY, tw + 2.0f, fillH + 1.0f);
 
                 // Meniscus highlight
                 if (fillH > 2.0f)
                 {
-                    g.setColour(tube.color.brighter(0.5f).withAlpha(0.5f));
+                    g.setColour(tube.color.brighter(0.35f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.24f : 0.5f));
                     g.fillRect(tx - 1.0f, fillY, tw + 2.0f, 1.5f);
                 }
             }
 
-            // === Outer glow (neon halo) ===
-            if (tube.level > 0.05f)
+            // === Outer glow (desktop only — mobile keeps edges crisp) ===
+            if (!GoodMeterLookAndFeel::isMobileCharts() && tube.level > 0.05f)
             {
                 float glowAlpha = juce::jlimit(0.0f, 0.12f, tube.level * 0.12f);
                 g.setColour(tube.color.withAlpha(glowAlpha));
@@ -348,12 +366,15 @@ private:
             }
 
             // === Glass outline (Neo-Brutalism: solid visible border) ===
-            g.setColour(juce::Colour(0xFF2A2A35).withAlpha(0.55f));
-            g.strokePath(tubePath, juce::PathStrokeType(1.5f));
+            g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.55f));
+            g.strokePath(tubePath, juce::PathStrokeType(
+                GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f)));
 
-            // === Glass highlight (subtle but present) ===
-            g.setColour(juce::Colours::white.withAlpha(0.35f));
-            g.strokePath(tubePath, juce::PathStrokeType(0.8f));
+            if (!GoodMeterLookAndFeel::isMobileCharts())
+            {
+                g.setColour(juce::Colours::white.withAlpha(0.35f));
+                g.strokePath(tubePath, juce::PathStrokeType(0.8f));
+            }
 
             // === Tick marks (synced with pow(0.5) mapping) ===
             const float tickDbs[] = { -45.0f, -30.0f, -15.0f };
@@ -365,14 +386,36 @@ private:
                 bool isMajor = (static_cast<int>(tdb) == -30);
                 float tickLen = isMajor ? tw * 0.5f : tw * 0.3f;
                 float tickStroke = isMajor ? 1.5f : 1.0f;
-                g.setColour(juce::Colour(0xFF2A2A35).withAlpha(isMajor ? 0.50f : 0.35f));
+                g.setColour(GoodMeterLookAndFeel::chartInk(isMajor ? 0.54f : 0.36f));
                 g.drawLine(tx + tw - tickLen, tickY, tx + tw, tickY, tickStroke);
             }
         }
 
-        // Blit cached labels
-        if (!lrmsTextCache.isNull())
-            g.drawImageAt(lrmsTextCache, static_cast<int>(area.getX()), static_cast<int>(area.getY() + tubeHeight + 1.0f));
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            const juce::String labels[] = { "L", "R", "M", "S" };
+            const float fontSize = GoodMeterLookAndFeel::chartFont(
+                juce::jlimit(8.0f, 12.0f, labelSpace * 0.55f));
+            g.setColour(GoodMeterLookAndFeel::textMain);
+            g.setFont(juce::Font(fontSize, juce::Font::bold));
+            for (int i = 0; i < 4; ++i)
+            {
+                float colX = area.getX() + i * (colWidth + gap);
+                g.drawText(labels[i],
+                           static_cast<int>(colX),
+                           static_cast<int>(area.getY() + tubeHeight + 1.0f),
+                           static_cast<int>(colWidth),
+                           static_cast<int>(labelSpace),
+                           juce::Justification::centred,
+                           false);
+            }
+        }
+        else if (!lrmsTextCache.isNull())
+            g.drawImage(lrmsTextCache,
+                        static_cast<int>(area.getX()), static_cast<int>(area.getY() + tubeHeight + 1.0f),
+                        lastLrmsW, static_cast<int>(labelSpace + 2.0f),
+                        0, 0,
+                        lrmsTextCache.getWidth(), lrmsTextCache.getHeight());
     }
 
     //==========================================================================
@@ -391,31 +434,37 @@ private:
         int h = rightBounds.getHeight();
         if (w < 2 || h < 2) return;
 
+        const float imageScale = juce::Component::getApproximateScaleFactorForComponent(this);
+        const int pixelW = juce::jmax(1, juce::roundToInt(static_cast<float>(w) * imageScale));
+        const int pixelH = juce::jmax(1, juce::roundToInt(static_cast<float>(h) * imageScale));
+
         // Lazy init with SoftwareImageType (immune to MML dark lock)
         if (goniometerImage.isNull() ||
-            goniometerImage.getWidth() != w ||
-            goniometerImage.getHeight() != h)
+            goniometerImage.getWidth() != pixelW ||
+            goniometerImage.getHeight() != pixelH ||
+            std::abs(lastGoniometerScale - imageScale) > 0.01f)
         {
-            goniometerImage = juce::Image(juce::Image::ARGB, w, h, true, juce::SoftwareImageType());
+            goniometerImage = juce::Image(juce::Image::ARGB, pixelW, pixelH, true, juce::SoftwareImageType());
             juce::Graphics initG(goniometerImage);
             initG.fillAll(juce::Colours::black);
-            lastGoniometerWidth = static_cast<float>(w);
-            lastGoniometerHeight = static_cast<float>(h);
+            lastGoniometerWidth = static_cast<float>(pixelW);
+            lastGoniometerHeight = static_cast<float>(pixelH);
+            lastGoniometerScale = imageScale;
         }
 
         // Goniometer geometry (image-local coordinates)
-        const float gonPad = juce::jmin(8.0f, static_cast<float>(h) * 0.03f);
-        const float localW = static_cast<float>(w) - gonPad * 2.0f;
-        const float localH = static_cast<float>(h) - gonPad * 2.0f;
-        const float imgCx = static_cast<float>(w) * 0.5f;
-        const float imgCy = static_cast<float>(h) * 0.5f;
-        const float labelMargin = juce::jmin(20.0f, localH * 0.1f);
-        const float r = juce::jmax(5.0f, juce::jmin(localW, localH) / 2.0f - labelMargin);
+        const float gonPad = juce::jmin(8.0f * imageScale, static_cast<float>(pixelH) * 0.03f);
+        const float localW = static_cast<float>(pixelW) - gonPad * 2.0f;
+        const float localH = static_cast<float>(pixelH) - gonPad * 2.0f;
+        const float imgCx = static_cast<float>(pixelW) * 0.5f;
+        const float imgCy = static_cast<float>(pixelH) * 0.5f;
+        const float labelMargin = juce::jmin(20.0f * imageScale, localH * 0.1f);
+        const float r = juce::jmax(5.0f * imageScale, juce::jmin(localW, localH) / 2.0f - labelMargin);
 
         // Phase 1: Ghost trail fade (single Graphics call, then release)
         {
             juce::Graphics imageG(goniometerImage);
-            imageG.fillAll(juce::Colours::black.withAlpha(0.06f));
+            imageG.fillAll(juce::Colours::black.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.18f : 0.06f));
         }
 
         // Phase 2: BitmapData pixel-level rendering (zero CoreGraphics)
@@ -444,16 +493,17 @@ private:
             for (int j = 0; j < numPts - 1; ++j)
             {
                 bresenhamLine(bmp, ptX[j], ptY[j], ptX[j + 1], ptY[j + 1],
-                              w, h, pr, pg, pb, 0.55f);
+                              pixelW, pixelH, pr, pg, pb, 0.55f);
             }
 
             // Glow pass: 4-neighbor soft halo at each sample point
             for (int j = 0; j < numPts; ++j)
             {
-                blendPixel(bmp, ptX[j] - 1, ptY[j],     w, h, pr, pg, pb, 0.18f);
-                blendPixel(bmp, ptX[j] + 1, ptY[j],     w, h, pr, pg, pb, 0.18f);
-                blendPixel(bmp, ptX[j],     ptY[j] - 1, w, h, pr, pg, pb, 0.18f);
-                blendPixel(bmp, ptX[j],     ptY[j] + 1, w, h, pr, pg, pb, 0.18f);
+                const float haloAlpha = GoodMeterLookAndFeel::isMobileCharts() ? 0.08f : 0.18f;
+                blendPixel(bmp, ptX[j] - 1, ptY[j],         pixelW, pixelH, pr, pg, pb, haloAlpha);
+                blendPixel(bmp, ptX[j] + 1, ptY[j],         pixelW, pixelH, pr, pg, pb, haloAlpha);
+                blendPixel(bmp, ptX[j],     ptY[j] - 1,     pixelW, pixelH, pr, pg, pb, haloAlpha);
+                blendPixel(bmp, ptX[j],     ptY[j] + 1,     pixelW, pixelH, pr, pg, pb, haloAlpha);
             }
         }
     }
@@ -523,8 +573,9 @@ private:
         outerDiamond.lineTo(cx, cy + r);
         outerDiamond.lineTo(cx - r, cy);
         outerDiamond.closeSubPath();
-        g.setColour(juce::Colours::white.withAlpha(0.55f));
-        g.strokePath(outerDiamond, juce::PathStrokeType(1.5f));
+        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.72f : 0.55f));
+        g.strokePath(outerDiamond, juce::PathStrokeType(
+            GoodMeterLookAndFeel::chartStroke(1.5f, 1.18f, 1.8f)));
 
         // Inner diamond (reference grid — visible but secondary)
         const float innerR = r * 0.5f;
@@ -534,42 +585,70 @@ private:
         innerDiamond.lineTo(cx, cy + innerR);
         innerDiamond.lineTo(cx - innerR, cy);
         innerDiamond.closeSubPath();
-        g.setColour(juce::Colours::white.withAlpha(0.30f));
-        g.strokePath(innerDiamond, juce::PathStrokeType(1.0f));
+        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.30f));
+        g.strokePath(innerDiamond, juce::PathStrokeType(
+            GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f)));
 
         // Cross lines (axis indicators — bold)
-        g.setColour(juce::Colours::white.withAlpha(0.40f));
-        g.drawLine(cx, cy - r, cx, cy + r, 1.0f);
-        g.drawLine(cx - r, cy, cx + r, cy, 1.0f);
+        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.52f : 0.40f));
+        g.drawLine(cx, cy - r, cx, cy + r, GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.1f));
+        g.drawLine(cx - r, cy, cx + r, cy, GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.1f));
 
-        // Labels: blit from cache (static, only rebuild on size change)
         int cacheW = static_cast<int>(r * 2.0f + 40.0f);
         int cacheH = static_cast<int>(r * 2.0f + 40.0f);
         if (cacheW < 4 || cacheH < 4) return;
 
-        if (gonGridTextCache.isNull() || lastGonGridW != cacheW || lastGonGridH != cacheH)
+        if (GoodMeterLookAndFeel::preferDirectChartText())
         {
-            lastGonGridW = cacheW;
-            lastGonGridH = cacheH;
-            gonGridTextCache = juce::Image(juce::Image::ARGB, cacheW, cacheH, true, juce::SoftwareImageType());
-            juce::Graphics tg(gonGridTextCache);
-
-            float lcx = static_cast<float>(cacheW) / 2.0f;
-            float lcy = static_cast<float>(cacheH) / 2.0f;
-            const float gridFontSize = juce::jlimit(8.0f, 11.0f, r * 0.1f);
+            const float gridFontSize = GoodMeterLookAndFeel::chartFont(
+                juce::jlimit(8.0f, 11.0f, r * 0.1f));
             const float labelOff = juce::jmin(18.0f, r * 0.15f);
-            tg.setColour(juce::Colours::white.withAlpha(0.75f));
-            tg.setFont(juce::Font(gridFontSize, juce::Font::bold));
-
-            tg.drawFittedText("M", static_cast<int>(lcx - 15), static_cast<int>(lcy - r - labelOff), 30, 20, juce::Justification::centred, 1);
-            tg.drawFittedText("-M", static_cast<int>(lcx - 15), static_cast<int>(lcy + r + labelOff * 0.2f), 30, 20, juce::Justification::centred, 1);
-            tg.drawFittedText("L", static_cast<int>(lcx - r - labelOff - 5), static_cast<int>(lcy - 10), 30, 20, juce::Justification::centred, 1);
-            tg.drawFittedText("R", static_cast<int>(lcx + r + labelOff * 0.2f - 5), static_cast<int>(lcy - 10), 30, 20, juce::Justification::centred, 1);
+            g.setColour(juce::Colours::white.withAlpha(0.75f));
+            g.setFont(juce::Font(gridFontSize, juce::Font::bold));
+            g.drawFittedText("M", static_cast<int>(cx - 15.0f), static_cast<int>(cy - r - labelOff), 30, 20, juce::Justification::centred, 1);
+            g.drawFittedText("-M", static_cast<int>(cx - 15.0f), static_cast<int>(cy + r + labelOff * 0.2f), 30, 20, juce::Justification::centred, 1);
+            g.drawFittedText("L", static_cast<int>(cx - r - labelOff - 5.0f), static_cast<int>(cy - 10.0f), 30, 20, juce::Justification::centred, 1);
+            g.drawFittedText("R", static_cast<int>(cx + r + labelOff * 0.2f - 5.0f), static_cast<int>(cy - 10.0f), 30, 20, juce::Justification::centred, 1);
         }
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
 
-        float offsetX = cx - static_cast<float>(cacheW) / 2.0f;
-        float offsetY = cy - static_cast<float>(cacheH) / 2.0f;
-        g.drawImageAt(gonGridTextCache, static_cast<int>(offsetX), static_cast<int>(offsetY));
+            if (gonGridTextCache.isNull() || lastGonGridW != cacheW || lastGonGridH != cacheH
+                || std::abs(lastGonGridScale - scale) > 0.01f)
+            {
+                lastGonGridW = cacheW;
+                lastGonGridH = cacheH;
+                lastGonGridScale = scale;
+                gonGridTextCache = juce::Image(juce::Image::ARGB,
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(cacheW) * scale)),
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(cacheH) * scale)),
+                                               true, juce::SoftwareImageType());
+                juce::Graphics tg(gonGridTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+
+                float lcx = static_cast<float>(cacheW) / 2.0f;
+                float lcy = static_cast<float>(cacheH) / 2.0f;
+                const float gridFontSize = GoodMeterLookAndFeel::chartFont(
+                    juce::jlimit(8.0f, 11.0f, r * 0.1f));
+                const float labelOff = juce::jmin(18.0f, r * 0.15f);
+                tg.setColour(juce::Colours::white.withAlpha(0.75f));
+                tg.setFont(juce::Font(gridFontSize, juce::Font::bold));
+
+                tg.drawFittedText("M", static_cast<int>(lcx - 15), static_cast<int>(lcy - r - labelOff), 30, 20, juce::Justification::centred, 1);
+                tg.drawFittedText("-M", static_cast<int>(lcx - 15), static_cast<int>(lcy + r + labelOff * 0.2f), 30, 20, juce::Justification::centred, 1);
+                tg.drawFittedText("L", static_cast<int>(lcx - r - labelOff - 5), static_cast<int>(lcy - 10), 30, 20, juce::Justification::centred, 1);
+                tg.drawFittedText("R", static_cast<int>(lcx + r + labelOff * 0.2f - 5), static_cast<int>(lcy - 10), 30, 20, juce::Justification::centred, 1);
+            }
+
+            float offsetX = cx - static_cast<float>(cacheW) / 2.0f;
+            float offsetY = cy - static_cast<float>(cacheH) / 2.0f;
+            g.drawImage(gonGridTextCache,
+                        static_cast<int>(offsetX), static_cast<int>(offsetY),
+                        cacheW, cacheH,
+                        0, 0,
+                        gonGridTextCache.getWidth(), gonGridTextCache.getHeight());
+        }
     }
 
     //==========================================================================
@@ -584,13 +663,8 @@ private:
         int sh = scaleBounds.getHeight();
         if (sw < 4 || sh < 20) return;
 
-        if (dbScaleTextCache.isNull() || lastDbScaleW != sw || lastDbScaleH != sh)
+        if (GoodMeterLookAndFeel::preferDirectChartText())
         {
-            lastDbScaleW = sw;
-            lastDbScaleH = sh;
-            dbScaleTextCache = juce::Image(juce::Image::ARGB, sw, sh, true, juce::SoftwareImageType());
-            juce::Graphics tg(dbScaleTextCache);
-
             const float padX = juce::jmin(10.0f, tubeBounds.getWidth() * 0.05f);
             const float padY = juce::jmin(15.0f, tubeBounds.getHeight() * 0.05f);
             auto area = tubeBounds.toFloat().reduced(padX, padY);
@@ -605,8 +679,8 @@ private:
             const float dbMax = 0.0f;
             const float rightX = static_cast<float>(sw);
 
-            tg.setColour(juce::Colours::black);
-            tg.setFont(juce::Font(9.0f, juce::Font::bold));
+            g.setColour(juce::Colours::black);
+            g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(9.0f), juce::Font::bold));
 
             for (float db : tickDbs)
             {
@@ -614,13 +688,66 @@ private:
                 // Sync with perceptual pow(0.5) mapping used in normLevel
                 norm = std::pow(norm, 0.5f);
                 float y = tubeTop + tubeH - norm * tubeH;
-                tg.drawLine(rightX - 6.0f, y, rightX, y, 1.5f);
+                g.drawLine(scaleBounds.getX() + rightX - 6.0f, scaleBounds.getY() + y,
+                           scaleBounds.getX() + rightX, scaleBounds.getY() + y,
+                           GoodMeterLookAndFeel::chartStroke(1.5f, 1.15f, 1.8f));
                 juce::String text = juce::String(static_cast<int>(db));
-                tg.drawText(text, 0, static_cast<int>(y - 6.0f), static_cast<int>(rightX) - 6, 12, juce::Justification::right, false);
+                g.drawText(text, scaleBounds.getX(), scaleBounds.getY() + static_cast<int>(y - 6.0f),
+                           static_cast<int>(rightX) - 6, 12, juce::Justification::right, false);
             }
         }
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
 
-        g.drawImageAt(dbScaleTextCache, scaleBounds.getX(), scaleBounds.getY());
+            if (dbScaleTextCache.isNull() || lastDbScaleW != sw || lastDbScaleH != sh
+                || std::abs(lastDbScaleScale - scale) > 0.01f)
+            {
+                lastDbScaleW = sw;
+                lastDbScaleH = sh;
+                lastDbScaleScale = scale;
+                dbScaleTextCache = juce::Image(juce::Image::ARGB,
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(sw) * scale)),
+                                               juce::jmax(1, juce::roundToInt(static_cast<float>(sh) * scale)),
+                                               true, juce::SoftwareImageType());
+                juce::Graphics tg(dbScaleTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+
+                const float padX = juce::jmin(10.0f, tubeBounds.getWidth() * 0.05f);
+                const float padY = juce::jmin(15.0f, tubeBounds.getHeight() * 0.05f);
+                auto area = tubeBounds.toFloat().reduced(padX, padY);
+                if (area.getHeight() < 30.0f) return;
+
+                const float labelSpaceV = juce::jlimit(12.0f, 22.0f, area.getHeight() * 0.09f);
+                const float tubeTop = area.getY() - static_cast<float>(scaleBounds.getY());
+                const float tubeH = area.getHeight() - labelSpaceV;
+
+                const float tickDbs[] = { -6.0f, -12.0f, -18.0f, -24.0f, -30.0f, -40.0f, -50.0f, -60.0f };
+                const float dbMin = -60.0f;
+                const float dbMax = 0.0f;
+                const float rightX = static_cast<float>(sw);
+
+                tg.setColour(juce::Colours::black);
+                tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(9.0f), juce::Font::bold));
+
+                for (float db : tickDbs)
+                {
+                    float norm = juce::jlimit(0.0f, 1.0f, (db - dbMin) / (dbMax - dbMin));
+                    norm = std::pow(norm, 0.5f);
+                    float y = tubeTop + tubeH - norm * tubeH;
+                    tg.drawLine(rightX - 6.0f, y, rightX, y,
+                                GoodMeterLookAndFeel::chartStroke(1.5f, 1.15f, 1.8f));
+                    juce::String text = juce::String(static_cast<int>(db));
+                    tg.drawText(text, 0, static_cast<int>(y - 6.0f), static_cast<int>(rightX) - 6, 12, juce::Justification::right, false);
+                }
+            }
+
+            g.drawImage(dbScaleTextCache,
+                        scaleBounds.getX(), scaleBounds.getY(),
+                        sw, sh,
+                        0, 0,
+                        dbScaleTextCache.getWidth(), dbScaleTextCache.getHeight());
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StereoImageComponent)

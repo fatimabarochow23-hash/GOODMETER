@@ -112,6 +112,62 @@ public:
     static inline const juce::Colour accentBlue     = juce::Colour(0xFF22D3EE);
     static inline const juce::Colour accentSoftPink = juce::Colour(0xFFf0a5c2);
 
+    //==========================================================================
+    // Mobile chart readability helpers
+    //==========================================================================
+    static constexpr bool isMobileCharts()
+    {
+       #if JUCE_IOS
+        return true;
+       #else
+        return false;
+       #endif
+    }
+
+    static constexpr bool preferDirectChartText()
+    {
+       #if JUCE_IOS
+        return true;
+       #else
+        return false;
+       #endif
+    }
+
+    static float chartFont(float desktopSize, float mobileMultiplier = 1.0f)
+    {
+        return isMobileCharts() ? desktopSize * mobileMultiplier : desktopSize;
+    }
+
+    static float chartStroke(float desktopWidth, float mobileMultiplier = 1.22f, float mobileMinimum = 0.0f)
+    {
+        if (!isMobileCharts())
+            return desktopWidth;
+
+        const float boosted = desktopWidth * mobileMultiplier;
+        return mobileMinimum > 0.0f ? juce::jmax(boosted, mobileMinimum) : boosted;
+    }
+
+    static juce::Colour chartMuted(float alpha = 1.0f)
+    {
+       #if JUCE_IOS
+        auto c = juce::Colour(0xFF68687A);
+        if (alpha >= 0.999f)
+            return c;
+        return c.withAlpha(juce::jmax(alpha, 0.82f));
+       #else
+        return alpha >= 0.999f ? textMuted : textMuted.withAlpha(alpha);
+       #endif
+    }
+
+    static juce::Colour chartInk(float alpha)
+    {
+       #if JUCE_IOS
+        return ink.withAlpha(juce::jmax(alpha, 0.24f));
+       #else
+        return ink.withAlpha(alpha);
+       #endif
+    }
+
     // Scrollbar
     static inline const juce::Colour scrollTrack     = bgMain;
     static inline const juce::Colour scrollThumb     = juce::Colour(0xFFD1D1D6);

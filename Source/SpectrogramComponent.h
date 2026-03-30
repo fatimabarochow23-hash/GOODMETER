@@ -65,6 +65,10 @@ public:
         int drawWidth = juce::jmin(width, imgW);
         int readPos = (drawX - drawWidth + imgW) % imgW;
 
+       #if JUCE_IOS
+        g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
+       #endif
+
         if (readPos + drawWidth <= imgW)
         {
             // 连续段：1:1 直取
@@ -137,6 +141,7 @@ private:
     juce::Image freqTextCache;
     int lastFreqCacheW = 0;
     int lastFreqCacheH = 0;
+    float lastFreqCacheScale = 0.0f;
 
     //==========================================================================
     juce::Rectangle<int> getPlotBounds() const
@@ -151,18 +156,33 @@ private:
         while (!threadShouldExit())
         {
             bool drewAny = false;
+            int processedColumns = 0;
+
+#if JUCE_IOS
+            constexpr int maxColumnsPerPass = 2;
+            constexpr int sleepMs = 8;
+#else
+            constexpr int maxColumnsPerPass = 2048;
+            constexpr int sleepMs = 16;
+#endif
 
             {
                 const juce::ScopedLock sl(imageLock);
 
                 if (spectrogramImage.isNull())
                 {
+#if JUCE_IOS
+                    spectrogramImage = juce::Image(juce::Image::ARGB, historySize, internalHeight, true,
+                                                   juce::SoftwareImageType());
+#else
                     spectrogramImage = juce::Image(juce::Image::ARGB, historySize, internalHeight, true);
+#endif
                     spectrogramImage.clear(spectrogramImage.getBounds(), juce::Colours::transparentBlack);
                     drawX = 0;
                 }
 
-                while (audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
+                while (processedColumns < maxColumnsPerPass
+                       && audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
                 {
                     if (threadShouldExit()) return;
 
@@ -183,6 +203,7 @@ private:
                     drawOneColumn(internalHeight);
                     drawX = (drawX + 1) % historySize;
                     drewAny = true;
+                    ++processedColumns;
                 }
             } // ScopedLock released — GPU paint() can proceed
 
@@ -191,7 +212,7 @@ private:
                 triggerAsyncUpdate();  // 自带合并：冻结期间只记1次标记，不积压消息
             }
 
-            wait(16); // ~60fps throttle
+            wait(sleepMs);
         }
     }
 
@@ -280,15 +301,8 @@ private:
 
         int pw = plotBounds.getWidth();
         int ph = plotBounds.getHeight();
-
-        // Only rebuild text cache on resize
-        if (freqTextCache.isNull() || lastFreqCacheW != pw || lastFreqCacheH != ph)
+        auto drawFreqTextInto = [this, pw, ph](juce::Graphics& tg)
         {
-            lastFreqCacheW = pw;
-            lastFreqCacheH = ph;
-            freqTextCache = juce::Image(juce::Image::ARGB, pw, ph, true, juce::SoftwareImageType());
-            juce::Graphics tg(freqTextCache);
-
             const float logMin = std::log10(minFreq);
             const float logMax = std::log10(maxFreq);
             const float logRange = logMax - logMin;
@@ -297,8 +311,8 @@ private:
 
             const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            tg.setColour(juce::Colours::black.withAlpha(0.85f));
-            tg.setFont(juce::Font(11.0f, juce::Font::bold));
+            tg.setColour(GoodMeterLookAndFeel::chartInk(0.92f));
+            tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(11.0f), juce::Font::bold));
 
             // Reserve top/bottom margins so 20k and 50 labels don't clip
             const float labelH = 12.0f;
@@ -311,7 +325,8 @@ private:
                 float normY = (std::log10(freq) - logMin) / logRange;
                 float y = topMargin + usableH * (1.0f - normY);
 
-                tg.drawLine(rightX - 4.0f, y, rightX, y, 1.5f);
+                tg.drawLine(rightX - 4.0f, y, rightX, y,
+                            GoodMeterLookAndFeel::chartStroke(1.5f, 1.15f, 1.8f));
 
                 juce::String text = (freq >= 1000.0f)
                     ? juce::String(static_cast<int>(freq / 1000.0f)) + "k"
@@ -325,10 +340,40 @@ private:
                            36, static_cast<int>(labelH),
                            juce::Justification::right, false);
             }
-        }
+        };
 
-        // Blit cached text
-        g.drawImageAt(freqTextCache, plotBounds.getX(), plotBounds.getY());
+        if (GoodMeterLookAndFeel::preferDirectChartText())
+        {
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::translation(static_cast<float>(plotBounds.getX()),
+                                                              static_cast<float>(plotBounds.getY())));
+            drawFreqTextInto(g);
+        }
+        else
+        {
+            const float scale = juce::Component::getApproximateScaleFactorForComponent(this);
+
+            if (freqTextCache.isNull() || lastFreqCacheW != pw || lastFreqCacheH != ph
+                || std::abs(lastFreqCacheScale - scale) > 0.01f)
+            {
+                lastFreqCacheW = pw;
+                lastFreqCacheH = ph;
+                lastFreqCacheScale = scale;
+                freqTextCache = juce::Image(juce::Image::ARGB,
+                                            juce::jmax(1, juce::roundToInt(static_cast<float>(pw) * scale)),
+                                            juce::jmax(1, juce::roundToInt(static_cast<float>(ph) * scale)),
+                                            true, juce::SoftwareImageType());
+                juce::Graphics tg(freqTextCache);
+                tg.addTransform(juce::AffineTransform::scale(scale));
+                drawFreqTextInto(tg);
+            }
+
+            g.drawImage(freqTextCache,
+                        plotBounds.getX(), plotBounds.getY(),
+                        pw, ph,
+                        0, 0,
+                        freqTextCache.getWidth(), freqTextCache.getHeight());
+        }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpectrogramComponent)
