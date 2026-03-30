@@ -1,13 +1,13 @@
 /*
   ==============================================================================
     NonoPageComponent.h
-    GOODMETER iOS - Page 1: Nono/Guoba character + file import + playback
+    GOODMETER iOS - Page 1: Nono/Guoba character + file import + analysis
 
     Main interface page featuring:
     - HoloNonoComponent (full character with all expressions/skins)
-    - Import Audio button -> UIDocumentPicker via FileChooser
-    - Play/Pause button + progress bar for real-time playback
-    - Skin selector (Nono/Guoba)
+    - Optional Import Audio button (controlled by Settings page)
+    - When import button hidden: double-tap character to import
+    - After import: Nono shows analysis results
   ==============================================================================
 */
 
@@ -16,6 +16,7 @@
 #include <JuceHeader.h>
 #include "../PluginProcessor.h"
 #include "../HoloNonoComponent.h"
+#include "../VideoAudioExtractor.h"
 #include "../GoodMeterLookAndFeel.h"
 #include "iOSAudioEngine.h"
 
@@ -23,73 +24,26 @@ class NonoPageComponent : public juce::Component,
                            public juce::Timer
 {
 public:
+    std::function<void(const juce::File&)> onImportedMediaCopied;
+
     NonoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEngine& engine)
         : processor(proc), audioEngine(engine)
     {
         // Nono character
         holoNono = std::make_unique<HoloNonoComponent>(processor);
-        holoNono->initSkinMenu();
+        holoNono->onImportFileChosen = [this](const juce::URL& url)
+        {
+            handleImportedUrl(url);
+        };
         addAndMakeVisible(holoNono.get());
 
-        // Wire back-face "+" click to open file chooser
-        // HoloNonoComponent calls openFileChooser() internally for back-face clicks,
-        // but we also provide an Import button below
-
-        // Skin selector
-        skinMenu = std::make_unique<juce::ComboBox>();
-        skinMenu->addItem("Nono", 1);
-        skinMenu->addItem("Guoba", 2);
-        skinMenu->setSelectedId(holoNono->isGuoba() ? 2 : 1, juce::dontSendNotification);
-        skinMenu->onChange = [this]()
-        {
-            switch (skinMenu->getSelectedId())
-            {
-                case 1: holoNono->setSkin(HoloNonoComponent::SkinType::Nono); break;
-                case 2: holoNono->setSkin(HoloNonoComponent::SkinType::Guoba); break;
-                default: break;
-            }
-        };
-        addAndMakeVisible(skinMenu.get());
-
-        // Import button
+        // Import button (hidden by default, controlled by Settings)
         importButton.setButtonText("IMPORT AUDIO");
         importButton.onClick = [this]() { openImportDialog(); };
+        importButton.setVisible(showImportButton);
         addAndMakeVisible(importButton);
 
-        // Play/Pause button (hidden until file loaded)
-        playButton.setButtonText("PLAY");
-        playButton.onClick = [this]()
-        {
-            if (audioEngine.isPlaying())
-            {
-                audioEngine.pause();
-                playButton.setButtonText("PLAY");
-            }
-            else
-            {
-                audioEngine.play();
-                playButton.setButtonText("PAUSE");
-            }
-        };
-        playButton.setVisible(false);
-        addAndMakeVisible(playButton);
-
-        // Progress slider (hidden until file loaded)
-        progressSlider.setSliderStyle(juce::Slider::LinearHorizontal);
-        progressSlider.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
-        progressSlider.setRange(0.0, 1.0, 0.001);
-        progressSlider.onValueChange = [this]()
-        {
-            if (progressSlider.isMouseButtonDown())
-            {
-                double total = audioEngine.getTotalLength();
-                audioEngine.seek(progressSlider.getValue() * total);
-            }
-        };
-        progressSlider.setVisible(false);
-        addAndMakeVisible(progressSlider);
-
-        // File name label
+        // File name label (shown after import)
         fileNameLabel.setJustificationType(juce::Justification::centred);
         fileNameLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
         fileNameLabel.setVisible(false);
@@ -111,111 +65,287 @@ public:
     void resized() override
     {
         auto bounds = getLocalBounds();
-
-        // Safe area insets on iOS
         auto safeArea = bounds.reduced(8, 0);
 
-        // Bottom controls area: ~25% of height
-        float controlH = juce::jmin(safeArea.getHeight() * 0.25f, 180.0f);
-        auto controlArea = safeArea.removeFromBottom(static_cast<int>(controlH));
-
-        // Nono occupies the remaining top area
-        holoNono->setBounds(safeArea);
-
-        // Layout controls from top to bottom in control area
-        auto controlPadded = controlArea.reduced(20, 4);
-
-        // Row 1: Import + Skin selector
-        auto row1 = controlPadded.removeFromTop(44);
-        skinMenu->setBounds(row1.removeFromRight(100));
-        row1.removeFromRight(8);
-        importButton.setBounds(row1);
-
-        controlPadded.removeFromTop(8);
-
-        // Row 2: File name (if loaded)
-        if (audioEngine.isFileLoaded())
+        if (showImportButton)
         {
-            auto row2 = controlPadded.removeFromTop(24);
-            fileNameLabel.setBounds(row2);
+            // Import button visible: Nono takes ~70% top, controls at bottom
+            float controlH = juce::jmin(safeArea.getHeight() * 0.20f, 120.0f);
+            auto controlArea = safeArea.removeFromBottom(static_cast<int>(controlH));
+            holoNono->setBounds(safeArea);
+
+            auto controlPadded = controlArea.reduced(20, 4);
+
+            // Row 1: Import button
+            auto row1 = controlPadded.removeFromTop(44);
+            importButton.setBounds(row1);
+
             controlPadded.removeFromTop(4);
-        }
 
-        // Row 3: Play button + progress
-        if (audioEngine.isFileLoaded())
-        {
-            auto row3 = controlPadded.removeFromTop(44);
-            playButton.setBounds(row3.removeFromLeft(80));
-            row3.removeFromLeft(8);
-            progressSlider.setBounds(row3);
+            // Row 2: File name (if loaded)
+            if (audioEngine.isFileLoaded())
+            {
+                auto row2 = controlPadded.removeFromTop(24);
+                fileNameLabel.setBounds(row2);
+            }
         }
+        else
+        {
+            // Import button hidden: Nono is more centered, takes full space
+            // Reserve a small area for file name at bottom if loaded
+            if (audioEngine.isFileLoaded())
+            {
+                auto fileRow = safeArea.removeFromBottom(30);
+                fileNameLabel.setBounds(fileRow.reduced(20, 2));
+            }
+
+            holoNono->setBounds(safeArea);
+        }
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent&) override
+    {
+        // Double-tap to import (always works, primary method when button is hidden)
+        openImportDialog();
     }
 
     void timerCallback() override
     {
-        // Update transport UI
+        // Update file name label
         if (audioEngine.isFileLoaded())
         {
-            if (!playButton.isVisible())
-            {
-                playButton.setVisible(true);
-                progressSlider.setVisible(true);
+            auto currentName = audioEngine.getCurrentFileName();
+            bool needsLayout = !fileNameLabel.isVisible();
+
+            if (!fileNameLabel.isVisible())
                 fileNameLabel.setVisible(true);
-                fileNameLabel.setText(audioEngine.getCurrentFileName(),
-                                      juce::dontSendNotification);
-                resized();
-            }
 
-            // Update progress slider (only if not being dragged)
-            if (!progressSlider.isMouseButtonDown())
+            if (fileNameLabel.getText() != currentName)
             {
-                double total = audioEngine.getTotalLength();
-                if (total > 0.0)
-                    progressSlider.setValue(audioEngine.getCurrentPosition() / total,
-                                            juce::dontSendNotification);
+                fileNameLabel.setText(currentName, juce::dontSendNotification);
+                needsLayout = true;
             }
 
-            // Update play button text
-            playButton.setButtonText(audioEngine.isPlaying() ? "PAUSE" : "PLAY");
+            if (needsLayout)
+                resized();
+        }
+        else if (fileNameLabel.isVisible())
+        {
+            fileNameLabel.setVisible(false);
+            fileNameLabel.setText({}, juce::dontSendNotification);
+            resized();
         }
     }
 
+    //==========================================================================
+    // Public API — called by iOSMainComponent
+    //==========================================================================
+
     /** Get reference to HoloNono for external wiring */
     HoloNonoComponent* getHoloNono() { return holoNono.get(); }
+
+    /** Show or hide the IMPORT AUDIO button */
+    void setShowImportButton(bool show)
+    {
+        showImportButton = show;
+        importButton.setVisible(show);
+        resized();
+        repaint();
+    }
+
+    /** Change character skin */
+    void setSkin(int skinId)
+    {
+        if (holoNono == nullptr) return;
+        switch (skinId)
+        {
+            case 1: holoNono->setSkin(HoloNonoComponent::SkinType::Nono); break;
+            case 2: holoNono->setSkin(HoloNonoComponent::SkinType::Guoba); break;
+            default: break;
+        }
+    }
+
+    int getCurrentSkinId() const
+    {
+        if (holoNono && holoNono->isGuoba()) return 2;
+        return 1;
+    }
+
+    bool loadLibraryFile(const juce::File& file)
+    {
+        if (isVideoFile(file))
+            return startVideoLoad(file, false);
+
+        return loadAnalyzedFile(file);
+    }
 
 private:
     void openImportDialog()
     {
         fileChooser = std::make_unique<juce::FileChooser>(
-            "Select Audio File", juce::File{},
-            "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg;*.m4a;*.caf");
+            "Select Media File", juce::File{},
+            "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg;*.m4a;*.caf;*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.mpg;*.mpeg;*.webm");
 
         fileChooser->launchAsync(
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [this](const juce::FileChooser& fc)
             {
-                auto result = fc.getResult();
-                if (result.existsAsFile())
-                {
-                    // Load into audio engine for playback
-                    audioEngine.loadFile(result);
+                auto resultUrl = fc.getURLResult();
+                if (!resultUrl.isEmpty())
+                    handleImportedUrl(resultUrl);
+            });
+    }
 
-                    // Also trigger Nono's offline analysis
-                    if (holoNono != nullptr)
-                        holoNono->analyzeFile(result);
+    juce::File copyImportedUrlToDocuments(const juce::URL& pickedUrl)
+    {
+        if (pickedUrl.isEmpty())
+            return {};
+
+        auto docsDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        auto fileName = juce::URL::removeEscapeChars(pickedUrl.getFileName());
+
+        if (fileName.isEmpty() && pickedUrl.isLocalFile())
+            fileName = pickedUrl.getLocalFile().getFileName();
+
+        if (fileName.isEmpty())
+            fileName = "ImportedAudio.wav";
+
+        auto localCopy = docsDir.getChildFile(fileName);
+
+        if (pickedUrl.isLocalFile())
+        {
+            auto sourceFile = pickedUrl.getLocalFile();
+
+            if (sourceFile.existsAsFile()
+                && sourceFile.getFullPathName() == localCopy.getFullPathName())
+            {
+                return sourceFile;
+            }
+
+            if (localCopy.existsAsFile())
+                localCopy.deleteFile();
+
+            if (sourceFile.existsAsFile()
+                && sourceFile.copyFileTo(localCopy)
+                && localCopy.existsAsFile())
+            {
+                return localCopy;
+            }
+        }
+
+        if (localCopy.existsAsFile())
+            localCopy.deleteFile();
+
+        auto input = pickedUrl.createInputStream(
+            juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress));
+
+        if (input == nullptr)
+            return {};
+
+        auto output = localCopy.createOutputStream();
+        if (output == nullptr)
+            return {};
+
+        output->writeFromInputStream(*input, -1);
+        output->flush();
+
+        return localCopy.existsAsFile() ? localCopy : juce::File{};
+    }
+
+    void handleImportedUrl(const juce::URL& pickedUrl)
+    {
+        auto localCopy = copyImportedUrlToDocuments(pickedUrl);
+        if (!localCopy.existsAsFile())
+            return;
+
+        if (onImportedMediaCopied != nullptr)
+            onImportedMediaCopied(localCopy);
+
+        if (isVideoFile(localCopy))
+        {
+            startVideoLoad(localCopy, true);
+            return;
+        }
+
+        loadAnalyzedFile(localCopy);
+    }
+
+    static bool isVideoFile(const juce::File& file)
+    {
+        const auto ext = file.getFileExtension().toLowerCase();
+        return ext == ".mp4" || ext == ".mov" || ext == ".m4v"
+            || ext == ".avi" || ext == ".mkv" || ext == ".mpg"
+            || ext == ".mpeg" || ext == ".webm";
+    }
+
+    static juce::File getExtractedAudioFileForVideo(const juce::File& videoFile)
+    {
+        auto baseName = juce::URL::removeEscapeChars(videoFile.getFileNameWithoutExtension());
+        if (baseName.isEmpty())
+            baseName = "ImportedVideo";
+
+        return videoFile.getParentDirectory().getChildFile("Extract_" + baseName + ".wav");
+    }
+
+    bool startVideoLoad(const juce::File& videoFile, bool forceReextract)
+    {
+        if (!videoFile.existsAsFile())
+            return false;
+
+        auto outputFile = getExtractedAudioFileForVideo(videoFile);
+        if (!forceReextract && outputFile.existsAsFile())
+            return loadAnalyzedFile(outputFile);
+
+        if (holoNono != nullptr)
+            holoNono->triggerExtractExpression();
+
+        auto safeThis = juce::Component::SafePointer<NonoPageComponent>(this);
+        VideoAudioExtractor::extractAudio(videoFile, outputFile,
+            [safeThis, outputFile](bool success)
+            {
+                if (auto* self = safeThis.getComponent())
+                {
+                    if (self->holoNono != nullptr)
+                        self->holoNono->stopExtractExpression();
+
+                    if (success && outputFile.existsAsFile())
+                        self->loadAnalyzedFile(outputFile);
                 }
             });
+
+        return true;
+    }
+
+    bool loadAnalyzedFile(const juce::File& file)
+    {
+        if (!file.existsAsFile())
+            return false;
+
+        // iOS import must behave like a single transaction:
+        // page 1 analysis and page 2 playback always point at the same file.
+        // If playback fails to swap to the new asset, don't let analysis race ahead
+        // and leave the UI in a split "new on page 1 / old on page 2" state.
+        const bool playbackLoaded = audioEngine.loadFile(file);
+        if (!playbackLoaded)
+            return false;
+
+        if (holoNono != nullptr)
+            holoNono->analyzeFile(file);
+
+        fileNameLabel.setText(audioEngine.getCurrentFileName(), juce::dontSendNotification);
+        fileNameLabel.setVisible(true);
+        resized();
+        return true;
     }
 
     GOODMETERAudioProcessor& processor;
     iOSAudioEngine& audioEngine;
 
     std::unique_ptr<HoloNonoComponent> holoNono;
-    std::unique_ptr<juce::ComboBox> skinMenu;
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     juce::TextButton importButton;
-    juce::TextButton playButton;
-    juce::Slider progressSlider;
     juce::Label fileNameLabel;
+
+    bool showImportButton = false;  // default OFF (user double-taps to import)
 };
