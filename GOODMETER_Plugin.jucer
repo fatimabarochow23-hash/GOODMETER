@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="GdMtPl" name="GOODMETER" projectType="audioplug" useAppConfig="0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Solaris"
+              bundleIdentifier="com.solaris.GOODMETER" pluginManufacturerCode="SLRS"
+              pluginCode="GdMt" version="1.0.2" companyWebsite="https://github.com/fatimabarochow23-hash/GOODMETER"
+              pluginName="GOODMETER" pluginDesc="Professional Audio Metering Plugin"
+              pluginManufacturer="Solaris" aaxIdentifier="com.solaris.GOODMETER"
+              pluginAAXCategory="8192" pluginVSTCategory="kPlugCategAnalysis"
+              pluginVST3Category="Analyzer" pluginAUMainType="'aufx'" pluginRTASCategory="2048"
+              pluginFormats="buildVST3,buildAU" displaySplashScreen="0"
+              reportAppUsage="0" splashScreenColour="Dark" pluginCharacteristicsValue="pluginWantsMidiIn,pluginProducesMidiOut"
+              pluginChannelConfigs="" pluginAAXDisableBypass="0" pluginAAXDisableMultiMono="0"
+              pluginIsSynth="0" pluginWantsMidiIn="0" pluginProducesMidiOut="0"
+              pluginIsMidiEffectPlugin="0" pluginEditorRequiresKeys="0" pluginRTASDisableBypass="0"
+              pluginRTASDisableMultiMono="0" buildVST3="1" buildAU="1" buildStandalone="0"
+              enableIAA="0" pluginManufacturerEmail="" vstNumMidiInputs="16"
+              vstNumMidiOutputs="16">
+  <MAINGROUP id="Kpwd8p" name="GOODMETER">
+    <GROUP id="{BAB75B8F-DC22-7029-A0C0-25796381529F}" name="Source">
+      <FILE id="PlugProc1" name="PluginProcessor.cpp" compile="1" resource="0"
+            file="Source/PluginProcessor.cpp"/>
+      <FILE id="PlugProc2" name="PluginProcessor.h" compile="0" resource="0"
+            file="Source/PluginProcessor.h"/>
+      <FILE id="PlugEdit1" name="PluginEditor.cpp" compile="1" resource="0"
+            file="Source/PluginEditor.cpp"/>
+      <FILE id="PlugEdit2" name="PluginEditor.h" compile="0" resource="0"
+            file="Source/PluginEditor.h"/>
+      <FILE id="LookFeel1" name="GoodMeterLookAndFeel.h" compile="0" resource="0"
+            file="Source/GoodMeterLookAndFeel.h"/>
+      <FILE id="MeterCard1" name="MeterCardComponent.h" compile="0" resource="0"
+            file="Source/MeterCardComponent.h"/>
+      <FILE id="LevelsMtr1" name="LevelsMeterComponent.h" compile="0" resource="0"
+            file="Source/LevelsMeterComponent.h"/>
+      <FILE id="AudRec1" name="AudioRecorder.h" compile="0" resource="0"
+            file="Source/AudioRecorder.h"/>
+      <FILE id="AudHist1" name="AudioHistoryBuffer.h" compile="0" resource="0"
+            file="Source/AudioHistoryBuffer.h"/>
+      <FILE id="HoloNono1" name="HoloNonoComponent.h" compile="0" resource="0"
+            file="Source/HoloNonoComponent.h"/>
+      <FILE id="SpectComp1" name="SpectrogramComponent.h" compile="0" resource="0"
+            file="Source/SpectrogramComponent.h"/>
+      <FILE id="GuobaSprite1" name="guoba.png" compile="0" resource="1"
+            file="guoba.png"/>
+      <FILE id="GuobaNose1" name="guoba_nose.png" compile="0" resource="1"
+            file="guoba_nose.png"/>
+    </GROUP>
+  </MAINGROUP>
+  <MODULES>
+    <MODULE id="juce_analytics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_animation" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_plugin_client" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_opengl" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_VST3_CAN_REPLACE_VST2="0"/>
+  <EXPORTFORMATS>
+    <XCODE_MAC targetFolder="Builds/MacOSX_Plugin" developmentTeamID="33NJKA4738"
+               extraFrameworks="CoreMedia,CoreAudio,Accelerate">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="GOODMETER" macOSDeploymentTarget="13.0"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="GOODMETER" macOSDeploymentTarget="13.0"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_analytics" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_animation" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_basics" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_devices" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_formats" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_plugin_client" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_utils" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_core" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_data_structures" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_events" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_graphics" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_gui_basics" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_dsp" path="../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_opengl" path="../../Downloads/JUCE/modules"/>
+      </MODULEPATHS>
+    </XCODE_MAC>
+  </EXPORTFORMATS>
+</JUCERPROJECT>
