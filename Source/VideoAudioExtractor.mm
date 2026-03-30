@@ -1,7 +1,7 @@
 /*
   ==============================================================================
     VideoAudioExtractor.mm
-    GOODMETER - AVFoundation-based video → lossless WAV extraction (macOS only)
+    GOODMETER - AVFoundation-based video → lossless WAV extraction (macOS / iOS)
 
     Uses AVAssetReader to decode the video's audio track into raw PCM (Float32),
     then streams it through JUCE's WavAudioFormat writer to produce a 24-bit
@@ -11,7 +11,7 @@
 
 #include "VideoAudioExtractor.h"
 
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
@@ -242,7 +242,7 @@ void VideoAudioExtractor::extractAudio(const juce::File& videoFile,
 
 #else
 
-// Non-macOS stub
+// Unsupported-platform stub
 void VideoAudioExtractor::extractAudio(const juce::File&,
                                        const juce::File&,
                                        std::function<void(bool success)> onComplete)

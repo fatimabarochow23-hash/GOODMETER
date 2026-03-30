@@ -170,6 +170,11 @@ public:
         }
     }
 
+    /** Optional external import hook.
+        If set, HoloNono's built-in file picker will delegate the selected URL
+        to the host page instead of starting standalone analysis internally. */
+    std::function<void(const juce::URL&)> onImportFileChosen;
+
     /** Trigger shy expression (>< eyes) for 1.5 seconds — callable from editor */
     void triggerShyExpression()
     {
@@ -1867,15 +1872,31 @@ private:
     //==========================================================================
     void openFileChooser()
     {
+#if JUCE_IOS
+        auto filePattern = "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg;*.m4a;*.caf;*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.mpg;*.mpeg;*.webm";
+#else
+        auto filePattern = "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg;*.m4a;*.caf";
+#endif
+
         fileChooser = std::make_unique<juce::FileChooser>(
             "Select Audio File", juce::File{},
-            "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg");
+            filePattern);
 
         fileChooser->launchAsync(
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [this](const juce::FileChooser& fc)
             {
-                auto result = fc.getResult();
+                auto resultUrl = fc.getURLResult();
+                if (resultUrl.isEmpty())
+                    return;
+
+                if (onImportFileChosen)
+                {
+                    onImportFileChosen(resultUrl);
+                    return;
+                }
+
+                auto result = resultUrl.getLocalFile();
                 if (result.existsAsFile())
                     startAnalysis(result);
             });

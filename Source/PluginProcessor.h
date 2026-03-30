@@ -278,7 +278,13 @@ private:
     std::array<float, fftSize> fftRingR;
     int fftRingIndex = 0;
     int fftSamplesSinceLastPush = 0;
+    int spectrogramSamplesSinceLastPush = 0;
     static constexpr int fftHopSize = fftSize / 4;  // 75% overlap → hop = 1024
+#if JUCE_IOS
+    static constexpr int spectrogramHopSize = fftSize / 8; // 87.5% overlap -> hop = 512 for smoother iPhone waterfall
+#else
+    static constexpr int spectrogramHopSize = fftHopSize;
+#endif
 
     // Temporary FFT working buffer (in-place transform needs fftSize * 2)
     std::array<float, fftSize * 2> fftWorkBuffer;

@@ -186,6 +186,7 @@ void GOODMETERAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
     fftRingR.fill(0.0f);
     fftRingIndex = 0;
     fftSamplesSinceLastPush = 0;
+    spectrogramSamplesSinceLastPush = 0;
 
     // Prepare retroactive recording history buffer
     audioHistoryBuffer.prepare(sampleRate);
@@ -313,6 +314,16 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     float localSumX2 = 0.0f;
     float localSumY2 = 0.0f;
 
+    auto runFftFromRing = [this](const std::array<float, fftSize>& ring)
+    {
+        for (int j = 0; j < fftSize; ++j)
+            fftWorkBuffer[j] = ring[(fftRingIndex + j) % fftSize];
+
+        std::fill(fftWorkBuffer.begin() + fftSize, fftWorkBuffer.end(), 0.0f);
+        window.multiplyWithWindowingTable(fftWorkBuffer.data(), fftSize);
+        fft.performFrequencyOnlyForwardTransform(fftWorkBuffer.data());
+    };
+
     //==========================================================================
     // Sample-by-sample processing
     //==========================================================================
@@ -360,31 +371,28 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
         fftRingR[fftRingIndex] = sampleR;
         fftRingIndex = (fftRingIndex + 1) % fftSize;
         fftSamplesSinceLastPush++;
+        spectrogramSamplesSinceLastPush++;
+
+#if JUCE_IOS
+        if (spectrogramSamplesSinceLastPush >= spectrogramHopSize)
+        {
+            runFftFromRing(fftRingL);
+            fftFifoSpectrogramL.push(fftWorkBuffer.data(), fftSize / 2);
+            spectrogramSamplesSinceLastPush = 0;
+        }
+#endif
 
         if (fftSamplesSinceLastPush >= fftHopSize)
         {
-            // Copy ring buffer into working buffer (unwrap circular to linear)
-            for (int j = 0; j < fftSize; ++j)
-            {
-                fftWorkBuffer[j] = fftRingL[(fftRingIndex + j) % fftSize];
-            }
-            // Zero the second half (working memory for FFT)
-            std::fill(fftWorkBuffer.begin() + fftSize, fftWorkBuffer.end(), 0.0f);
-
             // Apply window + FFT for L channel
-            window.multiplyWithWindowingTable(fftWorkBuffer.data(), fftSize);
-            fft.performFrequencyOnlyForwardTransform(fftWorkBuffer.data());
+            runFftFromRing(fftRingL);
             fftFifoL.push(fftWorkBuffer.data(), fftSize / 2);
+#if ! JUCE_IOS
             fftFifoSpectrogramL.push(fftWorkBuffer.data(), fftSize / 2);
+#endif
 
             // Same for R channel
-            for (int j = 0; j < fftSize; ++j)
-            {
-                fftWorkBuffer[j] = fftRingR[(fftRingIndex + j) % fftSize];
-            }
-            std::fill(fftWorkBuffer.begin() + fftSize, fftWorkBuffer.end(), 0.0f);
-            window.multiplyWithWindowingTable(fftWorkBuffer.data(), fftSize);
-            fft.performFrequencyOnlyForwardTransform(fftWorkBuffer.data());
+            runFftFromRing(fftRingR);
             fftFifoR.push(fftWorkBuffer.data(), fftSize / 2);
 
             fftSamplesSinceLastPush = 0;
