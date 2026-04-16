@@ -38,6 +38,16 @@ public:
         stopTimer();
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        vuTextCache = juce::Image();
+        repaint();
+    }
+
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
@@ -91,7 +101,7 @@ public:
 
                 const float vuFontSize = GoodMeterLookAndFeel::chartFont(
                     juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f));
-                tg.setColour(GoodMeterLookAndFeel::border);
+                tg.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::border);
                 tg.setFont(juce::Font(vuFontSize, juce::Font::bold));
                 tg.drawText("VU",
                           static_cast<int>(bounds.getX()),
@@ -127,7 +137,9 @@ public:
         const float arcThickness = juce::jlimit(3.0f, 6.0f, radius * 0.04f);
 
         // Draw arcs (no text)
-        drawArc(g, cx, cy, radius, minAngle, zeroVuAngle, GoodMeterLookAndFeel::border, arcThickness);
+        drawArc(g, cx, cy, radius, minAngle, zeroVuAngle,
+                marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::border,
+                arcThickness);
         drawArc(g, cx, cy, radius, zeroVuAngle, maxAngle, GoodMeterLookAndFeel::accentPink, arcThickness);
 
         if (GoodMeterLookAndFeel::preferDirectChartText())
@@ -135,7 +147,7 @@ public:
             drawTicksAndLabels(g, cx, cy, radius, minAngle, maxAngle);
             const float vuFontSize = GoodMeterLookAndFeel::chartFont(
                 juce::jlimit(12.0f, 32.0f, vuTextH * 0.8f));
-            g.setColour(GoodMeterLookAndFeel::border);
+            g.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::border);
             g.setFont(juce::Font(vuFontSize, juce::Font::bold));
             g.drawText("VU",
                        static_cast<int>(bounds.getX()),
@@ -212,6 +224,7 @@ private:
     int lastVuCacheW = 0;
     int lastVuCacheH = 0;
     float lastVuCacheScale = 0.0f;
+    bool marathonDarkStyle = false;
 
     //==========================================================================
     void timerCallback() override
@@ -246,6 +259,8 @@ private:
                            float cx, float cy, float radius,
                            float minAngle, float maxAngle)
     {
+        const juce::Colour normalInk = marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::border;
+
         // Proportional tick dimensions
         const float majorTickLen = juce::jlimit(15.0f, 30.0f, radius * 0.2f);
         const float mediumTickLen = juce::jlimit(8.0f, 15.0f, radius * 0.1f);
@@ -269,7 +284,7 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border)
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : normalInk)
                             .withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.25f));
             g.drawLine(x1, y1, x2, y2, tinyTickWidth);
         }
@@ -287,7 +302,7 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border)
+            g.setColour((isDanger ? GoodMeterLookAndFeel::accentPink : normalInk)
                             .withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.45f));
             g.drawLine(x1, y1, x2, y2, smallTickWidth);
         }
@@ -305,7 +320,7 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
+            g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : normalInk);
             g.drawLine(x1, y1, x2, y2, mediumTickWidth);
 
             // Label
@@ -314,7 +329,7 @@ private:
             const float ly = cy - std::cos(angle) * labelR;
             juce::String labelText = (tickVu > 0) ? ("+" + juce::String(tickVu)) : juce::String(tickVu);
 
-            g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : GoodMeterLookAndFeel::border);
+            g.setColour(isDanger ? GoodMeterLookAndFeel::accentPink : normalInk);
             g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
             g.drawText(labelText,
                       static_cast<int>(lx - 15), static_cast<int>(ly - 8),
@@ -336,7 +351,7 @@ private:
             const float x2 = cx + std::sin(angle) * innerR;
             const float y2 = cy - std::cos(angle) * innerR;
 
-            g.setColour(GoodMeterLookAndFeel::border);
+            g.setColour(normalInk);
             g.drawLine(x1, y1, x2, y2, majorTickWidth);
 
             // Label
@@ -345,7 +360,7 @@ private:
             const float ly = cy - std::cos(angle) * labelR;
             juce::String labelText = juce::String(tickVu);
 
-            g.setColour(GoodMeterLookAndFeel::border);
+            g.setColour(normalInk);
             g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
             g.drawText(labelText,
                       static_cast<int>(lx - 15), static_cast<int>(ly - 8),

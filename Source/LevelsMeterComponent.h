@@ -39,6 +39,28 @@ public:
      */
     juce::ComboBox& getTargetMenu() { return targetMenu; }
     void setForceVerticalMiniLayout(bool shouldForce) { forceVerticalMiniLayout = shouldForce; }
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        targetMenu.setColour(juce::ComboBox::backgroundColourId,
+                             shouldUse ? juce::Colour(0xFF0B1018).interpolatedWith(GoodMeterLookAndFeel::accentPink, 0.06f).withAlpha(0.68f)
+                                       : juce::Colour(0xFFF7F3EC).interpolatedWith(GoodMeterLookAndFeel::accentPink, 0.025f).withAlpha(0.78f));
+        targetMenu.setColour(juce::ComboBox::outlineColourId,
+                             shouldUse ? juce::Colour(0xFFF6EEE3).withAlpha(0.12f)
+                                       : juce::Colour(0xFF1A1A24).withAlpha(0.08f));
+        targetMenu.setColour(juce::ComboBox::textColourId,
+                             shouldUse ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                       : juce::Colour(0xFF1A1A24).withAlpha(0.94f));
+        targetMenu.setColour(juce::ComboBox::arrowColourId,
+                             shouldUse ? juce::Colour(0xFFF6EEE3).withAlpha(0.92f)
+                                       : juce::Colour(0xFF1A1A24).withAlpha(0.92f));
+        lufsTextCache = {};
+        tickTextCache = {};
+        repaint();
+    }
 
     /**
      * Initialize the target menu (call after addAndMakeVisible)
@@ -58,6 +80,7 @@ public:
         targetMenu.setJustificationType(juce::Justification::centredRight);
         targetMenu.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
         targetMenu.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+        targetMenu.setColour(juce::ComboBox::textColourId, GoodMeterLookAndFeel::textMain);
         targetMenu.setColour(juce::ComboBox::arrowColourId, juce::Colours::transparentBlack);
 
         targetMenu.onChange = [this]() {
@@ -243,10 +266,21 @@ public:
         repaint();
     }
 
+    void setStandardById(int standardId)
+    {
+        targetMenu.setSelectedId(standardId, juce::sendNotificationSync);
+    }
+
+    int getStandardId() const
+    {
+        return targetMenu.getSelectedId();
+    }
+
 private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
     bool forceVerticalMiniLayout = false;
+    bool marathonDarkStyle = false;
 
     // Target menu (ComboBox, positioned by MeterCard in header)
     juce::ComboBox targetMenu;
@@ -328,6 +362,42 @@ private:
             || (mobileCharts && bounds.getWidth() < widthThreshold);
     }
 
+    juce::Colour dataPlateFill() const
+    {
+        return marathonDarkStyle ? juce::Colour(0xFF0A0D13)
+                                 : juce::Colour(0xFFEAEAEA);
+    }
+
+    juce::Colour dataPlateBorder() const
+    {
+        return marathonDarkStyle ? juce::Colour(0xFFF3EFE7).withAlpha(0.78f)
+                                 : GoodMeterLookAndFeel::border;
+    }
+
+    juce::Colour dataGridInk(float alpha) const
+    {
+        return marathonDarkStyle ? juce::Colour(0xFFF3EFE7).withAlpha(alpha)
+                                 : GoodMeterLookAndFeel::chartInk(alpha);
+    }
+
+    juce::Colour dataMutedText(float alpha = 1.0f) const
+    {
+        if (!marathonDarkStyle)
+            return alpha >= 0.999f ? GoodMeterLookAndFeel::chartMuted()
+                                   : GoodMeterLookAndFeel::chartMuted(alpha);
+
+        return juce::Colour(0xFF8D919C).withAlpha(alpha);
+    }
+
+    juce::Colour dataValueText(float highlightAmount) const
+    {
+        auto base = marathonDarkStyle ? juce::Colour(0xFFF3EFE7)
+                                      : GoodMeterLookAndFeel::textMain;
+        auto accent = marathonDarkStyle ? GoodMeterLookAndFeel::accentPink.brighter(0.15f)
+                                        : GoodMeterLookAndFeel::accentPink;
+        return base.interpolatedWith(accent, juce::jlimit(0.0f, 1.0f, highlightAmount));
+    }
+
     //==========================================================================
     /**
      * Convert dB value to pixel X position (Levels.tsx lines 91-94)
@@ -353,11 +423,11 @@ private:
         const float width = b.getWidth();
 
         // Background (Levels.tsx line 80-81)
-        g.setColour(juce::Colour(0xFFEAEAEA));
+        g.setColour(dataPlateFill());
         g.fillRect(b);
 
         // Border (Levels.tsx line 83-86)
-        g.setColour(GoodMeterLookAndFeel::border);
+        g.setColour(dataPlateBorder());
         g.drawRect(b, GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.4f));
 
         // Calculate X positions
@@ -383,7 +453,8 @@ private:
         g.fillRect(b.withWidth(currentX));
 
         // Peak hold line (恢复原始黑色)
-        g.setColour(GoodMeterLookAndFeel::border);
+        g.setColour(marathonDarkStyle ? juce::Colour(0xFFF4F0E8)
+                                      : GoodMeterLookAndFeel::border);
         g.fillRect(b.withX(holdX).withWidth(4.0f));
 
         // Target loudness reference — 荧光橙 + 过载脉冲发光
@@ -443,7 +514,7 @@ private:
         drawPeakBar(g, barR, displayPeakR, peakHoldR);
 
         // Draw scale ticks (Levels.tsx lines 154-161)
-        g.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
+        g.setColour(dataGridInk(marathonDarkStyle ? 0.14f : 0.16f));
 
         float lineTop = static_cast<float>(barL.getY());
         float lineBottom = static_cast<float>(barR.getBottom() + (useTopTicksOnCompactMobile ? 0 : 4));
@@ -465,7 +536,7 @@ private:
             for (int db : tickDbs)
             {
                 float x = static_cast<float>(barL.getX()) + dbToX(static_cast<float>(db), static_cast<float>(barL.getWidth()));
-                g.setColour(GoodMeterLookAndFeel::chartMuted());
+                g.setColour(dataMutedText(0.94f));
                 g.drawText(juce::String(db),
                            static_cast<int>(x - 15), tickTextY,
                            30, 12,
@@ -520,12 +591,12 @@ private:
             float tickY = barL.getBottom() - norm * barHeight;
 
             // Tick line across both bars
-            g.setColour(GoodMeterLookAndFeel::chartInk(0.2f));
+            g.setColour(dataGridInk(marathonDarkStyle ? 0.16f : 0.2f));
             g.drawHorizontalLine(static_cast<int>(tickY),
                                 barL.getX(), barR.getRight());
 
             // Label to the right of bars
-            g.setColour(GoodMeterLookAndFeel::chartMuted());
+            g.setColour(dataMutedText());
             g.drawText(juce::String(db),
                       static_cast<int>(barR.getRight() + 2),
                       static_cast<int>(tickY - 5),
@@ -546,11 +617,11 @@ private:
         const float w = barBounds.getWidth();
 
         // Background
-        g.setColour(juce::Colour(0xFFEAEAEA));
+        g.setColour(dataPlateFill());
         g.fillRect(barBounds);
 
         // Border
-        g.setColour(GoodMeterLookAndFeel::border);
+        g.setColour(dataPlateBorder());
         g.drawRect(barBounds, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.9f));
 
         // Fill height (bottom-up)
@@ -580,7 +651,8 @@ private:
         {
             float holdNorm = juce::jlimit(0.0f, 1.0f, (holdPeak - minDb) / (maxDb - minDb));
             float holdY = barBounds.getBottom() - holdNorm * h;
-            g.setColour(GoodMeterLookAndFeel::border);
+            g.setColour(marathonDarkStyle ? juce::Colour(0xFFF4F0E8)
+                                          : GoodMeterLookAndFeel::border);
             g.fillRect(barBounds.getX(), holdY - 1.5f, w, 3.0f);
         }
 
@@ -627,11 +699,11 @@ private:
             return;
 
         // Background box
-        g.setColour(juce::Colour(0xFFEAEAEA));
+        g.setColour(dataPlateFill());
         g.fillRoundedRectangle(bounds.toFloat(), 4.0f);
 
         // Border
-        g.setColour(GoodMeterLookAndFeel::border);
+        g.setColour(dataPlateBorder());
         g.drawRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f, 2.0f);
 
         if (GoodMeterLookAndFeel::preferDirectChartText())
@@ -704,7 +776,7 @@ private:
         for (int db : tickDbs)
         {
             float x = dbToX(static_cast<float>(db), static_cast<float>(barWidth));
-            tg.setColour(GoodMeterLookAndFeel::chartMuted());
+            tg.setColour(dataMutedText());
             tg.drawText(juce::String(db),
                         static_cast<int>(x - 15), 0, 30, 12,
                         juce::Justification::centred, false);
@@ -757,7 +829,7 @@ private:
             auto labelArea = cellBounds.removeFromLeft(static_cast<int>(cellBounds.getWidth() * labelRatio));
             auto valueArea = cellBounds;
 
-            g.setColour(GoodMeterLookAndFeel::chartMuted(0.92f));
+            g.setColour(dataMutedText(0.92f));
             g.setFont(labelFont);
             g.drawText(label, labelArea,
                       juce::Justification::centredLeft, false);
@@ -772,8 +844,7 @@ private:
 
             if (showUnit) valueStr += " " + unit;
 
-            g.setColour(GoodMeterLookAndFeel::textMain.interpolatedWith(
-                GoodMeterLookAndFeel::accentPink, juce::jlimit(0.0f, 1.0f, highlightAmount)));
+            g.setColour(dataValueText(highlightAmount));
             g.setFont(valueFont);
             g.drawText(valueStr, valueArea,
                       juce::Justification::centredLeft, false);

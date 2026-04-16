@@ -286,12 +286,44 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     }
 #endif
 
-    // Handle mono input (duplicate to both channels)
-    const int numChannels = juce::jmin(2, totalNumInputChannels);
     const int numSamples = buffer.getNumSamples();
 
+#if JucePlugin_Build_Standalone && !JUCE_IOS
+    // Standalone: Auto-detect strongest channel pair (fixes E2x2 OTG Loopback routing)
+    int bestChannelL = 0;
+    int bestChannelR = juce::jmin(1, totalNumInputChannels - 1);
+
+    if (totalNumInputChannels > 2)
+    {
+        float maxRMS = 0.0f;
+        for (int ch = 0; ch < totalNumInputChannels - 1; ch += 2)
+        {
+            float sumL = 0.0f, sumR = 0.0f;
+            const float* dataL = buffer.getReadPointer(ch);
+            const float* dataR = buffer.getReadPointer(ch + 1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                sumL += dataL[i] * dataL[i];
+                sumR += dataR[i] * dataR[i];
+            }
+            float rms = std::sqrt((sumL + sumR) / (numSamples * 2));
+            if (rms > maxRMS)
+            {
+                maxRMS = rms;
+                bestChannelL = ch;
+                bestChannelR = ch + 1;
+            }
+        }
+    }
+
+    const float* channelDataL = buffer.getReadPointer(bestChannelL);
+    const float* channelDataR = buffer.getReadPointer(bestChannelR);
+#else
+    // Plugin/iOS: Use first stereo pair (DAW provides correct routing)
+    const int numChannels = juce::jmin(2, totalNumInputChannels);
     const float* channelDataL = buffer.getReadPointer(0);
     const float* channelDataR = numChannels > 1 ? buffer.getReadPointer(1) : channelDataL;
+#endif
 
     // Recording tap — push raw samples to lock-free FIFO (real-time safe)
     if (audioRecorder.getIsRecording())

@@ -38,6 +38,17 @@ public:
         stopTimer();
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        gridTextCache = juce::Image();
+        readoutTextCache = juce::Image();
+        repaint();
+    }
+
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
@@ -53,6 +64,12 @@ public:
 
         // Waveform area
         auto waveBounds = bounds;
+
+        if (marathonDarkStyle)
+        {
+            g.setColour(juce::Colour(0xFF0A0D13));
+            g.fillRect(waveBounds);
+        }
 
         // 1. Grid
         drawGrid(g, waveBounds);
@@ -102,6 +119,7 @@ private:
     int lastReadoutW = 0, lastReadoutH = 0;
     float lastGridScale = 0.0f;
     float lastReadoutScale = 0.0f;
+    bool marathonDarkStyle = false;
 
     // Electro-cyan palette
     static inline const juce::Colour techCyan = juce::Colour(0xFF20C997);
@@ -210,12 +228,16 @@ private:
                 float yTop = centerY - yOffset;
                 float yBot = centerY + yOffset;
 
-                tg.setColour(GoodMeterLookAndFeel::chartInk(0.14f));
+                tg.setColour(marathonDarkStyle
+                    ? juce::Colour(0xFFF3EFE7).withAlpha(0.14f)
+                    : GoodMeterLookAndFeel::chartInk(0.14f));
                 tg.drawHorizontalLine(static_cast<int>(yTop), 0.0f, static_cast<float>(bw));
                 tg.drawHorizontalLine(static_cast<int>(yBot), 0.0f, static_cast<float>(bw));
 
                 tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize)));
-                tg.setColour(GoodMeterLookAndFeel::chartMuted());
+                tg.setColour(marathonDarkStyle
+                    ? juce::Colour(0xFF8D919C)
+                    : GoodMeterLookAndFeel::chartMuted());
                 tg.drawText(juce::String(static_cast<int>(val)),
                            2, static_cast<int>(yTop - 6), 20, 12,
                            juce::Justification::centredLeft, false);
@@ -376,7 +398,9 @@ private:
             else
             {
                 // --- Normal segment: solid cyan fill + stroke ---
-                g.setColour(techCyan.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.32f : 0.25f));
+                g.setColour(techCyan.withAlpha(marathonDarkStyle
+                    ? (GoodMeterLookAndFeel::isMobileCharts() ? 0.40f : 0.32f)
+                    : (GoodMeterLookAndFeel::isMobileCharts() ? 0.32f : 0.25f)));
                 g.fillPath(segPath);
 
                 g.setColour(techCyan);
@@ -402,7 +426,9 @@ private:
     void drawCenterLine(juce::Graphics& g, const juce::Rectangle<float>& bounds)
     {
         const float centerY = bounds.getCentreY();
-        g.setColour(GoodMeterLookAndFeel::chartInk(0.22f));
+        g.setColour(marathonDarkStyle
+            ? juce::Colour(0xFFF3EFE7).withAlpha(0.22f)
+            : GoodMeterLookAndFeel::chartInk(0.22f));
         g.drawHorizontalLine(static_cast<int>(centerY), bounds.getX(), bounds.getRight());
     }
 
@@ -494,7 +520,7 @@ private:
         const float fontSize = juce::jlimit(12.0f, 22.0f, static_cast<float>(h) * 0.75f);
         const float labelFontSize = juce::jlimit(8.0f, 12.0f, static_cast<float>(h) * 0.45f);
 
-        tg.setColour(GoodMeterLookAndFeel::chartMuted());
+        tg.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::chartMuted());
         tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(labelFontSize), juce::Font::bold));
         tg.drawText("PEAK-TO-SHORT", 4, 0, static_cast<int>(w * 0.5f), h,
                     juce::Justification::centredLeft, false);

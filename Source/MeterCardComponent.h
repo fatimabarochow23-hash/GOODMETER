@@ -41,6 +41,23 @@ public:
     bool mobileListMode = false;
     bool mobileAllowHeaderToggle = true;
 
+    // Dark theme mode
+    bool isDarkTheme = false;
+
+    // iOS page 2: dedicated editorial dark shell.
+    // This is intentionally narrower than the shared "dark theme" concept so
+    // page-2 can evolve without dragging standalone/plugin chrome along.
+    bool useEditorialDarkStyle = false;
+
+    // iOS page 2 light theme: keep the same framed system language as dark,
+    // but with a translucent white plate so the Marathon background can breathe
+    // through without affecting desktop/plugin cards.
+    bool useEditorialLightStyle = false;
+
+    // iOS page 2 / mobile chrome: unify English titles to the page-1 result
+    // typography without touching shared desktop/plugin headers.
+    bool useMonospacedTitleFont = false;
+
     // Floating mode callbacks (wired by StandaloneNonoEditor for undock/drag)
     std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onUndockDragStarted;
     std::function<void(MeterCardComponent*, const juce::MouseEvent&)> onFloatingDragging;
@@ -97,7 +114,51 @@ public:
 
         // Draw Neo-Brutalist card (hard shadow + offset body)
         float shadowOff = isMiniMode ? juce::jmin(currentHoverOffset, 2.0f) : currentHoverOffset;
-        GoodMeterLookAndFeel::drawCard(g, bounds, shadowOff);
+        auto bgCol = isDarkTheme ? GoodMeterLookAndFeel::bgPanelDark : GoodMeterLookAndFeel::bgPanel;
+        auto borderCol = isDarkTheme ? GoodMeterLookAndFeel::borderDark : juce::Colour(0xFF1A1A24);
+
+        if (useEditorialDarkStyle || useEditorialLightStyle)
+        {
+            auto b = bounds.toFloat();
+            const float cr = 18.0f;
+            const float maxShadow = 8.0f;
+            const bool lightEditorial = useEditorialLightStyle && !useEditorialDarkStyle;
+
+            if (b.getWidth() > maxShadow && b.getHeight() > maxShadow)
+            {
+                float cardX = b.getX() + (maxShadow - shadowOff);
+                float cardY = b.getY() + (maxShadow - shadowOff);
+                float cardW = b.getWidth() - maxShadow;
+                float cardH = b.getHeight() - maxShadow;
+                juce::Rectangle<float> cardRect(cardX, cardY, cardW, cardH);
+
+                juce::Path cardPath;
+                cardPath.addRoundedRectangle(cardRect, cr);
+
+                auto shadowColour = lightEditorial
+                                        ? juce::Colours::black.withAlpha(0.08f)
+                                        : juce::Colours::black.withAlpha(0.24f);
+                auto shellFill = lightEditorial
+                                     ? juce::Colour(0xFFFFFFFF).withAlpha(0.56f)
+                                     : juce::Colour(0xFF0B1017).withAlpha(0.30f);
+                auto shellOutline = lightEditorial
+                                        ? juce::Colour(0xFF1A1A24).withAlpha(0.16f)
+                                        : juce::Colour(0xFFF2EEE7).withAlpha(0.22f);
+
+                g.setColour(shadowColour);
+                g.fillRoundedRectangle(cardRect.translated(shadowOff * 0.55f, shadowOff * 0.55f), cr);
+
+                g.setColour(shellFill);
+                g.fillPath(cardPath);
+
+                g.setColour(shellOutline);
+                g.drawRoundedRectangle(cardRect, cr, 1.2f);
+            }
+        }
+        else
+        {
+            GoodMeterLookAndFeel::drawCard(g, bounds, shadowOff, bgCol, borderCol);
+        }
 
         // All header elements drawn relative to the card body (not full bounds)
         auto cardRect = getCardRect();
@@ -106,14 +167,24 @@ public:
         // Header hover highlight
         if (isHeaderHovered)
         {
-            g.setColour(GoodMeterLookAndFeel::chartInk(0.12f));
-            g.fillRect(headerBounds.toFloat());
+            auto hoverCol = useEditorialDarkStyle ? juce::Colour(0xFFF2EEE7).withAlpha(0.045f)
+                            : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.035f)
+                            : isDarkTheme ? GoodMeterLookAndFeel::textMainDark.withAlpha(0.08f)
+                                        : GoodMeterLookAndFeel::chartInk(0.12f);
+            g.setColour(hoverCol);
+            if (useEditorialDarkStyle || useEditorialLightStyle)
+                g.fillRoundedRectangle(headerBounds.toFloat(), 14.0f);
+            else
+                g.fillRect(headerBounds.toFloat());
         }
 
         if (isExpanded)
         {
-            // Bottom border of header — fillRect 画在 header 底边上方，防止被 content 遮盖
-            g.setColour(juce::Colour(0xFF1A1A24));
+            // Bottom border of header
+            auto headerBorderCol = useEditorialDarkStyle ? juce::Colour(0xFFF2EEE7).withAlpha(0.08f)
+                                 : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.10f)
+                                 : isDarkTheme ? GoodMeterLookAndFeel::borderDark : juce::Colour(0xFF1A1A24);
+            g.setColour(headerBorderCol);
             int borderH = isMiniMode ? 1 : 2;
             g.fillRect(static_cast<int>(headerBounds.getX()),
                       static_cast<int>(headerBounds.getBottom()) - borderH - 1,
@@ -141,8 +212,14 @@ public:
                     static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
                     cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
                 textArea.translate(static_cast<int>(headerBounds.getX()), static_cast<int>(headerBounds.getY()));
-                g.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
-                g.setFont(juce::Font(titleFont, juce::Font::bold));
+                auto textCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3)
+                               : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.96f)
+                               : isDarkTheme ? GoodMeterLookAndFeel::textMainDark
+                                           : (isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
+                g.setColour(textCol);
+                g.setFont(useMonospacedTitleFont
+                              ? GoodMeterLookAndFeel::iosEnglishMonoFont(titleFont, juce::Font::bold)
+                              : juce::Font(titleFont, juce::Font::bold));
                 g.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
 
                 // Expand/collapse arrow — hidden when docked OR when showing ✕ detach
@@ -152,7 +229,10 @@ public:
                     auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
                                                            static_cast<int>(localArrowW), hh);
                     arrowArea.translate(static_cast<int>(headerBounds.getX()), static_cast<int>(headerBounds.getY()));
-                    drawDisclosureArrow(g, arrowArea.toFloat(), isExpanded, GoodMeterLookAndFeel::textMain);
+                    auto arrowCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                    : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.92f)
+                                    : isDarkTheme ? GoodMeterLookAndFeel::textMainDark : GoodMeterLookAndFeel::textMain;
+                    drawDisclosureArrow(g, arrowArea.toFloat(), isExpanded, arrowCol);
                 }
                 else if (isDocked)
                 {
@@ -163,7 +243,9 @@ public:
                     float dotR = isMiniMode ? 1.5f : 2.5f;
                     float gapX = isMiniMode ? 4.0f : 6.0f;
                     float gapY = isMiniMode ? 3.5f : 5.0f;
-                    g.setColour(GoodMeterLookAndFeel::chartMuted());
+                    g.setColour(useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3).withAlpha(0.62f)
+                                                      : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.42f)
+                                                      : GoodMeterLookAndFeel::chartMuted());
                     for (int row = -1; row <= 1; ++row)
                         for (int col = 0; col < 2; ++col)
                             g.fillEllipse(headerBounds.getX() + gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
@@ -203,8 +285,14 @@ public:
                     auto textArea = juce::Rectangle<int>(
                         static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
                         cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
-                    tg.setColour(isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
-                    tg.setFont(juce::Font(titleFont, juce::Font::bold));
+                    auto textCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3)
+                                       : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.96f)
+                                       : isDarkTheme ? GoodMeterLookAndFeel::textMainDark
+                                               : (isDocked ? GoodMeterLookAndFeel::textMuted : GoodMeterLookAndFeel::textMain);
+                    tg.setColour(textCol);
+                    tg.setFont(useMonospacedTitleFont
+                                   ? GoodMeterLookAndFeel::iosEnglishMonoFont(titleFont, juce::Font::bold)
+                                   : juce::Font(titleFont, juce::Font::bold));
                     tg.drawText(cardTitle.toUpperCase(), textArea, juce::Justification::centredLeft, false);
 
                     if (!isDocked && !arrowHidden)
@@ -212,7 +300,10 @@ public:
                         float localArrowW = isMiniMode ? 20.0f : 40.0f;
                         auto arrowArea = juce::Rectangle<int>(cacheW - static_cast<int>(localArrowW), 0,
                                                                static_cast<int>(localArrowW), hh);
-                        drawDisclosureArrow(tg, arrowArea.toFloat(), isExpanded, GoodMeterLookAndFeel::textMain);
+                        auto arrowCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                        : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.92f)
+                                        : isDarkTheme ? GoodMeterLookAndFeel::textMainDark : GoodMeterLookAndFeel::textMain;
+                        drawDisclosureArrow(tg, arrowArea.toFloat(), isExpanded, arrowCol);
                     }
                     else if (isDocked)
                     {
@@ -222,7 +313,9 @@ public:
                         float dotR = isMiniMode ? 1.5f : 2.5f;
                         float gapX = isMiniMode ? 4.0f : 6.0f;
                         float gapY = isMiniMode ? 3.5f : 5.0f;
-                        tg.setColour(GoodMeterLookAndFeel::chartMuted());
+                        tg.setColour(useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3).withAlpha(0.62f)
+                                                           : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.42f)
+                                                           : GoodMeterLookAndFeel::chartMuted());
                         for (int row = -1; row <= 1; ++row)
                             for (int col = 0; col < 2; ++col)
                                 tg.fillEllipse(gripCX + (col == 0 ? -gapX * 0.5f : gapX * 0.5f) - dotR,
@@ -305,7 +398,20 @@ public:
         if (headerWidget != nullptr)
         {
             auto cr = getCardRect();
-            const int widgetW = juce::jlimit(60, 140, static_cast<int>(cr.getWidth() * 0.3f));
+            int widgetW = juce::jlimit(90, 168, static_cast<int>(cr.getWidth() * 0.38f));
+
+            if (auto* combo = dynamic_cast<juce::ComboBox*>(headerWidget))
+            {
+                auto comboFont = combo->getLookAndFeel().getComboBoxFont(*combo);
+                int preferredW = 108;
+                for (int i = 0; i < combo->getNumItems(); ++i)
+                    preferredW = juce::jmax(preferredW,
+                                            static_cast<int>(std::ceil(comboFont.getStringWidthFloat(combo->getItemText(i)) + 42.0f)));
+
+                const int maxAllowed = juce::jmax(108, static_cast<int>(cr.getWidth() * 0.46f));
+                widgetW = juce::jlimit(108, maxAllowed, preferredW);
+            }
+
             const int widgetH = isMiniMode ? 18 : 26;
             headerWidget->setBounds(
                 static_cast<int>(cr.getRight()) - widgetW - static_cast<int>(isMiniMode ? 20.0f : 40.0f),

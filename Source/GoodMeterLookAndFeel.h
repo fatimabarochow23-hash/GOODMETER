@@ -112,6 +112,12 @@ public:
     static inline const juce::Colour accentBlue     = juce::Colour(0xFF22D3EE);
     static inline const juce::Colour accentSoftPink = juce::Colour(0xFFf0a5c2);
 
+    // Dark theme colors (Flux-style professional dark mode)
+    static inline const juce::Colour bgMainDark   = juce::Colour(0xFF0F1419);  // deep blue-black
+    static inline const juce::Colour bgPanelDark  = juce::Colour(0xFF1A2332);  // card/meter background (deep blue)
+    static inline const juce::Colour textMainDark = juce::Colour(0xFFB0B8C0);  // light grey-white text
+    static inline const juce::Colour borderDark   = juce::Colour(0xFF2A3545);  // dark blue-grey grid lines
+
     //==========================================================================
     // Mobile chart readability helpers
     //==========================================================================
@@ -136,6 +142,120 @@ public:
     static float chartFont(float desktopSize, float mobileMultiplier = 1.0f)
     {
         return isMobileCharts() ? desktopSize * mobileMultiplier : desktopSize;
+    }
+
+    static const juce::Identifier& iosEnglishMonoProperty()
+    {
+        static const juce::Identifier id("goodmeter_ios_english_mono");
+        return id;
+    }
+
+    static void markAsIOSEnglishMono(juce::Component& component)
+    {
+        component.getProperties().set(iosEnglishMonoProperty(), true);
+    }
+
+    static bool shouldUseIOSEnglishMono(const juce::Component& component)
+    {
+        return static_cast<bool>(component.getProperties().getWithDefault(iosEnglishMonoProperty(), false));
+    }
+
+    static bool isAsciiEnglishLike(const juce::String& text)
+    {
+        bool hasAsciiLetterOrDigit = false;
+
+        for (auto ch : text)
+        {
+            const auto c = static_cast<juce::juce_wchar>(ch);
+
+            if (c >= 0x4E00)
+                return false;
+
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+                hasAsciiLetterOrDigit = true;
+        }
+
+        return hasAsciiLetterOrDigit;
+    }
+
+    static juce::Font iosEnglishMonoFont(float size, int styleFlags = juce::Font::plain)
+    {
+        return juce::Font(juce::Font::getDefaultMonospacedFontName(), size, styleFlags);
+    }
+
+    static juce::Font iosEnglishMonoFrom(const juce::Font& base, bool forceBold = false)
+    {
+        int styleFlags = juce::Font::plain;
+
+        if (forceBold || base.isBold())
+            styleFlags |= juce::Font::bold;
+        if (base.isItalic())
+            styleFlags |= juce::Font::italic;
+
+        return iosEnglishMonoFont(base.getHeight(), styleFlags);
+    }
+
+    static void setEditorialPopupMode(bool enabled, bool darkTheme)
+    {
+        editorialPopupMode = enabled ? (darkTheme ? 2 : 1) : 0;
+    }
+
+    static juce::Colour liquidGlassReadableText(bool darkTheme)
+    {
+        return darkTheme ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                         : juce::Colour(0xFF1B1A22).withAlpha(0.94f);
+    }
+
+    static juce::Colour liquidGlassFill(bool darkTheme, juce::Colour contentTint, float alpha = -1.0f)
+    {
+        auto base = darkTheme ? juce::Colour(0xFF090D14)
+                              : juce::Colour(0xFFF6F2EA);
+        auto tintMix = darkTheme ? 0.15f : 0.08f;
+        auto fill = base.interpolatedWith(contentTint, tintMix);
+        return fill.withAlpha(alpha > 0.0f ? alpha : (darkTheme ? 0.62f : 0.82f));
+    }
+
+    static void drawLiquidGlassPlate(juce::Graphics& g,
+                                     juce::Rectangle<float> panel,
+                                     bool darkTheme,
+                                     juce::Colour contentTint,
+                                     float radius,
+                                     float fillAlpha = -1.0f)
+    {
+        juce::Path panelPath;
+        panelPath.addRoundedRectangle(panel, radius);
+
+        auto fill = liquidGlassFill(darkTheme, contentTint, fillAlpha);
+        auto outline = (darkTheme ? juce::Colour(0xFFF6EEE3)
+                                  : juce::Colour(0xFF1A1A24))
+                           .withAlpha(darkTheme ? 0.10f : 0.08f);
+        auto topHighlight = juce::Colours::white.withAlpha(darkTheme ? 0.18f : 0.32f);
+        auto innerGlow = juce::Colours::white.withAlpha(darkTheme ? 0.07f : 0.11f);
+        auto bottomShade = juce::Colours::black.withAlpha(darkTheme ? 0.12f : 0.05f);
+
+        g.setColour(juce::Colours::black.withAlpha(darkTheme ? 0.10f : 0.06f));
+        g.fillRoundedRectangle(panel.translated(0.0f, 2.0f), radius);
+
+        g.setColour(fill);
+        g.fillPath(panelPath);
+
+        juce::ColourGradient verticalSheen(topHighlight,
+                                           panel.getCentreX(), panel.getY(),
+                                           juce::Colours::white.withAlpha(0.0f),
+                                           panel.getCentreX(), panel.getBottom(),
+                                           false);
+        verticalSheen.addColour(0.28, innerGlow);
+        verticalSheen.addColour(0.80, bottomShade.withAlpha(0.0f));
+        verticalSheen.addColour(1.00, bottomShade);
+        g.setGradientFill(verticalSheen);
+        g.fillPath(panelPath);
+
+        g.setColour(outline);
+        g.drawRoundedRectangle(panel, radius, 0.9f);
+
+        g.setColour(topHighlight.withAlpha(darkTheme ? 0.22f : 0.34f));
+        g.drawLine(panel.getX() + 12.0f, panel.getY() + 1.15f,
+                   panel.getRight() - 12.0f, panel.getY() + 1.15f, 1.0f);
     }
 
     static float chartStroke(float desktopWidth, float mobileMultiplier = 1.22f, float mobileMinimum = 0.0f)
@@ -177,6 +297,7 @@ public:
     static inline bool holoTitleBar = false;
     static inline bool spectroTitleBar = false;
     static inline bool spectroProcessed = false;
+    static inline int editorialPopupMode = 0;
 
     //==========================================================================
     // Typography
@@ -229,7 +350,9 @@ public:
     void drawButtonText(juce::Graphics& g, juce::TextButton& button,
                         bool /*isMouseOverButton*/, bool isButtonDown) override
     {
-        auto font = juce::Font(14.0f, juce::Font::bold);
+        auto font = shouldUseIOSEnglishMono(button) && isAsciiEnglishLike(button.getButtonText())
+                        ? iosEnglishMonoFont(15.5f, juce::Font::bold)
+                        : juce::Font(14.0f, juce::Font::bold);
         g.setFont(font);
         // Use per-component colours (supports dark/light mode)
         g.setColour(isButtonDown
@@ -277,7 +400,10 @@ public:
 
         // Label text
         g.setColour(textCol);
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        auto toggleFont = shouldUseIOSEnglishMono(button) && isAsciiEnglishLike(button.getButtonText())
+                              ? iosEnglishMonoFont(14.0f, juce::Font::bold)
+                              : juce::Font(13.0f, juce::Font::bold);
+        g.setFont(toggleFont);
         auto textArea = button.getLocalBounds()
                           .withLeft(static_cast<int>(boxX + boxSize + 6.0f));
         g.drawText(button.getButtonText(), textArea,
@@ -295,6 +421,45 @@ public:
                           static_cast<float>(width), static_cast<float>(height));
         auto textCol = box.findColour(juce::ComboBox::textColourId);
         auto bgCol   = box.findColour(juce::ComboBox::backgroundColourId);
+        const bool editorialGlass = editorialPopupMode != 0 && shouldUseIOSEnglishMono(box);
+
+        if (editorialGlass)
+        {
+            auto panel = bounds.reduced(1.2f, 3.0f);
+            const bool darkTheme = editorialPopupMode == 2;
+            const float radius = 15.5f;
+            auto contentTint = darkTheme
+                                   ? bgCol.interpolatedWith(accentBlue, 0.28f)
+                                   : bgCol.interpolatedWith(accentBlue, 0.08f);
+            drawLiquidGlassPlate(g, panel, darkTheme, contentTint, radius,
+                                 darkTheme ? 0.56f : 0.84f);
+
+            if (box.isMouseOver() || isButtonDown)
+            {
+                auto hoverPath = juce::Path();
+                hoverPath.addRoundedRectangle(panel.reduced(1.0f), radius - 1.0f);
+                auto hoverCol = liquidGlassReadableText(darkTheme).withAlpha(isButtonDown ? 0.09f : 0.05f);
+                g.setColour(hoverCol);
+                g.fillPath(hoverPath);
+            }
+
+            textCol = liquidGlassReadableText(darkTheme);
+            auto comboFont = juce::Font(14.5f, juce::Font::bold);
+            g.setFont(comboFont);
+            g.drawText(box.getText().trim(),
+                       juce::Rectangle<int>(12, 0, width - 36, height),
+                       juce::Justification::centredLeft, true);
+
+            juce::Path arrow;
+            float ax = static_cast<float>(width) - 17.0f;
+            float ay = static_cast<float>(height) * 0.5f - 2.0f;
+            arrow.startNewSubPath(ax - 4.5f, ay);
+            arrow.lineTo(ax, ay + 4.8f);
+            arrow.lineTo(ax + 4.5f, ay);
+            g.setColour(textCol.withAlpha(0.92f));
+            g.strokePath(arrow, juce::PathStrokeType(1.35f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            return;
+        }
 
         if (isButtonDown)
         {
@@ -314,7 +479,10 @@ public:
 
         // Text
         g.setColour(isButtonDown ? bgCol : textCol);
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        auto comboFont = shouldUseIOSEnglishMono(box) && isAsciiEnglishLike(box.getText())
+                             ? iosEnglishMonoFont(14.5f, juce::Font::bold)
+                             : juce::Font(13.0f, juce::Font::bold);
+        g.setFont(comboFont);
         g.drawText(box.getText(),
                    juce::Rectangle<int>(8, 0, width - 28, height),
                    juce::Justification::centredLeft, true);
@@ -341,9 +509,33 @@ public:
     //==========================================================================
     juce::Font getLabelFont(juce::Label& label) override
     {
+        if (shouldUseIOSEnglishMono(label) && isAsciiEnglishLike(label.getText()))
+            return iosEnglishMonoFrom(label.getFont(), true);
+
         // Force bold on all labels for Neo-Brutalism weight
         auto f = label.getFont();
         return f.withStyle(juce::Font::bold);
+    }
+
+    juce::Font getTextButtonFont(juce::TextButton& button, int buttonHeight) override
+    {
+        if (shouldUseIOSEnglishMono(button) && isAsciiEnglishLike(button.getButtonText()))
+        {
+            const float fontSize = juce::jmin(16.0f, static_cast<float>(buttonHeight) * 0.48f);
+            return iosEnglishMonoFont(fontSize, juce::Font::bold);
+        }
+
+        return juce::LookAndFeel_V4::getTextButtonFont(button, buttonHeight);
+    }
+
+    juce::Font getComboBoxFont(juce::ComboBox& box) override
+    {
+        if (shouldUseIOSEnglishMono(box) && isAsciiEnglishLike(box.getText()))
+            return editorialPopupMode != 0
+                       ? juce::Font(14.5f, juce::Font::bold)
+                       : iosEnglishMonoFont(13.0f, juce::Font::bold);
+
+        return juce::LookAndFeel_V4::getComboBoxFont(box);
     }
 
     void drawLabel(juce::Graphics& g, juce::Label& label) override
@@ -446,7 +638,17 @@ public:
         auto area = juce::Rectangle<float>(0, 0,
                         static_cast<float>(width), static_cast<float>(height));
 
-        if (holoTitleBar)
+        if (editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar)
+        {
+            const bool darkTheme = editorialPopupMode == 2;
+            auto panel = area.reduced(0.8f);
+            const float radius = 16.0f;
+            auto contentTint = darkTheme ? accentBlue.interpolatedWith(accentPink, 0.18f)
+                                         : accentBlue;
+            drawLiquidGlassPlate(g, panel, darkTheme, contentTint, radius,
+                                 darkTheme ? 0.72f : 0.88f);
+        }
+        else if (holoTitleBar)
         {
             // Holo mode: dark bg + holographic grid
             static const juce::Colour holoDark(0xFF1A1A24);
@@ -496,7 +698,43 @@ public:
         juce::Colour mutedCol = textMuted;
         juce::Colour highlightBg = ink.withAlpha(0.08f);
 
-        if (holoTitleBar)
+        if (editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar)
+        {
+            const bool darkTheme = editorialPopupMode == 2;
+            if (editorialPopupMode == 2)
+            {
+                textCol = juce::Colour(0xFFF6EEE3).withAlpha(0.96f);
+                mutedCol = juce::Colour(0xFFF6EEE3).withAlpha(0.58f);
+                highlightBg = liquidGlassFill(true, accentBlue.interpolatedWith(accentPink, 0.20f), 0.26f);
+            }
+            else
+            {
+                textCol = juce::Colour(0xFF1A1A24).withAlpha(0.96f);
+                mutedCol = juce::Colour(0xFF1A1A24).withAlpha(0.56f);
+                highlightBg = liquidGlassFill(false, accentBlue, 0.40f);
+            }
+
+            if (isHighlighted && isActive)
+            {
+                auto highlightArea = area.toFloat().reduced(5.5f, 2.0f);
+                juce::Path itemPath;
+                itemPath.addRoundedRectangle(highlightArea, 9.5f);
+                g.setColour(highlightBg);
+                g.fillPath(itemPath);
+
+                juce::ColourGradient pillSheen(juce::Colours::white.withAlpha(darkTheme ? 0.14f : 0.22f),
+                                               highlightArea.getCentreX(), highlightArea.getY(),
+                                               juce::Colours::white.withAlpha(0.0f),
+                                               highlightArea.getCentreX(), highlightArea.getBottom(),
+                                               false);
+                g.setGradientFill(pillSheen);
+                g.fillPath(itemPath);
+
+                g.setColour(textCol.withAlpha(darkTheme ? 0.12f : 0.09f));
+                g.drawRoundedRectangle(highlightArea, 9.5f, 0.8f);
+            }
+        }
+        else if (holoTitleBar)
         {
             textCol = juce::Colour(0xFFD5D3DE);   // white/grey
             mutedCol = juce::Colour(0xFF8A8A9D);
@@ -519,14 +757,16 @@ public:
             return;
         }
 
-        if (isHighlighted && isActive)
+        if (isHighlighted && isActive && !(editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar))
         {
             g.setColour(highlightBg);
-            g.fillRect(area);
+            g.fillRoundedRectangle(area.toFloat().reduced(5.0f, 1.5f), 8.0f);
         }
 
         g.setColour(isActive ? textCol : mutedCol);
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.setFont(editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar
+                      ? juce::Font(14.25f, juce::Font::plain)
+                      : juce::Font(13.0f, juce::Font::bold));
         g.drawText(text, area.reduced(20, 0), juce::Justification::centredLeft, true);
 
         if (isTicked)
@@ -541,14 +781,20 @@ public:
                                      const juce::String& sectionName) override
     {
         juce::Colour headerCol = textMuted;
-        if (holoTitleBar)
+        if (editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar)
+            headerCol = editorialPopupMode == 2
+                            ? juce::Colour(0xFFF6EEE3).withAlpha(0.58f)
+                            : juce::Colour(0xFF1A1A24).withAlpha(0.52f);
+        else if (holoTitleBar)
             headerCol = juce::Colour(0xFF8A8A9D);
         else if (spectroTitleBar)
             headerCol = spectroProcessed ? juce::Colour(0xFFFFB840).withAlpha(0.5f)
                                          : juce::Colour(0xFF4A9EFF).withAlpha(0.5f);
 
         g.setColour(headerCol);
-        g.setFont(juce::Font(11.0f, juce::Font::bold));
+        g.setFont(editorialPopupMode != 0 && !holoTitleBar && !spectroTitleBar
+                      ? juce::Font(12.0f, juce::Font::bold)
+                      : juce::Font(11.0f, juce::Font::bold));
         g.drawText(sectionName.toUpperCase(), area.reduced(20, 0),
                    juce::Justification::centredLeft, true);
 

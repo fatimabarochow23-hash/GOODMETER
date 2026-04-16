@@ -73,7 +73,7 @@ public:
             diamond.lineTo(cx, cy + r);
             diamond.lineTo(cx - r, cy);
             diamond.closeSubPath();
-            g.setColour(juce::Colours::black);
+            g.setColour(marathonDarkStyle ? juce::Colour(0xFF0A0D13) : juce::Colours::black);
             g.fillPath(diamond);
 
             // Single image blit (clipped to diamond)
@@ -156,9 +156,22 @@ public:
         dbScaleTextCache = juce::Image();
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        lrmsTextCache = {};
+        gonGridTextCache = {};
+        dbScaleTextCache = {};
+        repaint();
+    }
+
 private:
     //==========================================================================
     GOODMETERAudioProcessor& audioProcessor;
+    bool marathonDarkStyle = false;
 
     // Sample buffers for Goniometer (stores recent L/R pairs)
     static constexpr int bufferSize = GOODMETERAudioProcessor::stereoSampleBufferSize;
@@ -247,6 +260,16 @@ private:
         repaint();
     }
 
+    juce::Colour panelBackFill() const
+    {
+        return juce::Colour(0xFF0A0D13);
+    }
+
+    juce::Colour panelInk(float alpha) const
+    {
+        return juce::Colours::white.withAlpha(alpha);
+    }
+
     //==========================================================================
     /**
      * Draw LRMS as four uniform cylinders with glow aesthetic
@@ -285,10 +308,10 @@ private:
         };
 
         TubeConfig tubes[4] = {
-            { "L", normLevel(displayL), GoodMeterLookAndFeel::accentPink },
-            { "R", normLevel(displayR), GoodMeterLookAndFeel::accentPink },
-            { "M", normLevel(displayM), GoodMeterLookAndFeel::accentYellow },
-            { "S", normLevel(displayS), GoodMeterLookAndFeel::accentGreen }
+            { "L", normLevel(displayL), marathonDarkStyle ? GoodMeterLookAndFeel::accentPink.brighter(0.10f) : GoodMeterLookAndFeel::accentPink },
+            { "R", normLevel(displayR), marathonDarkStyle ? GoodMeterLookAndFeel::accentPink.brighter(0.10f) : GoodMeterLookAndFeel::accentPink },
+            { "M", normLevel(displayM), marathonDarkStyle ? GoodMeterLookAndFeel::accentYellow.brighter(0.08f) : GoodMeterLookAndFeel::accentYellow },
+            { "S", normLevel(displayS), marathonDarkStyle ? GoodMeterLookAndFeel::accentGreen.brighter(0.10f) : GoodMeterLookAndFeel::accentGreen }
         };
 
         if (!GoodMeterLookAndFeel::preferDirectChartText())
@@ -313,7 +336,8 @@ private:
                     float colX = i * (colWidth + gap);
                     const float fontSize = GoodMeterLookAndFeel::chartFont(
                         juce::jlimit(8.0f, 12.0f, labelSpace * 0.55f));
-                    tg.setColour(GoodMeterLookAndFeel::textMain);
+                    tg.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7)
+                                                   : GoodMeterLookAndFeel::textMain);
                     tg.setFont(juce::Font(fontSize, juce::Font::bold));
                     tg.drawText(labels[i], static_cast<int>(colX), 0, static_cast<int>(colWidth), static_cast<int>(labelSpace), juce::Justification::centred, false);
                 }
@@ -346,13 +370,13 @@ private:
                 float fillH = th * tube.level;
                 float fillY = ty + th - fillH;
 
-                g.setColour(tube.color.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.78f : 0.65f));
+                g.setColour(tube.color.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.88f : 0.72f));
                 g.fillRect(tx - 1.0f, fillY, tw + 2.0f, fillH + 1.0f);
 
                 // Meniscus highlight
                 if (fillH > 2.0f)
                 {
-                    g.setColour(tube.color.brighter(0.35f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.24f : 0.5f));
+                    g.setColour(tube.color.brighter(0.45f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.56f));
                     g.fillRect(tx - 1.0f, fillY, tw + 2.0f, 1.5f);
                 }
             }
@@ -366,7 +390,9 @@ private:
             }
 
             // === Glass outline (Neo-Brutalism: solid visible border) ===
-            g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.55f));
+            g.setColour(marathonDarkStyle
+                            ? juce::Colour(0xFFF3EFE7).withAlpha(0.78f)
+                            : GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.55f));
             g.strokePath(tubePath, juce::PathStrokeType(
                 GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f)));
 
@@ -386,7 +412,9 @@ private:
                 bool isMajor = (static_cast<int>(tdb) == -30);
                 float tickLen = isMajor ? tw * 0.5f : tw * 0.3f;
                 float tickStroke = isMajor ? 1.5f : 1.0f;
-                g.setColour(GoodMeterLookAndFeel::chartInk(isMajor ? 0.54f : 0.36f));
+                g.setColour(marathonDarkStyle
+                                ? panelInk(isMajor ? 0.58f : 0.42f)
+                                : GoodMeterLookAndFeel::chartInk(isMajor ? 0.54f : 0.36f));
                 g.drawLine(tx + tw - tickLen, tickY, tx + tw, tickY, tickStroke);
             }
         }
@@ -396,7 +424,8 @@ private:
             const juce::String labels[] = { "L", "R", "M", "S" };
             const float fontSize = GoodMeterLookAndFeel::chartFont(
                 juce::jlimit(8.0f, 12.0f, labelSpace * 0.55f));
-            g.setColour(GoodMeterLookAndFeel::textMain);
+            g.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7)
+                                          : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(fontSize, juce::Font::bold));
             for (int i = 0; i < 4; ++i)
             {
@@ -464,7 +493,8 @@ private:
         // Phase 1: Ghost trail fade (single Graphics call, then release)
         {
             juce::Graphics imageG(goniometerImage);
-            imageG.fillAll(juce::Colours::black.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.18f : 0.06f));
+            imageG.fillAll((marathonDarkStyle ? juce::Colour(0xFF0A0D13) : juce::Colours::black)
+                               .withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.18f : 0.06f));
         }
 
         // Phase 2: BitmapData pixel-level rendering (zero CoreGraphics)
@@ -573,7 +603,7 @@ private:
         outerDiamond.lineTo(cx, cy + r);
         outerDiamond.lineTo(cx - r, cy);
         outerDiamond.closeSubPath();
-        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.72f : 0.55f));
+        g.setColour(panelInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.72f : 0.55f));
         g.strokePath(outerDiamond, juce::PathStrokeType(
             GoodMeterLookAndFeel::chartStroke(1.5f, 1.18f, 1.8f)));
 
@@ -585,12 +615,12 @@ private:
         innerDiamond.lineTo(cx, cy + innerR);
         innerDiamond.lineTo(cx - innerR, cy);
         innerDiamond.closeSubPath();
-        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.30f));
+        g.setColour(panelInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.30f));
         g.strokePath(innerDiamond, juce::PathStrokeType(
             GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.15f)));
 
         // Cross lines (axis indicators — bold)
-        g.setColour(juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.52f : 0.40f));
+        g.setColour(panelInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.52f : 0.40f));
         g.drawLine(cx, cy - r, cx, cy + r, GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.1f));
         g.drawLine(cx - r, cy, cx + r, cy, GoodMeterLookAndFeel::chartStroke(1.0f, 1.15f, 1.1f));
 
@@ -603,7 +633,7 @@ private:
             const float gridFontSize = GoodMeterLookAndFeel::chartFont(
                 juce::jlimit(8.0f, 11.0f, r * 0.1f));
             const float labelOff = juce::jmin(18.0f, r * 0.15f);
-            g.setColour(juce::Colours::white.withAlpha(0.75f));
+            g.setColour(panelInk(0.75f));
             g.setFont(juce::Font(gridFontSize, juce::Font::bold));
             g.drawFittedText("M", static_cast<int>(cx - 15.0f), static_cast<int>(cy - r - labelOff), 30, 20, juce::Justification::centred, 1);
             g.drawFittedText("-M", static_cast<int>(cx - 15.0f), static_cast<int>(cy + r + labelOff * 0.2f), 30, 20, juce::Justification::centred, 1);
@@ -632,7 +662,7 @@ private:
                 const float gridFontSize = GoodMeterLookAndFeel::chartFont(
                     juce::jlimit(8.0f, 11.0f, r * 0.1f));
                 const float labelOff = juce::jmin(18.0f, r * 0.15f);
-                tg.setColour(juce::Colours::white.withAlpha(0.75f));
+                tg.setColour(panelInk(0.75f));
                 tg.setFont(juce::Font(gridFontSize, juce::Font::bold));
 
                 tg.drawFittedText("M", static_cast<int>(lcx - 15), static_cast<int>(lcy - r - labelOff), 30, 20, juce::Justification::centred, 1);
@@ -679,7 +709,7 @@ private:
             const float dbMax = 0.0f;
             const float rightX = static_cast<float>(sw);
 
-            g.setColour(juce::Colours::black);
+            g.setColour(marathonDarkStyle ? panelInk(0.78f) : juce::Colours::black);
             g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(9.0f), juce::Font::bold));
 
             for (float db : tickDbs)
@@ -727,7 +757,7 @@ private:
                 const float dbMax = 0.0f;
                 const float rightX = static_cast<float>(sw);
 
-                tg.setColour(juce::Colours::black);
+                tg.setColour(marathonDarkStyle ? panelInk(0.78f) : juce::Colours::black);
                 tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(9.0f), juce::Font::bold));
 
                 for (float db : tickDbs)

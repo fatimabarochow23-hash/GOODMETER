@@ -65,6 +65,11 @@ public:
             historyPage->setCurrentSkin(skinId);
         };
 
+        settingsPage->onCharacterRenderModeChanged = [this](int renderMode)
+        {
+            nonoPage->setCharacterRenderMode(renderMode);
+        };
+
         settingsPage->onShowImportButtonChanged = [this](bool show)
         {
             nonoPage->setShowImportButton(show);
@@ -73,6 +78,16 @@ public:
         settingsPage->onMeterDisplayModeChanged = [this](int mode)
         {
             metersPage->setDisplayMode(mode);
+        };
+
+        settingsPage->onLoudnessStandardChanged = [this](int standardId)
+        {
+            metersPage->setLoudnessStandard(standardId);
+        };
+
+        settingsPage->onThemeChanged = [this](bool isDark)
+        {
+            applyDarkTheme(isDark);
         };
 
         historyPage->onFileRequested = [this](const juce::File& file)
@@ -107,12 +122,66 @@ public:
                 file.deleteFile();
         };
 
+        // Codex: when a video-backed session is active, page 2 transport must
+        // control the same native video transport instead of only the extracted
+        // audio engine. Otherwise hidden page-5 sync immediately revives
+        // playback after the user pauses on page 2.
+        metersPage->hasExternalTransport = [this]()
+        {
+            return videoPage != nullptr && videoPage->ownsSharedAudioTransport();
+        };
+        metersPage->isExternalTransportPlaying = [this]()
+        {
+            return videoPage != nullptr && videoPage->isTransportPlaying();
+        };
+        metersPage->getExternalTransportPosition = [this]()
+        {
+            return videoPage != nullptr ? videoPage->getTransportPositionSeconds() : 0.0;
+        };
+        metersPage->getExternalTransportLength = [this]()
+        {
+            return videoPage != nullptr ? videoPage->getTransportDurationSeconds() : 0.0;
+        };
+        metersPage->getExternalTransportName = [this]()
+        {
+            return videoPage != nullptr ? videoPage->getTransportDisplayName() : juce::String("No file loaded");
+        };
+        metersPage->playExternalTransport = [this]()
+        {
+            if (videoPage != nullptr)
+                videoPage->playTransport();
+        };
+        metersPage->pauseExternalTransport = [this]()
+        {
+            if (videoPage != nullptr)
+                videoPage->pauseTransport();
+        };
+        metersPage->rewindExternalTransport = [this]()
+        {
+            if (videoPage != nullptr)
+                videoPage->rewindTransport();
+        };
+        metersPage->seekExternalTransport = [this](double seconds)
+        {
+            if (videoPage != nullptr)
+                videoPage->seekTransport(seconds);
+        };
+        metersPage->jumpToEndExternalTransport = [this]()
+        {
+            if (videoPage != nullptr)
+                videoPage->jumpToEndTransport();
+        };
+
         // Sync initial state
         settingsPage->setCurrentSkin(nonoPage->getCurrentSkinId());
+        settingsPage->setCharacterRenderMode(nonoPage->getCharacterRenderMode());
         settingsPage->setShowImportButton(false);  // default OFF
         settingsPage->setMeterDisplayMode(0);
+        settingsPage->setLoudnessStandard(2);
         metersPage->setDisplayMode(0);
+        metersPage->setLoudnessStandard(2);
         historyPage->setCurrentSkin(nonoPage->getCurrentSkinId());
+        applyDarkTheme(settingsPage->isDark());
 
         setSize(400, 800);
     }
@@ -124,24 +193,39 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(GoodMeterLookAndFeel::bgMain);
+        g.fillAll(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
 
-        // Draw page indicator dots
+        // Draw Chinese character navigation bar at bottom
         auto bounds = getLocalBounds();
-        float dotY = static_cast<float>(bounds.getHeight()) - 30.0f;
-        float dotSpacing = 16.0f;
-        float dotR = 4.0f;
-        float totalW = dotSpacing * static_cast<float>(numPages - 1);
-        float startX = bounds.getCentreX() - totalW / 2.0f;
+        float navH = 60.0f;
+        auto navBar = bounds.removeFromBottom((int)navH);
+        g.setColour(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
+        g.fillRect(navBar);
+        g.setColour(isDarkTheme ? juce::Colours::white.withAlpha(0.08f)
+                                : GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
+        g.fillRect(navBar.removeFromTop(1));
+
+        juce::String labels[] = {
+            juce::CharPointer_UTF8("\xe7\x81\xb5"),  // 灵
+            juce::CharPointer_UTF8("\xe9\x9f\xb3"),  // 音
+            juce::CharPointer_UTF8("\xe5\xae\x9a"),  // 定
+            juce::CharPointer_UTF8("\xe8\xae\xb0"),  // 记
+            juce::CharPointer_UTF8("\xe8\xa7\x86")   // 视
+        };
+        float btnW = navBar.getWidth() / 5.0f;
 
         for (int i = 0; i < numPages; ++i)
         {
-            float x = startX + static_cast<float>(i) * dotSpacing;
+            auto btnArea = navBar.removeFromLeft((int)btnW);
             bool active = (i == currentPage);
 
-            g.setColour(active ? GoodMeterLookAndFeel::textMain
-                               : GoodMeterLookAndFeel::textMuted.withAlpha(0.3f));
-            g.fillEllipse(x - dotR, dotY - dotR, dotR * 2.0f, dotR * 2.0f);
+            auto activeColour = isDarkTheme ? juce::Colours::white
+                                            : GoodMeterLookAndFeel::textMain;
+            auto inactiveColour = isDarkTheme ? juce::Colours::white.withAlpha(0.4f)
+                                              : GoodMeterLookAndFeel::textMuted.withAlpha(0.82f);
+            g.setColour(active ? activeColour : inactiveColour);
+            g.setFont(juce::Font(32.0f, juce::Font::bold));
+            g.drawText(labels[i], btnArea, juce::Justification::centred);
         }
     }
 
@@ -149,8 +233,8 @@ public:
     {
         auto bounds = getLocalBounds();
 
-        // Reserve space for page dots at bottom
-        auto contentArea = bounds.withTrimmedBottom(40);
+        // Reserve space for navigation bar at bottom
+        auto contentArea = bounds.withTrimmedBottom(60);
 
         nonoPage->setBounds(contentArea);
         metersPage->setBounds(contentArea);
@@ -164,6 +248,25 @@ public:
     //==========================================================================
     void mouseDown(const juce::MouseEvent& e) override
     {
+        // Check if clicking navigation bar
+        auto bounds = getLocalBounds();
+        float navH = 60.0f;
+        auto navBar = bounds.removeFromBottom((int)navH);
+
+        if (navBar.contains(e.position.toInt()))
+        {
+            float btnW = navBar.getWidth() / 5.0f;
+            int clickedPage = (int)(e.position.x / btnW);
+            if (clickedPage >= 0 && clickedPage < numPages)
+            {
+                navClickConsumed = true;
+                isSwiping = false;
+                suppressPageSwipe = false;
+                switchToPage(clickedPage);
+                return;
+            }
+        }
+
         swipeStartX = e.position.x;
         isSwiping = false;
         suppressPageSwipe = (currentPage == 4
@@ -184,6 +287,14 @@ public:
 
     void mouseUp(const juce::MouseEvent& e) override
     {
+        if (navClickConsumed)
+        {
+            navClickConsumed = false;
+            isSwiping = false;
+            suppressPageSwipe = false;
+            return;
+        }
+
         if (suppressPageSwipe)
         {
             suppressPageSwipe = false;
@@ -210,6 +321,20 @@ public:
     }
 
 private:
+    void applyDarkTheme(bool dark)
+    {
+        isDarkTheme = dark;
+
+        // Codex: 主人要求我接手 iOS 主题，但别污染插件版和 standalone。
+        // 所以这里我先把主题只往 iOS 五页和底部导航同步，不改共享 meter 本体。
+        settingsPage->setDarkTheme(isDarkTheme);
+        historyPage->setDarkTheme(isDarkTheme);
+        metersPage->setDarkTheme(isDarkTheme);
+        nonoPage->setDarkTheme(isDarkTheme);
+        videoPage->setDarkTheme(isDarkTheme);
+        repaint();
+    }
+
     void switchToPage(int newPage)
     {
         if (newPage == currentPage) return;
@@ -257,4 +382,6 @@ private:
     float swipeStartX = 0.0f;
     bool isSwiping = false;
     bool suppressPageSwipe = false;
+    bool navClickConsumed = false;
+    bool isDarkTheme = false;
 };

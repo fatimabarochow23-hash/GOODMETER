@@ -18,6 +18,8 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
+#ifndef GOODMETER_NONO_ANALYSIS_RESULT_DEFINED
+#define GOODMETER_NONO_ANALYSIS_RESULT_DEFINED 1
 struct NonoAnalysisResult
 {
     float peakDBFS          = -100.0f;
@@ -27,6 +29,7 @@ struct NonoAnalysisResult
     float centerLUFS        = -100.0f;   // Center channel (C) integrated LUFS (>= 6ch only)
     int   numChannels       = 0;
 };
+#endif
 
 //==============================================================================
 class HoloNonoComponent : public juce::Component,
@@ -102,6 +105,9 @@ public:
     // Callback: ear-pinch flip back from analysis/back state
     std::function<void()> onEarFlipBack;
 
+    // Callback: double-click to clear results (iOS Marathon mode)
+    std::function<void()> onClearResultsRequested;
+
     // Skin system
     SkinType currentSkin = SkinType::Guoba;
     void setSkin(SkinType s)
@@ -115,6 +121,24 @@ public:
     }
     SkinType getSkin() const { return currentSkin; }
     bool isGuoba() const { return currentSkin == SkinType::Guoba; }
+
+    // Analysis result access
+    bool hasAnalysisResult() const { return analysisResult.numChannels > 0; }
+    const NonoAnalysisResult& getAnalysisResult() const { return analysisResult; }
+
+    // Control result display (for iOS Marathon mode)
+    void setShowAnalysisResults(bool show) { showAnalysisResults = show; }
+
+    // Clear analysis results (for iOS Marathon mode)
+    void clearAnalysisResults()
+    {
+        analysisResult = NonoAnalysisResult();
+        hasResults = false;
+        nonoState = NonoState::Front;
+        flipProgress = 0.0f;
+        flipTarget = 0.0f;
+        repaint();
+    }
 
     // Skin selector ComboBox (for embedding in MeterCard header)
     juce::ComboBox& getSkinMenu() { return skinMenu; }
@@ -148,6 +172,41 @@ public:
         orbitProgress = 0.0f;
         smileFramesLeft = 0;
         orbitLockFramesLeft = 0;
+    }
+
+    /** Codex: 第一页 ASCII 模式现在改成由现有 PNG/角色渲染结果驱动，
+        所以这里额外提供一个只包住角色本体的 capture rect，尽量把试管
+        和其它无关区域排除在外，避免 ASCII 化时把右侧试管也一并织进去。 */
+    juce::Rectangle<float> getAsciiCaptureBounds() const
+    {
+        auto bounds = getLocalBounds().toFloat();
+        if (bounds.isEmpty())
+            return {};
+
+        auto nonoDrawArea = bounds;
+        const float unit = juce::jmin(nonoDrawArea.getWidth(), nonoDrawArea.getHeight());
+        const float radius = unit * 0.18f;
+        const float cx = nonoDrawArea.getCentreX() - radius * 0.6f + idleOffsetX + collisionOffsetX;
+        const float cy = nonoDrawArea.getCentreY() - radius * 0.3f + idleOffsetY + collisionOffsetY;
+
+        if (isGuoba())
+        {
+            const float spriteH = radius * 4.0f;
+            const float spriteW = spriteH;
+            const float anchorY = cy - radius * 0.1f;
+            const float spriteY = anchorY - spriteH * 0.38f;
+            auto rect = juce::Rectangle<float>(cx - spriteW * 0.54f,
+                                               spriteY - spriteH * 0.05f,
+                                               spriteW * 1.08f,
+                                               spriteH * 1.02f);
+            return rect.getIntersection(bounds.reduced(2.0f));
+        }
+
+        auto rect = juce::Rectangle<float>(cx - radius * 1.46f,
+                                           cy - radius * 1.38f,
+                                           radius * 2.92f,
+                                           radius * 3.18f);
+        return rect.getIntersection(bounds.reduced(2.0f));
     }
 
     /** Programmatic file analysis — callable from iOS page or external code.
@@ -338,6 +397,12 @@ public:
                 break;
 
             case NonoState::ShowingResults:
+                // iOS Marathon mode: delegate to page component for wave animation
+                if (!showAnalysisResults && onClearResultsRequested)
+                {
+                    onClearResultsRequested();
+                    return;
+                }
                 nonoState = NonoState::ClearingData;
                 targetPourAngle = juce::degreesToRadians(120.0f);
                 bubbleFadeAlpha = 1.0f;
@@ -416,7 +481,7 @@ public:
 
         // ===== 动态空间绝对切割 =====
         bool showBubble = ((nonoState == NonoState::ShowingResults
-                            || nonoState == NonoState::ClearingData) && hasResults);
+                            || nonoState == NonoState::ClearingData) && hasResults && showAnalysisResults);
         juce::Rectangle<float> bubbleArea;
         auto nonoDrawArea = bounds;
 
@@ -1212,6 +1277,7 @@ private:
     std::unique_ptr<AnalysisThread> analysisThread;
     NonoAnalysisResult analysisResult;
     bool hasResults = false;
+    bool showAnalysisResults = true;  // iOS Marathon mode can disable this
     float ripplePhase = 0.0f;
     bool isDragHovering = false;
     juce::File pendingAnalysisFile;
@@ -1494,10 +1560,10 @@ private:
         collisionOffsetX += (targetCollisionX - collisionOffsetX) * collLerp;
         collisionOffsetY += (targetCollisionY - collisionOffsetY) * collLerp;
 
-        // Flip animation
+        // Flip animation (instant)
         if (std::abs(flipTarget - flipProgress) > 0.01f)
         {
-            flipProgress += (flipTarget - flipProgress) * 0.18f;
+            flipProgress = flipTarget;
         }
         else if (nonoState == NonoState::Flipping)
         {
@@ -1587,6 +1653,7 @@ private:
                     clearPourAngle = 0.0f;
                     liquidHeight = 0.0f;
                     hasResults = false;
+                    analysisResult = NonoAnalysisResult();  // Reset analysis data
                     nonoState = NonoState::Front;
                     flipProgress = 0.0f;
                     flipTarget = 0.0f;

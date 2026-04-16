@@ -38,6 +38,16 @@ public:
         stopTimer();
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        freqGridTextCache = juce::Image();
+        repaint();
+    }
+
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
@@ -49,15 +59,25 @@ public:
         g.setColour(GoodMeterLookAndFeel::border);
         g.drawRect(bounds, GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.3f));
 
-        if (hasValidData)
-            drawSpectrum(g, bounds);
+        auto chartBounds = getChartBounds();
 
-        drawFrequencyGrid(g, bounds);
+        if (marathonDarkStyle)
+        {
+            g.setColour(juce::Colour(0xFF0A0D13));
+            g.fillRect(chartBounds);
+            g.setColour(juce::Colour(0xFFF3EFE7).withAlpha(0.68f));
+            g.drawRect(chartBounds, 1.3f);
+        }
+
+        if (hasValidData)
+            drawSpectrum(g, chartBounds);
+
+        drawFrequencyGrid(g, chartBounds);
     }
 
     void resized() override
     {
-        auto bounds = getLocalBounds().toFloat();
+        auto bounds = getChartBounds();
 
         if (bounds.isEmpty() || bounds.getWidth() <= 0)
             return;
@@ -102,6 +122,13 @@ private:
     juce::Image freqGridTextCache;
     int lastFreqGridW = 0, lastFreqGridH = 0;
     float lastFreqGridScale = 0.0f;
+    bool marathonDarkStyle = false;
+
+    juce::Rectangle<float> getChartBounds() const
+    {
+        auto bounds = getLocalBounds().toFloat();
+        return marathonDarkStyle ? bounds.reduced(4.0f, 6.0f) : bounds;
+    }
 
     //==========================================================================
     void timerCallback() override
@@ -167,8 +194,8 @@ private:
         if (cachedXCoords.empty())
             return;
 
-        juce::Path spectrumPath;
-        spectrumPath.startNewSubPath(bounds.getX(), bounds.getBottom());
+        juce::Path linePath;
+        linePath.startNewSubPath(bounds.getX(), bounds.getBottom());
 
         const int maxPoints = 250;
         const int step = juce::jmax(1, numBins / maxPoints);
@@ -188,26 +215,29 @@ private:
             const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
             const float y = dbToY(db, height, topY);
 
-            spectrumPath.lineTo(x, y);
+            linePath.lineTo(x, y);
         }
 
-        spectrumPath.lineTo(bounds.getRight(), bounds.getBottom());
-        spectrumPath.closeSubPath();
+        juce::Path fillPath(linePath);
+        fillPath.lineTo(bounds.getRight(), bounds.getBottom());
+        fillPath.closeSubPath();
 
         // Gradient fill
         juce::ColourGradient gradient(
-            GoodMeterLookAndFeel::accentPink.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.24f : 0.4f),
+            GoodMeterLookAndFeel::accentPink.withAlpha(marathonDarkStyle
+                ? (GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.48f)
+                : (GoodMeterLookAndFeel::isMobileCharts() ? 0.24f : 0.4f)),
             bounds.getCentreX(), bounds.getY(),
-            GoodMeterLookAndFeel::accentPink.withAlpha(0.0f),
+            (marathonDarkStyle ? juce::Colour(0xFF0A0D13) : GoodMeterLookAndFeel::accentPink).withAlpha(0.0f),
             bounds.getCentreX(), bounds.getBottom(),
             false
         );
         g.setGradientFill(gradient);
-        g.fillPath(spectrumPath);
+        g.fillPath(fillPath);
 
         // Stroke
-        g.setColour(GoodMeterLookAndFeel::accentPink);
-        g.strokePath(spectrumPath, juce::PathStrokeType(
+        g.setColour(marathonDarkStyle ? juce::Colour(0xFFFF5D87) : GoodMeterLookAndFeel::accentPink);
+        g.strokePath(linePath, juce::PathStrokeType(
             GoodMeterLookAndFeel::chartStroke(2.0f, 1.18f, 2.3f)));
     }
 
@@ -233,11 +263,15 @@ private:
                 if (y < 0.0f || y > height) continue;
 
                 // Subtle horizontal line
-                tg.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
+                tg.setColour(marathonDarkStyle
+                    ? juce::Colour(0xFFF3EFE7).withAlpha(0.16f)
+                    : GoodMeterLookAndFeel::chartInk(0.16f));
                 tg.drawHorizontalLine(static_cast<int>(y), 0.0f, width);
 
                 // dB label on the left
-                tg.setColour(GoodMeterLookAndFeel::chartMuted());
+                tg.setColour(marathonDarkStyle
+                    ? juce::Colour(0xFF8D919C)
+                    : GoodMeterLookAndFeel::chartMuted());
                 tg.drawText(juce::String(static_cast<int>(db)),
                            2, static_cast<int>(y - 6), 28, 12,
                            juce::Justification::centredLeft, false);
@@ -282,7 +316,9 @@ private:
                 }
                 else
                 {
-                    tg.setColour(GoodMeterLookAndFeel::chartInk(0.18f));
+                    tg.setColour(marathonDarkStyle
+                        ? juce::Colour(0xFFF3EFE7).withAlpha(0.18f)
+                        : GoodMeterLookAndFeel::chartInk(0.18f));
                     tg.drawVerticalLine(static_cast<int>(x), 0.0f, height);
                 }
 
@@ -294,7 +330,9 @@ private:
                     label = juce::String(static_cast<int>(freq));
 
                 int labelX = juce::jlimit(0, bw - 30, static_cast<int>(x - 15));
-                tg.setColour(hasAccent ? accent.withAlpha(0.9f) : GoodMeterLookAndFeel::chartMuted());
+                tg.setColour(hasAccent
+                    ? accent.withAlpha(marathonDarkStyle ? 0.96f : 0.9f)
+                    : (marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::chartMuted()));
                 tg.drawText(label,
                           labelX, bh - 20,
                           30, 16,

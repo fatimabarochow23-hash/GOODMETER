@@ -40,12 +40,32 @@ public:
         stopThread(1000);
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        const juce::ScopedLock sl(imageLock);
+        marathonDarkStyle = shouldUse;
+        freqTextCache = juce::Image();
+        rebuildSpectrogramImageLocked();
+        triggerAsyncUpdate();
+    }
+
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
         if (bounds.isEmpty()) return;
         auto plotBounds = getPlotBounds();
+
+        if (marathonDarkStyle)
+        {
+            g.setColour(juce::Colour(0xFF0A0D13));
+            g.fillRect(plotBounds);
+            g.setColour(juce::Colour(0xFFF3EFE7).withAlpha(0.68f));
+            g.drawRect(plotBounds, 1.3f);
+        }
 
         const juce::ScopedLock sl(imageLock);
 
@@ -128,6 +148,7 @@ private:
     // 时间平滑缓冲
     std::array<float, numBins> smoothedFftData;
     bool isFirstFrame = true;
+    float adaptivePeakDb = -42.0f;
 
     // Frequency range (logarithmic)
     static constexpr float minFreq = 30.0f;
@@ -142,6 +163,7 @@ private:
     int lastFreqCacheW = 0;
     int lastFreqCacheH = 0;
     float lastFreqCacheScale = 0.0f;
+    bool marathonDarkStyle = false;
 
     //==========================================================================
     juce::Rectangle<int> getPlotBounds() const
@@ -197,6 +219,7 @@ private:
                             smoothedFftData[i] = smoothedFftData[i] * 0.1f + fftData[i] * 0.9f;
                     }
 
+                    updateAdaptivePeakDbFromFrame(smoothedFftData);
                     fftHistory[static_cast<size_t>(historyHead)] = smoothedFftData;
                     historyHead = (historyHead + 1) % historySize;
 
@@ -219,36 +242,7 @@ private:
     //==========================================================================
     void drawOneColumn(int height)
     {
-        const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
-        const float frequencyRatio = maxFreq / minFreq;
-        const float fftSizeF = static_cast<float>(GOODMETERAudioProcessor::fftSize);
-
-        juce::Image::BitmapData bitmapData(spectrogramImage, drawX, 0, 1, height,
-                                            juce::Image::BitmapData::writeOnly);
-
-        for (int y = 0; y < height; ++y)
-        {
-            const float normalizedY = 1.0f - (static_cast<float>(y) / static_cast<float>(height));
-            const float currentFreq = minFreq * std::pow(frequencyRatio, normalizedY);
-
-            const float binFloat = (currentFreq * fftSizeF) / sampleRate;
-            const int binIndex = static_cast<int>(binFloat);
-            const float fraction = binFloat - static_cast<float>(binIndex);
-
-            float rawMagnitude = 0.0f;
-            if (binIndex >= 0 && binIndex < numBins - 1)
-            {
-                rawMagnitude = smoothedFftData[binIndex] + fraction * (smoothedFftData[binIndex + 1] - smoothedFftData[binIndex]);
-            }
-            else
-            {
-                rawMagnitude = smoothedFftData[juce::jlimit(0, numBins - 1, binIndex)];
-            }
-
-            const float scaledAmplitude = rawMagnitude / fftSizeF;
-            const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
-            bitmapData.setPixelColour(0, y, getColourForDb(db));
-        }
+        drawColumnFromFrame(smoothedFftData, drawX, height, adaptivePeakDb);
     }
 
     //==========================================================================
@@ -293,6 +287,61 @@ private:
             return mid.interpolatedWith(peak, (normalized - 0.5f) * 2.0f);
     }
 
+    juce::Colour getMarathonDarkColourForDb(float db, float referencePeakDb) const
+    {
+        const juce::Colour bg(0xFF0A0D13);
+        const juce::Colour haze(0xFF10265E);
+        const juce::Colour low(0xFF2D66EA);
+        const juce::Colour hot(0xFF54DFFF);
+        const juce::Colour peak(0xFF9DEEFF);
+
+        // Codex: 主人拿 Audio Lab 对比后指出我们现在这张图“又白又暗”，
+        // 真正差异不在换粉还是换蓝，而在于 Audio Lab 是按整条素材的相对峰值
+        // 做归一化。这里我把 live spectrogram 也切到“相对峰值 dB”逻辑，并加
+        // 一个绝对噪声门，避免暂停后静音帧被误判成浅蓝板从右往左刷过去。
+        const float effectiveFloorDb = juce::jmax(-92.0f, referencePeakDb - 72.0f);
+        if (db <= effectiveFloorDb)
+            return bg;
+
+        float normalized = juce::jlimit(0.0f, 1.0f,
+            (db - effectiveFloorDb) / juce::jmax(18.0f, referencePeakDb - effectiveFloorDb));
+        normalized = std::pow(juce::jlimit(0.0f, 1.0f, normalized * 1.10f), 0.68f);
+
+        if (normalized < 0.02f)
+            return bg;
+        if (normalized < 0.16f)
+            return bg.interpolatedWith(haze, (normalized - 0.02f) / 0.14f);
+        if (normalized < 0.42f)
+            return haze.interpolatedWith(low, (normalized - 0.16f) / 0.26f);
+        if (normalized < 0.80f)
+            return low.interpolatedWith(hot, (normalized - 0.42f) / 0.38f);
+        return hot.interpolatedWith(peak, (normalized - 0.80f) / 0.20f);
+    }
+
+    float computeFramePeakDb(const std::array<float, numBins>& frame) const
+    {
+        float frameMax = 1.0e-10f;
+        for (float mag : frame)
+            frameMax = juce::jmax(frameMax, mag);
+        const float scaledAmplitude = frameMax / static_cast<float>(GOODMETERAudioProcessor::fftSize);
+        return juce::Decibels::gainToDecibels(scaledAmplitude, -120.0f);
+    }
+
+    void updateAdaptivePeakDbFromFrame(const std::array<float, numBins>& frame)
+    {
+        const float framePeakDb = computeFramePeakDb(frame);
+
+        if (framePeakDb >= adaptivePeakDb)
+        {
+            adaptivePeakDb = framePeakDb;
+        }
+        else
+        {
+            // Slow peak decay keeps the spectrogram lively without making it pump.
+            adaptivePeakDb = juce::jmax(framePeakDb, adaptivePeakDb - 0.08f);
+        }
+    }
+
     //==========================================================================
     void drawFreqScaleOverlay(juce::Graphics& g, const juce::Rectangle<int>& plotBounds)
     {
@@ -311,7 +360,9 @@ private:
 
             const float tickFreqs[] = { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
 
-            tg.setColour(GoodMeterLookAndFeel::chartInk(0.92f));
+            tg.setColour(marathonDarkStyle
+                ? juce::Colour(0xFFF3EFE7)
+                : GoodMeterLookAndFeel::chartInk(0.92f));
             tg.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(11.0f), juce::Font::bold));
 
             // Reserve top/bottom margins so 20k and 50 labels don't clip
@@ -373,6 +424,80 @@ private:
                         pw, ph,
                         0, 0,
                         freqTextCache.getWidth(), freqTextCache.getHeight());
+        }
+    }
+
+    void drawColumnFromFrame(const std::array<float, numBins>& frame, int imageX, int height,
+                             float referencePeakDb)
+    {
+        const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
+        const float frequencyRatio = maxFreq / minFreq;
+        const float fftSizeF = static_cast<float>(GOODMETERAudioProcessor::fftSize);
+
+        juce::Image::BitmapData bitmapData(spectrogramImage, imageX, 0, 1, height,
+                                            juce::Image::BitmapData::writeOnly);
+
+        for (int y = 0; y < height; ++y)
+        {
+            const float normalizedY = 1.0f - (static_cast<float>(y) / static_cast<float>(height));
+            const float currentFreq = minFreq * std::pow(frequencyRatio, normalizedY);
+
+            const float binFloat = (currentFreq * fftSizeF) / sampleRate;
+            const int binIndex = static_cast<int>(binFloat);
+            const float fraction = binFloat - static_cast<float>(binIndex);
+
+            float rawMagnitude = 0.0f;
+            if (binIndex >= 0 && binIndex < numBins - 1)
+            {
+                rawMagnitude = frame[binIndex] + fraction * (frame[binIndex + 1] - frame[binIndex]);
+            }
+            else
+            {
+                rawMagnitude = frame[juce::jlimit(0, numBins - 1, binIndex)];
+            }
+
+            juce::ignoreUnused(normalizedY);
+
+            if (marathonDarkStyle)
+            {
+                const float scaledAmplitude = rawMagnitude / fftSizeF;
+                const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -120.0f);
+                bitmapData.setPixelColour(0, y,
+                    getMarathonDarkColourForDb(db, referencePeakDb));
+            }
+            else
+            {
+                const float scaledAmplitude = rawMagnitude / fftSizeF;
+                const float db = juce::Decibels::gainToDecibels(scaledAmplitude, -100.0f);
+                bitmapData.setPixelColour(0, y, getColourForDb(db));
+            }
+        }
+    }
+
+    void rebuildSpectrogramImageLocked()
+    {
+        if (spectrogramImage.isNull())
+            return;
+
+        spectrogramImage.clear(spectrogramImage.getBounds(), juce::Colours::transparentBlack);
+
+        float referencePeakDbForRebuild = adaptivePeakDb;
+        if (marathonDarkStyle)
+        {
+            referencePeakDbForRebuild = -42.0f;
+            for (const auto& frame : fftHistory)
+                referencePeakDbForRebuild = juce::jmax(referencePeakDbForRebuild,
+                                                       computeFramePeakDb(frame));
+            adaptivePeakDb = referencePeakDbForRebuild;
+        }
+
+        for (int i = 0; i < historySize; ++i)
+        {
+            const int sourceIndex = (historyHead + i) % historySize;
+            const int imageX = (drawX + i) % historySize;
+
+            drawColumnFromFrame(fftHistory[static_cast<size_t>(sourceIndex)], imageX, internalHeight,
+                                referencePeakDbForRebuild);
         }
     }
 

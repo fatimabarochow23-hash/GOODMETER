@@ -55,6 +55,17 @@ public:
 
     void resized() override {}
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        sideLabelsCache = {};
+        valueTextCache = {};
+        repaint();
+    }
+
     //==========================================================================
     void updateCorrelation(float correlation)
     {
@@ -106,6 +117,7 @@ private:
     //==========================================================================
     float smoothedPhase = 0.0f;
     float scaleFactor = 1.0f;
+    bool marathonDarkStyle = false;
 
     static constexpr int loopsDefault = 8;   // Normal size: 8 loops
     static constexpr int loopsSmall = 6;     // Small size: 6 loops
@@ -121,6 +133,16 @@ private:
 
     //==========================================================================
     void timerCallback() override {}
+
+    juce::Colour marathonPanelFill() const
+    {
+        return juce::Colour(0xFF0A0D13);
+    }
+
+    juce::Colour marathonPanelStroke(float alpha) const
+    {
+        return juce::Colour(0xFFF3EFE7).withAlpha(alpha);
+    }
 
     //==========================================================================
     /**
@@ -208,11 +230,13 @@ private:
         }
 
         // Glass vessel outline
-        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
+        g.setColour(marathonDarkStyle
+                        ? marathonPanelStroke(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.46f)
+                        : GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
         g.drawRoundedRectangle(jacketRect, cornerR,
                                GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
-        if (!GoodMeterLookAndFeel::isMobileCharts())
+        if (!GoodMeterLookAndFeel::isMobileCharts() && !marathonDarkStyle)
         {
             g.setColour(juce::Colours::white.withAlpha(0.15f));
             g.drawRoundedRectangle(jacketRect.reduced(1.0f), cornerR - 0.5f, 0.8f);
@@ -220,7 +244,9 @@ private:
 
         // Inlet pipe (top) — two vertical lines going up
         const float inletTopY = jy - pipeH;
-        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
+        g.setColour(marathonDarkStyle
+                        ? marathonPanelStroke(GoodMeterLookAndFeel::isMobileCharts() ? 0.62f : 0.46f)
+                        : GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.20f));
         g.drawLine(inletL, jy, inletL, inletTopY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
         g.drawLine(inletR, jy, inletR, inletTopY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
@@ -229,7 +255,7 @@ private:
         g.drawLine(outletL, jy + jh, outletL, outletBottomY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
         g.drawLine(outletR, jy + jh, outletR, outletBottomY, GoodMeterLookAndFeel::chartStroke(1.5f, 1.2f, 1.8f));
 
-        if (!GoodMeterLookAndFeel::isMobileCharts())
+        if (!GoodMeterLookAndFeel::isMobileCharts() && !marathonDarkStyle)
         {
             g.setColour(GoodMeterLookAndFeel::accentCyan.withAlpha(0.06f));
             g.drawLine(inletL + 1.0f, jy, inletL + 1.0f, inletTopY, 3.0f);
@@ -279,15 +305,17 @@ private:
         auto innerPath = createInnerTubePath(startX, endX, cy, condenserWidth, amplitude);
 
         // Dark outline
-        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.22f));
+        g.setColour(marathonDarkStyle
+                        ? juce::Colours::white.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.42f : 0.34f)
+                        : GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.34f : 0.22f));
         g.strokePath(innerPath, juce::PathStrokeType(outerStroke, juce::PathStrokeType::curved));
 
         // White fill (glass interior)
-        g.setColour(juce::Colours::white);
+        g.setColour(marathonDarkStyle ? juce::Colour(0xFFF5F0E7) : juce::Colours::white);
         g.strokePath(innerPath, juce::PathStrokeType(innerStroke, juce::PathStrokeType::curved));
 
         // Subtle highlight on tube
-        if (!GoodMeterLookAndFeel::isMobileCharts())
+        if (!GoodMeterLookAndFeel::isMobileCharts() && !marathonDarkStyle)
         {
             g.setColour(juce::Colours::white.withAlpha(0.3f));
             g.strokePath(innerPath, juce::PathStrokeType(innerStroke * 0.4f, juce::PathStrokeType::curved));
@@ -368,7 +396,8 @@ private:
         juce::PathStrokeType strokeType(strokeW);
         strokeType.createDashedStroke(centerLine, centerLine, dashLengths, 2);
 
-        g.setColour(GoodMeterLookAndFeel::chartInk(0.22f));
+        g.setColour(marathonDarkStyle ? marathonPanelStroke(0.26f)
+                                      : GoodMeterLookAndFeel::chartInk(0.22f));
         g.strokePath(centerLine, strokeType);
     }
 
@@ -401,7 +430,8 @@ private:
 
             const float valueFont = GoodMeterLookAndFeel::chartFont(
                 juce::jlimit(11.0f, 19.0f, static_cast<float>(lh) * 0.7f));
-            g.setColour(GoodMeterLookAndFeel::textMain);
+            g.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7).withAlpha(0.78f)
+                                          : GoodMeterLookAndFeel::textMain);
             g.setFont(juce::Font(valueFont, juce::Font::bold));
             g.drawText(juce::String(smoothedPhase, 2), labelBounds,
                        juce::Justification::centred, false);

@@ -34,6 +34,16 @@ public:
         stopTimer();
     }
 
+    void setMarathonDarkStyle(bool shouldUse)
+    {
+        if (marathonDarkStyle == shouldUse)
+            return;
+
+        marathonDarkStyle = shouldUse;
+        vesselLabelCache = juce::Image();
+        repaint();
+    }
+
     //==========================================================================
     void paint(juce::Graphics& g) override
     {
@@ -66,6 +76,7 @@ private:
     juce::Image vesselLabelCache;
     int lastVesselLabelW = 0, lastVesselLabelH = 0;
     float lastVesselLabelScale = 0.0f;
+    bool marathonDarkStyle = false;
 
     //==========================================================================
     void timerCallback() override
@@ -142,7 +153,7 @@ private:
                 float colX = area.getX() + i * (colWidth + gap);
                 const float fontSize = GoodMeterLookAndFeel::chartFont(
                     juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f));
-                g.setColour(GoodMeterLookAndFeel::textMain);
+                g.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::textMain);
                 g.setFont(juce::Font(fontSize, juce::Font::bold));
                 g.drawText(labels[i],
                            static_cast<int>(colX), static_cast<int>(area.getY() + vesselHeight + 2.0f),
@@ -173,7 +184,7 @@ private:
                     float colX = i * (colWidth + gap);
                     const float fontSize = GoodMeterLookAndFeel::chartFont(
                         juce::jlimit(10.0f, 15.0f, vesselHeight * 0.07f));
-                    tg.setColour(GoodMeterLookAndFeel::textMain);
+                    tg.setColour(marathonDarkStyle ? juce::Colour(0xFFF3EFE7) : GoodMeterLookAndFeel::textMain);
                     tg.setFont(juce::Font(fontSize, juce::Font::bold));
                     tg.drawText(labels[i],
                                static_cast<int>(colX), 2,
@@ -325,7 +336,9 @@ private:
         drawVesselWithLiquid(g, vesselPath, vesselBounds, level, color);
 
         // Mini graduation marks (right side of cylinder body)
-        g.setColour(GoodMeterLookAndFeel::chartInk(0.16f));
+        g.setColour(marathonDarkStyle
+            ? juce::Colours::white.withAlpha(0.18f)
+            : GoodMeterLookAndFeel::chartInk(0.16f));
         const int numTicks = 10;
         for (int t = 1; t < numTicks; ++t)
         {
@@ -403,14 +416,14 @@ private:
             float fillY = vesselArea.getBottom() - fillHeight;
 
             // Liquid body fill
-            g.setColour(liquidColor.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.78f : 0.65f));
+            g.setColour(liquidColor.withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.88f : 0.72f));
             g.fillRect(vesselArea.getX() - 2.0f, fillY,
                        vesselArea.getWidth() + 4.0f, fillHeight + 1.0f);
 
             // Meniscus highlight (bright line at liquid surface)
             if (fillHeight > 3.0f)
             {
-                g.setColour(liquidColor.brighter(0.35f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.26f : 0.5f));
+                g.setColour(liquidColor.brighter(0.45f).withAlpha(GoodMeterLookAndFeel::isMobileCharts() ? 0.36f : 0.56f));
                 g.fillRect(vesselArea.getX() - 2.0f, fillY, vesselArea.getWidth() + 4.0f, 2.0f);
             }
         }
@@ -424,7 +437,9 @@ private:
         }
 
         // === 3. Glass vessel outline (elegant thin stroke) ===
-        g.setColour(GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.36f : 0.20f));
+        g.setColour(marathonDarkStyle
+            ? juce::Colour(0xFFF3EFE7).withAlpha(0.78f)
+            : GoodMeterLookAndFeel::chartInk(GoodMeterLookAndFeel::isMobileCharts() ? 0.36f : 0.20f));
         g.strokePath(vesselPath, juce::PathStrokeType(
             GoodMeterLookAndFeel::chartStroke(1.5f, 1.22f, 1.9f)));
 

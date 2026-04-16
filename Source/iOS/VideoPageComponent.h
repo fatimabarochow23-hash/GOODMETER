@@ -21,6 +21,12 @@
 #include "../SpectrogramComponent.h"
 #include "../PsrMeterComponent.h"
 
+#define MARATHON_ART_STYLE 1
+
+#if MARATHON_ART_STYLE
+    #include "MarathonRenderer.h"
+#endif
+
 class VideoDrawerToggleButton : public juce::Button
 {
 public:
@@ -183,7 +189,20 @@ public:
     bool loadVideo(const juce::File& file);
     void clearVideo();
     juce::String getCurrentVideoPath() const;
+    juce::String getTransportDisplayName() const;
+    bool hasLoadedVideo() const;
+    bool ownsSharedAudioTransport() const;
+    bool isTransportPlaying() const;
+    double getTransportPositionSeconds() const;
+    double getTransportDurationSeconds() const;
+    void playTransport();
+    void pauseTransport();
+    void rewindTransport();
+    void seekTransport(double seconds);
+    void jumpToEndTransport();
     bool shouldConsumeHorizontalSwipe(juce::Point<float> point) const;
+    void setDarkTheme(bool dark);
+    bool isDark() const { return isDarkTheme; }
 
 private:
     class NativeVideoPlayer;
@@ -214,6 +233,17 @@ private:
     double getDurationSeconds() const;
     int getDrawerHeight(bool landscape) const;
     juce::Rectangle<int> getDrawerBounds() const;
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseUp(const juce::MouseEvent& e) override;
+
+#if MARATHON_ART_STYLE
+    void randomizeBackground();
+    void rippleUpdate();
+    void triggerFanRipple(int originX, int originY, int dx, int dy, int dragDist);
+    void updateFanRipple();
+    void updateLongPressRipple();
+#endif
 
     GOODMETERAudioProcessor& processor;
     iOSAudioEngine& audioEngine;
@@ -258,7 +288,43 @@ private:
     bool syncedAudioLoaded = false;
     bool drawerOpen = false;
     bool lastLandscapeLayout = false;
+    bool isDarkTheme = false;
     bool userRequestedPlayingState = false;
     int playbackIntentHoldFrames = 0;
     double forcedPausePosition = 0.0;
+
+#if MARATHON_ART_STYLE
+    std::unique_ptr<DotMatrixCanvas> bgCanvas;
+    bool rippleActive = false;
+    int rippleCenterX = 0;
+    int rippleCenterY = 0;
+    float rippleRadius = 0.0f;
+    float rippleVelocity = 0.5f;
+    const float rippleAcceleration = 0.15f;
+    float autoRippleTimer = 0.0f;
+    int autoRipplePhase = 0;
+
+    // Interactive ripple system
+    bool longPressActive = false;
+    int longPressCenterX = 0;
+    int longPressCenterY = 0;
+    float longPressRadius = 0.0f;
+    int dragStartX = 0;
+    int dragStartY = 0;
+    double pressStartTime = 0.0;
+    bool wasDragged = false;
+    const float longPressMaxRadius = 2.0f;
+    int longPressWaveCount = 0;
+
+    // Fan ripple system
+    bool fanRippleActive = false;
+    int fanOriginX = 0;
+    int fanOriginY = 0;
+    float fanDirectionX = 0.0f;
+    float fanDirectionY = 0.0f;
+    float fanMaxRadius = 0.0f;
+    float fanRadius = 0.0f;
+    float fanVelocity = 0.5f;
+    const float fanAngle = 0.785398f;
+#endif
 };

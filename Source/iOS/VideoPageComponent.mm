@@ -137,13 +137,14 @@ public:
     NativeVideoPlayer()
     {
         videoView = [[GOODMETERVideoView alloc] initWithFrame:CGRectZero];
-        videoView.backgroundColor = UIColor.blackColor;
+        videoView.backgroundColor = UIColor.whiteColor;
         videoView.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
         videoView.tapHandler = ^{
             if (onVideoTapped != nullptr)
                 onVideoTapped();
         };
         host.setView(videoView);
+        setThemeDark(false);
     }
 
     ~NativeVideoPlayer()
@@ -291,6 +292,16 @@ public:
             player.volume = volume;
     }
 
+    void setThemeDark(bool dark)
+    {
+        if (videoView == nil)
+            return;
+
+        UIColor* bg = dark ? UIColor.blackColor : UIColor.whiteColor;
+        videoView.backgroundColor = bg;
+        videoView.surfaceView.backgroundColor = bg;
+    }
+
     juce::String getCurrentPath() const { return currentPath; }
     juce::Point<float> getPresentationSize() const
     {
@@ -337,6 +348,11 @@ private:
 VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEngine& engine)
     : processor(proc), audioEngine(engine)
 {
+#if MARATHON_ART_STYLE
+    bgCanvas = std::make_unique<DotMatrixCanvas>(21, 24);
+    randomizeBackground();
+#endif
+
     nativePlayer = std::make_unique<NativeVideoPlayer>();
     addAndMakeVisible(nativePlayer->getHost());
     tapOverlay.onTap = [this]()
@@ -357,7 +373,7 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
     addAndMakeVisible(bottomMeterSwipe);
 
     fileNameLabel.setFont(juce::Font(juce::FontOptions(12.0f, juce::Font::bold)));
-    fileNameLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
+    fileNameLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.85f));
     fileNameLabel.setJustificationType(juce::Justification::centred);
     fileNameLabel.setMinimumHorizontalScale(0.72f);
     fileNameLabel.setText("No video loaded", juce::dontSendNotification);
@@ -437,45 +453,10 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
     {
         if (!hasVideoLoaded)
             return;
-
         if (nativePlayer->isPlaying())
-        {
-            forcedPausePosition = nativePlayer->getPosition();
-            userRequestedPlayingState = false;
-            playbackIntentHoldFrames = 0;
-            setPlayButtonVisualState(false);
-            nativePlayer->pause();
-
-            juce::Component::SafePointer<VideoPageComponent> safeThis(this);
-            const double pausePosition = forcedPausePosition;
-            juce::Timer::callAfterDelay(1, [safeThis, pausePosition]()
-            {
-                if (safeThis == nullptr || safeThis->userRequestedPlayingState)
-                    return;
-
-                safeThis->nativePlayer->pause();
-                if (std::abs(safeThis->nativePlayer->getPosition() - pausePosition) > 0.02)
-                    safeThis->nativePlayer->setPosition(pausePosition);
-
-                if (safeThis->syncedAudioLoaded)
-                {
-                    safeThis->audioEngine.pause();
-                    safeThis->audioEngine.seek(pausePosition);
-                }
-            });
-        }
+            pauseTransport();
         else
-        {
-            forcedPausePosition = 0.0;
-            userRequestedPlayingState = true;
-            playbackIntentHoldFrames = 8;
-            setPlayButtonVisualState(true);
-            attachSyncedAudioIfAvailable();
-            syncAudioTransportToPosition(nativePlayer->getPosition(), false);
-            nativePlayer->play();
-            if (syncedAudioLoaded)
-                audioEngine.play();
-        }
+            playTransport();
     };
     skipFwdBtn.onClick = [this]()
     {
@@ -514,15 +495,34 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
     addAndMakeVisible(volumeSlider);
 
     rebuildMeterSlot(true);
-    rebuildMeterSlot(false);
+   rebuildMeterSlot(false);
 
     startTimerHz(30);
+    setDarkTheme(isDarkTheme);
 }
 
 VideoPageComponent::~VideoPageComponent()
 {
     stopTimer();
     clearVideo();
+}
+
+void VideoPageComponent::setDarkTheme(bool dark)
+{
+    isDarkTheme = dark;
+    if (nativePlayer != nullptr)
+        nativePlayer->setThemeDark(isDarkTheme);
+
+    // Codex: 主人明确说第 5 页之前还没有白色版本。
+    // 我这里先只把 iOS 视频页的页面层接进主题系统，不改桌面端/插件端共享 meter 逻辑。
+    fileNameLabel.setColour(juce::Label::textColourId,
+                            isDarkTheme ? juce::Colours::white.withAlpha(0.85f)
+                                        : GoodMeterLookAndFeel::textMain.withAlpha(0.92f));
+    hintLabel.setColour(juce::Label::textColourId,
+                        isDarkTheme ? juce::Colours::white.withAlpha(0.52f)
+                                    : GoodMeterLookAndFeel::textMuted);
+    resized();
+    repaint();
 }
 
 bool VideoPageComponent::shouldConsumeHorizontalSwipe(juce::Point<float> point) const
@@ -734,19 +734,107 @@ void VideoPageComponent::syncAudioTransportToPosition(double positionSeconds, bo
 
 void VideoPageComponent::paint(juce::Graphics& g)
 {
-    g.fillAll(GoodMeterLookAndFeel::bgMain);
+    bool hasVideo = (nativePlayer != nullptr && !currentFilePath.isEmpty());
+
+    if (!hasVideo)
+    {
+#if MARATHON_ART_STYLE
+        g.fillAll(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
+
+        juce::Font monoFont(juce::Font::getDefaultMonospacedFontName(), 18.0f, juce::Font::plain);
+        int gridH = bgCanvas->getHeight();
+        int gridW = bgCanvas->getWidth();
+        auto bounds = getLocalBounds().toFloat();
+        float cellW = bounds.getWidth() / gridW;
+        float cellH = bounds.getHeight() / gridH;
+
+        for (int y = 0; y < gridH; ++y)
+        {
+            for (int x = 0; x < gridW; ++x)
+            {
+                auto cell = bgCanvas->getCell(x, y);
+                float px = x * cellW;
+                float py = y * cellH;
+
+                auto symbolColour = isDarkTheme
+                    ? cell.color.withMultipliedAlpha(cell.brightness)
+                    : GoodMeterLookAndFeel::textMain.withAlpha(0.055f + cell.brightness * 0.125f);
+                g.setColour(symbolColour);
+                g.setFont(monoFont);
+                juce::String str = juce::String::charToString(cell.symbol);
+                g.drawText(str, (int)px, (int)py, (int)cellW, (int)cellH,
+                          juce::Justification::centred, false);
+            }
+        }
+#else
+        g.fillAll(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
+#endif
+        return;
+    }
+
+    g.fillAll(isDarkTheme ? juce::Colour(0xFF07080B) : GoodMeterLookAndFeel::bgMain);
+
+#if MARATHON_ART_STYLE
+    if (bgCanvas != nullptr)
+    {
+        juce::Font monoFont(juce::Font::getDefaultMonospacedFontName(), 18.0f, juce::Font::plain);
+        int gridH = bgCanvas->getHeight();
+        int gridW = bgCanvas->getWidth();
+        auto bounds = getLocalBounds().toFloat();
+        float cellW = bounds.getWidth() / gridW;
+        float cellH = bounds.getHeight() / gridH;
+
+        for (int y = 0; y < gridH; ++y)
+        {
+            for (int x = 0; x < gridW; ++x)
+            {
+                auto cell = bgCanvas->getCell(x, y);
+                if (cell.symbol == U' ')
+                    continue;
+
+                auto symbolColour = isDarkTheme
+                    ? cell.color.withMultipliedAlpha(cell.brightness)
+                    : GoodMeterLookAndFeel::textMain.withAlpha(0.045f + cell.brightness * 0.110f);
+                g.setColour(symbolColour);
+                g.setFont(monoFont);
+                juce::String str = juce::String::charToString(cell.symbol);
+                g.drawText(str,
+                           juce::roundToInt(x * cellW),
+                           juce::roundToInt(y * cellH),
+                           juce::roundToInt(cellW),
+                           juce::roundToInt(cellH),
+                           juce::Justification::centred,
+                           false);
+            }
+        }
+    }
+#endif
+
+    auto videoPlate = videoBounds.toFloat();
+    auto videoPlateFill = isDarkTheme ? juce::Colours::black.withAlpha(0.92f)
+                                      : juce::Colour(0xFFFFFFFF).withAlpha(0.72f);
+    auto videoPlateOutline = isDarkTheme ? juce::Colours::white.withAlpha(0.10f)
+                                         : GoodMeterLookAndFeel::textMain.withAlpha(0.14f);
+    auto videoPlateShadow = isDarkTheme ? juce::Colours::black.withAlpha(0.16f)
+                                        : juce::Colours::black.withAlpha(0.04f);
+
+    g.setColour(videoPlateShadow);
+    g.fillRoundedRectangle(videoPlate.translated(0.0f, 2.0f), 18.0f);
+    g.setColour(videoPlateFill);
+    g.fillRoundedRectangle(videoPlate, 18.0f);
+    g.setColour(videoPlateOutline);
+    g.drawRoundedRectangle(videoPlate.reduced(0.5f), 18.0f, 1.0f);
 
     auto drawerArea = getDrawerBounds().toFloat();
-
-    g.setColour(juce::Colours::black.withAlpha(0.92f));
-    g.fillRoundedRectangle(videoBounds.toFloat(), 18.0f);
 
     if (drawerOpen)
     {
         auto overlay = drawerArea;
-        g.setColour(juce::Colour(0xFF121620).withAlpha(0.88f));
+        g.setColour(isDarkTheme ? juce::Colour(0xFF121620).withAlpha(0.88f)
+                                : juce::Colours::white.withAlpha(0.76f));
         g.fillRoundedRectangle(overlay, 16.0f);
-        g.setColour(juce::Colours::white.withAlpha(0.12f));
+        g.setColour(isDarkTheme ? juce::Colours::white.withAlpha(0.12f)
+                                : GoodMeterLookAndFeel::textMain.withAlpha(0.14f));
         g.drawRoundedRectangle(overlay.reduced(0.5f), 16.0f, 1.0f);
     }
 }
@@ -787,14 +875,24 @@ void VideoPageComponent::resized()
     if (!landscape && hasVideoLoaded)
     {
         nativePlayer->getHost().setBounds(presentedBounds);
+        nativePlayer->getHost().setVisible(true);
         tapOverlay.setBounds(presentedBounds);
         hintLabel.setBounds(presentedBounds.reduced(20, 20));
     }
-    else
+    else if (hasVideoLoaded)
     {
         nativePlayer->getHost().setBounds(availableMediaBounds);
+        nativePlayer->getHost().setVisible(true);
         tapOverlay.setBounds(availableMediaBounds);
         hintLabel.setBounds(availableMediaBounds.reduced(20, 20));
+    }
+    else
+    {
+        // No video: hide player to show Marathon background
+        nativePlayer->getHost().setVisible(false);
+        nativePlayer->getHost().setBounds(juce::Rectangle<int>(0, 0, 1, 1));
+        tapOverlay.setBounds(juce::Rectangle<int>());
+        hintLabel.setBounds(juce::Rectangle<int>());
     }
 
     topMeterBounds = {};
@@ -836,16 +934,31 @@ void VideoPageComponent::resized()
     bottomMeterSwipe.setVisible(!bottomMeterBounds.isEmpty());
 
     const bool overlayMode = drawerOpen;
-    const auto labelColour = overlayMode ? juce::Colours::white.withAlpha(0.88f)
-                                         : GoodMeterLookAndFeel::textMuted;
-    const auto buttonColour = overlayMode ? juce::Colours::white.withAlpha(0.78f)
-                                          : GoodMeterLookAndFeel::textMain;
-    const auto trackColour = overlayMode ? juce::Colours::white.withAlpha(0.58f)
-                                         : GoodMeterLookAndFeel::textMain.withAlpha(0.15f);
-    const auto railColour = overlayMode ? juce::Colours::white.withAlpha(0.16f)
-                                        : GoodMeterLookAndFeel::textMain.withAlpha(0.08f);
-    const auto thumbColour = overlayMode ? juce::Colours::white.withAlpha(0.92f)
-                                         : GoodMeterLookAndFeel::textMain;
+    const auto labelColour = overlayMode
+        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.88f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.90f))
+        : (isDarkTheme ? juce::Colours::white.withAlpha(0.56f)
+                       : GoodMeterLookAndFeel::textMuted);
+    const auto buttonColour = overlayMode
+        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.82f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.92f))
+        : (isDarkTheme ? juce::Colours::white.withAlpha(0.82f)
+                       : GoodMeterLookAndFeel::textMain);
+    const auto trackColour = overlayMode
+        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.58f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.22f))
+        : (isDarkTheme ? juce::Colours::white.withAlpha(0.28f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.15f));
+    const auto railColour = overlayMode
+        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.16f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.08f))
+        : (isDarkTheme ? juce::Colours::white.withAlpha(0.10f)
+                       : GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
+    const auto thumbColour = overlayMode
+        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
+                       : GoodMeterLookAndFeel::textMain)
+        : (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
+                       : GoodMeterLookAndFeel::textMain);
 
     currentTimeLabel.setColour(juce::Label::textColourId, labelColour);
     remainingTimeLabel.setColour(juce::Label::textColourId, labelColour);
@@ -861,8 +974,14 @@ void VideoPageComponent::resized()
     volumeSlider.setColour(juce::Slider::thumbColourId, thumbColour);
     volumeSlider.setColour(juce::Slider::trackColourId, trackColour);
     volumeSlider.setColour(juce::Slider::backgroundColourId, railColour);
-    playPauseBtn.setColours(overlayMode ? juce::Colours::white.withAlpha(0.95f) : GoodMeterLookAndFeel::textMain,
-                            overlayMode ? juce::Colour(0xFF11151F) : GoodMeterLookAndFeel::bgMain);
+    playPauseBtn.setColours(overlayMode
+                                ? (isDarkTheme ? juce::Colours::white.withAlpha(0.95f)
+                                               : GoodMeterLookAndFeel::textMain)
+                                : (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
+                                               : GoodMeterLookAndFeel::textMain),
+                            (overlayMode && isDarkTheme) || (!overlayMode && isDarkTheme)
+                                ? juce::Colour(0xFF11151F)
+                                : GoodMeterLookAndFeel::bgMain);
 
     const bool showDrawerContent = drawerOpen;
     currentTimeLabel.setVisible(showDrawerContent);
@@ -907,6 +1026,292 @@ void VideoPageComponent::resized()
     buttonArea.removeFromLeft(gap);
     stopBtn.setBounds(buttonArea.removeFromLeft(smallBtnW));
 }
+
+#if MARATHON_ART_STYLE
+void VideoPageComponent::mouseDown(const juce::MouseEvent& e)
+{
+    if (hasVideoLoaded)
+        return;
+
+    auto bounds = getLocalBounds().toFloat();
+    float cellW = bounds.getWidth() / bgCanvas->getWidth();
+    float cellH = bounds.getHeight() / bgCanvas->getHeight();
+
+    longPressCenterX = (int)(e.position.x / cellW);
+    longPressCenterY = (int)(e.position.y / cellH);
+    dragStartX = longPressCenterX;
+    dragStartY = longPressCenterY;
+    pressStartTime = juce::Time::getMillisecondCounterHiRes();
+    wasDragged = false;
+    longPressActive = false;
+    longPressRadius = 0.0f;
+}
+
+void VideoPageComponent::mouseDrag(const juce::MouseEvent& e)
+{
+    if (hasVideoLoaded)
+        return;
+
+    auto bounds = getLocalBounds().toFloat();
+    float cellW = bounds.getWidth() / bgCanvas->getWidth();
+    float cellH = bounds.getHeight() / bgCanvas->getHeight();
+
+    int newX = (int)(e.position.x / cellW);
+    int newY = (int)(e.position.y / cellH);
+
+    longPressCenterX = newX;
+    longPressCenterY = newY;
+
+    int dx = newX - dragStartX;
+    int dy = newY - dragStartY;
+    int dragDist = (int)std::sqrt(dx*dx + dy*dy);
+
+    if (dragDist > 1)
+        wasDragged = true;
+}
+
+void VideoPageComponent::mouseUp(const juce::MouseEvent&)
+{
+    if (hasVideoLoaded)
+        return;
+
+    double pressDuration = juce::Time::getMillisecondCounterHiRes() - pressStartTime;
+
+    int dx = longPressCenterX - dragStartX;
+    int dy = longPressCenterY - dragStartY;
+    int dragDist = (int)std::sqrt(dx*dx + dy*dy);
+
+    if (wasDragged && dragDist > 3)
+    {
+        triggerFanRipple(dragStartX, dragStartY, dx, dy, dragDist);
+    }
+    else if (!wasDragged && pressDuration < 200.0 && !rippleActive)
+    {
+        rippleCenterX = longPressCenterX;
+        rippleCenterY = longPressCenterY;
+        rippleRadius = 0.0f;
+        rippleVelocity = 0.5f;
+        rippleActive = true;
+    }
+
+    longPressActive = false;
+    longPressRadius = 0.0f;
+    longPressWaveCount = 0;
+    pressStartTime = 0.0;
+}
+
+void VideoPageComponent::randomizeBackground()
+{
+    static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+    juce::Random rng;
+    const auto preset = MarathonField::Preset::video;
+
+    for (int y = 0; y < bgCanvas->getHeight(); ++y)
+    {
+        int consecutiveCount = 0;
+        char32_t lastSymbol = 0;
+
+        for (int x = 0; x < bgCanvas->getWidth(); ++x)
+        {
+            if (MarathonField::shouldLeaveBlank(x, y, bgCanvas->getWidth(), bgCanvas->getHeight(), preset))
+            {
+                bgCanvas->setCell(x, y, U' ', juce::Colours::white, 0, 0.0f);
+                lastSymbol = U' ';
+                consecutiveCount = 0;
+                continue;
+            }
+
+            int idx = rng.nextInt(10);
+            char32_t sym = symbols[idx];
+
+            if (sym == lastSymbol)
+            {
+                consecutiveCount++;
+                if (consecutiveCount >= 3)
+                {
+                    do {
+                        idx = rng.nextInt(9);
+                        sym = symbols[idx];
+                    } while (sym == lastSymbol);
+                        consecutiveCount = 0;
+                }
+            }
+            else
+            {
+                consecutiveCount = 0;
+            }
+
+            if (x % 7 == 0 && (sym == U'.' || sym == U'·'))
+                sym = U'□';
+            else if (y % 6 == 0 && (sym == U'.' || sym == U'·'))
+                sym = U'/';
+
+            lastSymbol = sym;
+            float brightness = MarathonField::brightnessForCell(x, y, bgCanvas->getWidth(), bgCanvas->getHeight(), preset);
+            bgCanvas->setCell(x, y, sym, juce::Colours::white, 0, brightness);
+        }
+    }
+}
+
+void VideoPageComponent::rippleUpdate()
+{
+    static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+    juce::Random rng;
+
+    int w = bgCanvas->getWidth();
+    int h = bgCanvas->getHeight();
+
+    int currentRadius = (int)rippleRadius;
+    int minX = juce::jmax(0, rippleCenterX - currentRadius - 1);
+    int maxX = juce::jmin(w - 1, rippleCenterX + currentRadius + 1);
+    int minY = juce::jmax(0, rippleCenterY - currentRadius - 1);
+    int maxY = juce::jmin(h - 1, rippleCenterY + currentRadius + 1);
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            int dx = x - rippleCenterX;
+            int dy = y - rippleCenterY;
+            int dist = (int)std::sqrt(dx*dx + dy*dy);
+
+            if (dist == currentRadius)
+            {
+                int idx = rng.nextInt(10);
+                float brightness = 0.8f + rng.nextFloat() * 0.2f;
+                bgCanvas->setCell(x, y, symbols[idx], juce::Colours::white, 0, brightness);
+            }
+            else if (dist < currentRadius)
+            {
+                auto cell = bgCanvas->getCell(x, y);
+                if (cell.brightness > 0.25f)
+                {
+                    float newBrightness = juce::jmax(0.25f, cell.brightness - 0.05f);
+                    bgCanvas->setCell(x, y, cell.symbol, juce::Colours::white, 0, newBrightness);
+                }
+            }
+        }
+    }
+
+    rippleVelocity += rippleAcceleration;
+    rippleRadius += rippleVelocity;
+
+    int maxDist = (int)std::sqrt(w*w + h*h);
+    if (rippleRadius > maxDist)
+    {
+        rippleActive = false;
+    }
+
+    repaint();
+}
+
+void VideoPageComponent::triggerFanRipple(int originX, int originY, int dx, int dy, int dragDist)
+{
+    fanOriginX = originX;
+    fanOriginY = originY;
+
+    float len = std::sqrt(dx*dx + dy*dy);
+    if (len > 0.01f)
+    {
+        fanDirectionX = dx / len;
+        fanDirectionY = dy / len;
+    }
+    else
+    {
+        fanDirectionX = 1.0f;
+        fanDirectionY = 0.0f;
+    }
+
+    fanMaxRadius = dragDist * 1.5f;
+    fanRadius = 0.0f;
+    fanVelocity = 0.5f;
+    fanRippleActive = true;
+}
+
+void VideoPageComponent::updateFanRipple()
+{
+    static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+    juce::Random rng;
+
+    int w = bgCanvas->getWidth();
+    int h = bgCanvas->getHeight();
+    int currentRadius = (int)fanRadius;
+
+    int minX = juce::jmax(0, fanOriginX - currentRadius - 1);
+    int maxX = juce::jmin(w - 1, fanOriginX + currentRadius + 1);
+    int minY = juce::jmax(0, fanOriginY - currentRadius - 1);
+    int maxY = juce::jmin(h - 1, fanOriginY + currentRadius + 1);
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            int dx = x - fanOriginX;
+            int dy = y - fanOriginY;
+            float dist = std::sqrt(dx*dx + dy*dy);
+
+            if (std::abs(dist - fanRadius) < 1.0f)
+            {
+                float dotProduct = (dx * fanDirectionX + dy * fanDirectionY) / juce::jmax(0.01f, dist);
+                float angle = std::acos(juce::jlimit(-1.0f, 1.0f, dotProduct));
+
+                if (angle <= fanAngle / 2.0f)
+                {
+                    int idx = rng.nextInt(10);
+                    float brightness = 0.75f + rng.nextFloat() * 0.2f;
+                    bgCanvas->setCell(x, y, symbols[idx], juce::Colours::white, 0, brightness);
+                }
+            }
+        }
+    }
+
+    fanVelocity += 0.15f;
+    fanRadius += fanVelocity;
+
+    if (fanRadius > fanMaxRadius)
+        fanRippleActive = false;
+
+    repaint();
+}
+
+void VideoPageComponent::updateLongPressRipple()
+{
+    static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+    juce::Random rng;
+
+    int w = bgCanvas->getWidth();
+    int h = bgCanvas->getHeight();
+    int currentRadius = (int)longPressRadius;
+
+    int minX = juce::jmax(0, longPressCenterX - currentRadius - 1);
+    int maxX = juce::jmin(w - 1, longPressCenterX + currentRadius + 1);
+    int minY = juce::jmax(0, longPressCenterY - currentRadius - 1);
+    int maxY = juce::jmin(h - 1, longPressCenterY + currentRadius + 1);
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            int dx = x - longPressCenterX;
+            int dy = y - longPressCenterY;
+            int dist = (int)std::sqrt(dx*dx + dy*dy);
+
+            if (dist == currentRadius)
+            {
+                int idx = rng.nextInt(10);
+                float brightness = 0.7f + rng.nextFloat() * 0.2f;
+                bgCanvas->setCell(x, y, symbols[idx], juce::Colours::white, 0, brightness);
+            }
+        }
+    }
+
+    repaint();
+}
+#else
+void VideoPageComponent::mouseDown(const juce::MouseEvent&)
+{
+}
+#endif
 
 bool VideoPageComponent::loadVideo(const juce::File& file)
 {
@@ -984,8 +1389,199 @@ juce::String VideoPageComponent::getCurrentVideoPath() const
     return currentFilePath;
 }
 
+juce::String VideoPageComponent::getTransportDisplayName() const
+{
+    return currentFileName.isNotEmpty() ? currentFileName : "No video loaded";
+}
+
+bool VideoPageComponent::hasLoadedVideo() const
+{
+    return hasVideoLoaded;
+}
+
+bool VideoPageComponent::ownsSharedAudioTransport() const
+{
+    return hasVideoLoaded
+        && syncedAudioLoaded
+        && syncedAudioPath.isNotEmpty()
+        && audioEngine.getCurrentFilePath() == syncedAudioPath;
+}
+
+bool VideoPageComponent::isTransportPlaying() const
+{
+    return hasVideoLoaded && nativePlayer != nullptr && nativePlayer->isPlaying();
+}
+
+double VideoPageComponent::getTransportPositionSeconds() const
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return 0.0;
+
+    return juce::jlimit(0.0, getDurationSeconds(), nativePlayer->getPosition());
+}
+
+double VideoPageComponent::getTransportDurationSeconds() const
+{
+    return hasVideoLoaded ? getDurationSeconds() : 0.0;
+}
+
+void VideoPageComponent::playTransport()
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    forcedPausePosition = 0.0;
+    userRequestedPlayingState = true;
+    playbackIntentHoldFrames = 8;
+    setPlayButtonVisualState(true);
+    attachSyncedAudioIfAvailable();
+    syncAudioTransportToPosition(nativePlayer->getPosition(), false);
+    nativePlayer->play();
+    if (syncedAudioLoaded)
+        audioEngine.play();
+}
+
+void VideoPageComponent::pauseTransport()
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    forcedPausePosition = nativePlayer->getPosition();
+    userRequestedPlayingState = false;
+    playbackIntentHoldFrames = 0;
+    setPlayButtonVisualState(false);
+    nativePlayer->pause();
+
+    juce::Component::SafePointer<VideoPageComponent> safeThis(this);
+    const double pausePosition = forcedPausePosition;
+    juce::Timer::callAfterDelay(1, [safeThis, pausePosition]()
+    {
+        if (safeThis == nullptr || safeThis->userRequestedPlayingState)
+            return;
+
+        safeThis->nativePlayer->pause();
+        if (std::abs(safeThis->nativePlayer->getPosition() - pausePosition) > 0.02)
+            safeThis->nativePlayer->setPosition(pausePosition);
+
+        if (safeThis->syncedAudioLoaded)
+        {
+            safeThis->audioEngine.pause();
+            safeThis->audioEngine.seek(pausePosition);
+        }
+    });
+}
+
+void VideoPageComponent::rewindTransport()
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    userRequestedPlayingState = false;
+    playbackIntentHoldFrames = 0;
+    setPlayButtonVisualState(false);
+    nativePlayer->pause();
+    nativePlayer->setPosition(0.0);
+    syncAudioTransportToPosition(0.0, false);
+}
+
+void VideoPageComponent::seekTransport(double seconds)
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    auto target = juce::jlimit(0.0, getDurationSeconds(), seconds);
+    nativePlayer->setPosition(target);
+    syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+}
+
+void VideoPageComponent::jumpToEndTransport()
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    auto target = juce::jmax(0.0, getDurationSeconds() - 0.05);
+    nativePlayer->setPosition(target);
+    syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+}
+
 void VideoPageComponent::timerCallback()
 {
+#if MARATHON_ART_STYLE
+    if (rippleActive)
+    {
+        rippleUpdate();
+    }
+
+    if (fanRippleActive)
+    {
+        updateFanRipple();
+    }
+
+    if (longPressActive)
+    {
+        float speedFactor = juce::jmin(1.0f, longPressWaveCount / 26.0f);
+        float currentSpeed = 0.15f + speedFactor * 0.45f;
+
+        longPressRadius += currentSpeed;
+
+        float maxRadius = longPressMaxRadius;
+        if (longPressWaveCount >= 20)
+        {
+            float extraRadius = (longPressWaveCount - 20) * 0.08f;
+            maxRadius += extraRadius;
+        }
+
+        if (longPressRadius > maxRadius)
+        {
+            longPressRadius = 0.0f;
+            longPressWaveCount++;
+        }
+
+        updateLongPressRipple();
+    }
+    else if (!longPressActive && pressStartTime > 0.0)
+    {
+        double pressDuration = juce::Time::getMillisecondCounterHiRes() - pressStartTime;
+        if (pressDuration > 200.0)
+        {
+            longPressActive = true;
+            longPressRadius = 0.0f;
+            longPressWaveCount = 0;
+        }
+    }
+
+    if (!hasVideoLoaded)
+    {
+        autoRippleTimer += 0.033f;  // 30Hz timer
+        if (autoRippleTimer >= 15.0f && !rippleActive)
+        {
+            autoRippleTimer = 0.0f;
+
+            int w = bgCanvas->getWidth();
+            int h = bgCanvas->getHeight();
+
+            switch (autoRipplePhase)
+            {
+                case 0: rippleCenterX = 0; rippleCenterY = 0; break;
+                case 1: rippleCenterX = 0; rippleCenterY = h - 1; break;
+                case 2: rippleCenterX = w - 1; rippleCenterY = h - 1; break;
+                case 3: rippleCenterX = w - 1; rippleCenterY = 0; break;
+                case 4: rippleCenterX = w / 2; rippleCenterY = 0; break;
+                case 5: rippleCenterX = w - 1; rippleCenterY = h - 1; break;
+                case 6: rippleCenterX = w - 1; rippleCenterY = 0; break;
+                case 7: rippleCenterX = 0; rippleCenterY = 0; break;
+                case 8: rippleCenterX = 0; rippleCenterY = h - 1; break;
+                case 9: rippleCenterX = w / 2; rippleCenterY = h - 1; break;
+            }
+
+            rippleRadius = 0.0f;
+            rippleVelocity = 0.5f;
+            rippleActive = true;
+            autoRipplePhase = (autoRipplePhase + 1) % 10;
+        }
+    }
+#endif
+
     if (!syncedAudioLoaded)
         attachSyncedAudioIfAvailable();
 

@@ -33,6 +33,12 @@
 #include "../PsrMeterComponent.h"
 #include "iOSAudioEngine.h"
 
+#define MARATHON_ART_STYLE 1
+
+#if MARATHON_ART_STYLE
+    #include "MarathonRenderer.h"
+#endif
+
 // ─── Custom play/pause button: draws ▶ triangle or ⏸ pause bars ──────────
 class PlayPauseButton : public juce::Component
 {
@@ -40,19 +46,25 @@ public:
     std::function<void()> onClick;
     bool playing = false;
 
+    void setColours(juce::Colour fill, juce::Colour icon)
+    {
+        fillColour = fill;
+        iconColour = icon;
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat().reduced(2.0f);
-        auto ink = GoodMeterLookAndFeel::textMain;
 
-        // Filled dark circle background
+        // Filled circle background
         float dim = juce::jmin(b.getWidth(), b.getHeight());
         auto circle = juce::Rectangle<float>(dim, dim).withCentre(b.getCentre());
-        g.setColour(ink);
+        g.setColour(fillColour);
         g.fillEllipse(circle);
 
-        // Draw icon in white
-        g.setColour(GoodMeterLookAndFeel::bgMain);
+        // Draw icon
+        g.setColour(iconColour);
         auto iconArea = circle.reduced(dim * 0.28f);
 
         if (playing)
@@ -68,7 +80,7 @@ public:
         }
         else
         {
-            // Play: right-pointing triangle (slight right offset for optical center)
+            // Play: right-pointing triangle
             juce::Path tri;
             float offsetX = iconArea.getWidth() * 0.08f;
             tri.addTriangle(iconArea.getX() + offsetX, iconArea.getY(),
@@ -82,6 +94,10 @@ public:
     {
         if (onClick) onClick();
     }
+
+private:
+    juce::Colour fillColour = GoodMeterLookAndFeel::textMain;
+    juce::Colour iconColour = GoodMeterLookAndFeel::bgMain;
 };
 
 class MetersPageComponent : public juce::Component,
@@ -95,9 +111,29 @@ public:
         eightUp = 2
     };
 
+    // Optional page-2 transport override for video sessions. Codex added this
+    // so page 2 can control the active video-backed transport instead of only
+    // the extracted audio engine, which previously caused hidden page-5 sync to
+    // re-start playback right after the user pressed pause here.
+    std::function<bool()> hasExternalTransport;
+    std::function<bool()> isExternalTransportPlaying;
+    std::function<double()> getExternalTransportPosition;
+    std::function<double()> getExternalTransportLength;
+    std::function<juce::String()> getExternalTransportName;
+    std::function<void()> playExternalTransport;
+    std::function<void()> pauseExternalTransport;
+    std::function<void()> rewindExternalTransport;
+    std::function<void(double)> seekExternalTransport;
+    std::function<void()> jumpToEndExternalTransport;
+
     MetersPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEngine& engine)
         : processor(proc), audioEngine(engine)
     {
+#if MARATHON_ART_STYLE
+        bgCanvas = std::make_unique<DotMatrixCanvas>(21, 24);
+        randomizeBackground();
+#endif
+
         // Create viewport for scrolling
         viewport = std::make_unique<juce::Viewport>();
         contentComponent = std::make_unique<juce::Component>();
@@ -113,16 +149,18 @@ public:
         //==================================================================
 
         // Row 1: time current + progress slider + time remaining
-        currentTimeLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
+        currentTimeLabel.setFont(juce::Font(juce::FontOptions(11.5f)));
         currentTimeLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
         currentTimeLabel.setJustificationType(juce::Justification::centredRight);
         currentTimeLabel.setText("0:00", juce::dontSendNotification);
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(currentTimeLabel);
         addAndMakeVisible(currentTimeLabel);
 
-        remainingTimeLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
+        remainingTimeLabel.setFont(juce::Font(juce::FontOptions(11.5f)));
         remainingTimeLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
         remainingTimeLabel.setJustificationType(juce::Justification::centredLeft);
         remainingTimeLabel.setText("-0:00", juce::dontSendNotification);
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(remainingTimeLabel);
         addAndMakeVisible(remainingTimeLabel);
 
         progressSlider.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -133,6 +171,16 @@ public:
         progressSlider.setColour(juce::Slider::backgroundColourId, GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
         progressSlider.onValueChange = [this]()
         {
+            if (hasExternalTransport != nullptr && hasExternalTransport())
+            {
+                if (progressSlider.isMouseButtonDown() && seekExternalTransport != nullptr)
+                {
+                    const double total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
+                    seekExternalTransport(progressSlider.getValue() * total);
+                }
+                return;
+            }
+
             if (progressSlider.isMouseButtonDown())
             {
                 double total = audioEngine.getTotalLength();
@@ -147,6 +195,7 @@ public:
             btn.setButtonText(text);
             btn.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
             btn.setColour(juce::TextButton::textColourOffId, GoodMeterLookAndFeel::textMain);
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(btn);
             addAndMakeVisible(btn);
         };
 
@@ -159,25 +208,107 @@ public:
         addAndMakeVisible(playPauseBtn);
         playPauseBtn.onClick = [this]()
         {
-            if (!audioEngine.isFileLoaded()) return;
-            if (audioEngine.isPlaying()) audioEngine.pause();
-            else audioEngine.play();
+            const bool useExternal = (hasExternalTransport != nullptr && hasExternalTransport());
+            if (!useExternal && !audioEngine.isFileLoaded())
+                return;
+
+            const bool currentlyPlaying = useExternal
+                ? (isExternalTransportPlaying != nullptr && isExternalTransportPlaying())
+                : audioEngine.isPlaying();
+            const bool shouldPlay = !currentlyPlaying;
+            transportUserIntentActive = true;
+            transportUserIntentPlaying = shouldPlay;
+            transportUserIntentUntilMs = juce::Time::getMillisecondCounter() + 320;
+
+            playPauseBtn.playing = shouldPlay;
+            playPauseBtn.repaint();
+
+            juce::Component::SafePointer<MetersPageComponent> safeThis(this);
+            juce::MessageManager::callAsync([safeThis, shouldPlay]()
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                const bool useExternal = (safeThis->hasExternalTransport != nullptr
+                                          && safeThis->hasExternalTransport());
+
+                if (useExternal)
+                {
+                    if (shouldPlay)
+                    {
+                        if (safeThis->playExternalTransport != nullptr)
+                            safeThis->playExternalTransport();
+                    }
+                    else if (safeThis->pauseExternalTransport != nullptr)
+                    {
+                        safeThis->pauseExternalTransport();
+                    }
+
+                    return;
+                }
+
+                if (!safeThis->audioEngine.isFileLoaded())
+                    return;
+
+                if (shouldPlay)
+                    safeThis->audioEngine.play();
+                else
+                    safeThis->audioEngine.pause();
+            });
         };
 
-        rewindBtn.onClick = [this]() { audioEngine.stop(); };
+        rewindBtn.onClick = [this]()
+        {
+            if (hasExternalTransport != nullptr && hasExternalTransport())
+            {
+                if (rewindExternalTransport != nullptr)
+                    rewindExternalTransport();
+                return;
+            }
+
+            audioEngine.stop();
+        };
         skipBackBtn.onClick = [this]()
         {
+            if (hasExternalTransport != nullptr && hasExternalTransport())
+            {
+                if (seekExternalTransport != nullptr)
+                {
+                    const double pos = getExternalTransportPosition != nullptr ? getExternalTransportPosition() : 0.0;
+                    seekExternalTransport(juce::jmax(0.0, pos - 5.0));
+                }
+                return;
+            }
+
             double pos = audioEngine.getCurrentPosition();
             audioEngine.seek(juce::jmax(0.0, pos - 5.0));
         };
         skipFwdBtn.onClick = [this]()
         {
+            if (hasExternalTransport != nullptr && hasExternalTransport())
+            {
+                if (seekExternalTransport != nullptr)
+                {
+                    const double pos = getExternalTransportPosition != nullptr ? getExternalTransportPosition() : 0.0;
+                    const double total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
+                    seekExternalTransport(juce::jmin(pos + 5.0, total));
+                }
+                return;
+            }
+
             double pos = audioEngine.getCurrentPosition();
             double total = audioEngine.getTotalLength();
             audioEngine.seek(juce::jmin(pos + 5.0, total));
         };
         stopBtn.onClick = [this]()
         {
+            if (hasExternalTransport != nullptr && hasExternalTransport())
+            {
+                if (jumpToEndExternalTransport != nullptr)
+                    jumpToEndExternalTransport();
+                return;
+            }
+
             double total = audioEngine.getTotalLength();
             audioEngine.seek(juce::jmax(0.0, total - 0.1));
         };
@@ -194,10 +325,11 @@ public:
         addAndMakeVisible(volumeSlider);
 
         // File name label in transport
-        transportFileLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+        transportFileLabel.setFont(juce::Font(juce::FontOptions(12.5f)));
         transportFileLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
         transportFileLabel.setJustificationType(juce::Justification::centred);
         transportFileLabel.setMinimumHorizontalScale(0.72f);
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(transportFileLabel);
         addAndMakeVisible(transportFileLabel);
 
         //==================================================================
@@ -207,7 +339,6 @@ public:
         levelsMeter = new LevelsMeterComponent(processor);
         levelsMeter->setupTargetMenu();
         levelsCard->setContentComponent(std::unique_ptr<juce::Component>(levelsMeter));
-        levelsCard->setHeaderWidget(&levelsMeter->getTargetMenu());
 
         vuMeterCard = std::make_unique<MeterCardComponent>("VU METER", GoodMeterLookAndFeel::accentYellow, true);
         vuMeter = new VUMeterComponent();
@@ -240,6 +371,7 @@ public:
         auto configureMobileCard = [](MeterCardComponent& card)
         {
             card.setMobileListMode(true);
+            card.useMonospacedTitleFont = true;
         };
 
         configureMobileCard(*levelsCard);
@@ -284,12 +416,87 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(GoodMeterLookAndFeel::bgMain);
+        g.fillAll(isDarkTheme ? juce::Colour(0xFF07080B) : GoodMeterLookAndFeel::bgMain);
 
-        // Transport bar separator line
-        auto transportTop = getHeight() - getTransportBarHeight(isLandscapeLayout());
-        g.setColour(GoodMeterLookAndFeel::textMain.withAlpha(0.12f));
+        const bool landscape = isLandscapeLayout();
+        auto transportTop = getHeight() - getTransportBarHeight(landscape);
+        auto lineColor = isDarkTheme ? juce::Colours::white.withAlpha(0.08f)
+                                     : GoodMeterLookAndFeel::textMain.withAlpha(0.12f);
+        g.setColour(lineColor);
         g.drawHorizontalLine(transportTop, 0.0f, static_cast<float>(getWidth()));
+
+        if (bgCanvas != nullptr)
+        {
+#if MARATHON_ART_STYLE
+            if (isDarkTheme)
+            {
+                auto monoFont = juce::Font(juce::Font::getDefaultMonospacedFontName(),
+                                           landscape ? 15.5f : 18.0f,
+                                           juce::Font::plain);
+                bgCanvas->drawToGraphics(g, getLocalBounds().toFloat(), monoFont);
+            }
+            else
+            {
+                juce::Font monoFont(juce::Font::getDefaultMonospacedFontName(),
+                                    landscape ? 15.0f : 17.5f,
+                                    juce::Font::plain);
+                const auto bounds = getLocalBounds().toFloat();
+                const int gridH = bgCanvas->getHeight();
+                const int gridW = bgCanvas->getWidth();
+                const float cellW = bounds.getWidth() / gridW;
+                const float cellH = bounds.getHeight() / gridH;
+
+                g.setFont(monoFont);
+                for (int y = 0; y < gridH; ++y)
+                {
+                    for (int x = 0; x < gridW; ++x)
+                    {
+                        auto cell = bgCanvas->getCell(x, y);
+                        if (cell.symbol == U' ')
+                            continue;
+
+                        auto tint = GoodMeterLookAndFeel::textMain.withAlpha(0.050f + cell.brightness * 0.125f);
+                        g.setColour(tint);
+                        juce::String str = juce::String::charToString(cell.symbol);
+                        g.drawText(str,
+                                   juce::roundToInt(bounds.getX() + x * cellW),
+                                   juce::roundToInt(bounds.getY() + y * cellH),
+                                   juce::roundToInt(cellW),
+                                   juce::roundToInt(cellH),
+                                   juce::Justification::centred,
+                                   false);
+                    }
+                }
+            }
+#endif
+        }
+
+        if (!transportPlateBounds.isEmpty())
+        {
+            auto plate = transportPlateBounds.toFloat();
+            const float radius = 18.0f;
+            const auto plateFill = isDarkTheme
+                                       ? juce::Colour(0xFF0B1017).withAlpha(0.30f)
+                                       : juce::Colour(0xFFFFFFFF).withAlpha(0.58f);
+            const auto plateOutline = isDarkTheme
+                                          ? juce::Colour(0xFFF6EEE3).withAlpha(0.18f)
+                                          : juce::Colour(0xFF1A1A24).withAlpha(0.16f);
+            const auto shadowColour = isDarkTheme
+                                          ? juce::Colours::black.withAlpha(0.24f)
+                                          : juce::Colours::black.withAlpha(0.08f);
+
+            juce::Path platePath;
+            platePath.addRoundedRectangle(plate, radius);
+
+            g.setColour(shadowColour);
+            g.fillRoundedRectangle(plate.translated(2.0f, 2.0f), radius);
+
+            g.setColour(plateFill);
+            g.fillPath(platePath);
+
+            g.setColour(plateOutline);
+            g.drawRoundedRectangle(plate.reduced(0.5f), radius, 0.95f);
+        }
     }
 
     void resized() override
@@ -343,6 +550,49 @@ public:
         repaint();
     }
 
+    void setDarkTheme(bool dark)
+    {
+        isDarkTheme = dark;
+        GoodMeterLookAndFeel::setEditorialPopupMode(true, dark);
+        updateThemeColors();
+
+        if (levelsMeter != nullptr)
+            levelsMeter->setMarathonDarkStyle(dark);
+        if (phaseMeter != nullptr)
+            phaseMeter->setMarathonDarkStyle(dark);
+        if (stereoImageMeter != nullptr)
+            stereoImageMeter->setMarathonDarkStyle(dark);
+        if (vuMeter != nullptr)
+            vuMeter->setMarathonDarkStyle(dark);
+        if (spectrumAnalyzer != nullptr)
+            spectrumAnalyzer->setMarathonDarkStyle(dark);
+        if (spectrogramMeter != nullptr)
+            spectrogramMeter->setMarathonDarkStyle(dark);
+        if (band3Meter != nullptr)
+            band3Meter->setMarathonDarkStyle(dark);
+        if (psrMeter != nullptr)
+            psrMeter->setMarathonDarkStyle(dark);
+
+        // Propagate to all meter cards
+        for (auto* card : getAllCards())
+        {
+            if (card != nullptr)
+            {
+                card->isDarkTheme = dark;
+                card->useEditorialDarkStyle = dark;
+                card->useEditorialLightStyle = !dark;
+            }
+        }
+
+        repaint();
+    }
+
+    void setLoudnessStandard(int standardId)
+    {
+        if (levelsMeter != nullptr)
+            levelsMeter->setStandardById(standardId);
+    }
+
 private:
     std::array<MeterCardComponent*, 8> getAllCards() const
     {
@@ -371,6 +621,7 @@ private:
             card->isMiniMode = compactMode;
             card->mobileAllowHeaderToggle = allowToggle;
             card->setMobileListMode(true);
+            card->useMonospacedTitleFont = true;
 
             if (compactMode)
                 card->setExpanded(true, false);
@@ -379,6 +630,103 @@ private:
             card->repaint();
         }
     }
+
+    void updateThemeColors()
+    {
+        auto transportTextCol = isDarkTheme ? juce::Colour(0xFFF3EEE4)
+                                            : GoodMeterLookAndFeel::textMain;
+        auto transportBgCol = isDarkTheme ? juce::Colour(0xFF1E2230)
+                                          : GoodMeterLookAndFeel::bgMain;
+        auto thumbCol = transportTextCol;
+        auto trackCol = transportTextCol.withAlpha(isDarkTheme ? 0.28f : 0.15f);
+        auto railCol = transportTextCol.withAlpha(isDarkTheme ? 0.10f : 0.08f);
+
+        currentTimeLabel.setColour(juce::Label::textColourId, transportTextCol.withAlpha(isDarkTheme ? 0.96f : 0.78f));
+        remainingTimeLabel.setColour(juce::Label::textColourId, transportTextCol.withAlpha(isDarkTheme ? 0.96f : 0.78f));
+        transportFileLabel.setColour(juce::Label::textColourId, transportTextCol);
+
+        progressSlider.setColour(juce::Slider::thumbColourId, thumbCol);
+        progressSlider.setColour(juce::Slider::trackColourId, trackCol);
+        progressSlider.setColour(juce::Slider::backgroundColourId, railCol);
+
+        volumeSlider.setColour(juce::Slider::thumbColourId, thumbCol);
+        volumeSlider.setColour(juce::Slider::trackColourId, trackCol);
+        volumeSlider.setColour(juce::Slider::backgroundColourId, railCol);
+
+        rewindBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+        skipBackBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+        skipFwdBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+        stopBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+
+        playPauseBtn.setColours(isDarkTheme ? juce::Colour(0xFFF3EEE4) : transportTextCol,
+                                isDarkTheme ? juce::Colour(0xFF1E2230) : transportBgCol);
+    }
+
+    bool useLightPanelCardsInDarkTheme() const
+    {
+        return false;
+    }
+
+#if MARATHON_ART_STYLE
+    void randomizeBackground()
+    {
+        // Codex: 主人希望第 2 页 dark 不是普通黑底，而是更像 Marathon
+        // 的信息图底板。我这里只做 iOS page shell 的符号场，不碰共享 meter。
+        static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+        juce::Random rng;
+        const auto preset = MarathonField::Preset::audio;
+
+        for (int y = 0; y < bgCanvas->getHeight(); ++y)
+        {
+            int consecutiveCount = 0;
+            char32_t lastSymbol = 0;
+
+            for (int x = 0; x < bgCanvas->getWidth(); ++x)
+            {
+                if (MarathonField::shouldLeaveBlank(x, y, bgCanvas->getWidth(), bgCanvas->getHeight(), preset))
+                {
+                    bgCanvas->setCell(x, y, U' ', juce::Colours::white, 0, 0.0f);
+                    lastSymbol = U' ';
+                    consecutiveCount = 0;
+                    continue;
+                }
+
+                int idx = rng.nextInt(static_cast<int>(std::size(symbols)));
+                char32_t sym = symbols[(size_t) idx];
+
+                if (sym == lastSymbol)
+                {
+                    consecutiveCount++;
+                    if (consecutiveCount >= 3)
+                    {
+                        do
+                        {
+                            idx = rng.nextInt(static_cast<int>(std::size(symbols)));
+                            sym = symbols[(size_t) idx];
+                        } while (sym == lastSymbol);
+                        consecutiveCount = 0;
+                    }
+                }
+                else
+                {
+                    consecutiveCount = 0;
+                }
+
+                if (x % 7 == 0 && (sym == U'.' || sym == U'·'))
+                    sym = U'□';
+                else if (y % 6 == 0 && (sym == U'.' || sym == U'·'))
+                    sym = U'+';
+
+                lastSymbol = sym;
+                auto brightness = MarathonField::brightnessForCell(x, y,
+                                                                   bgCanvas->getWidth(),
+                                                                   bgCanvas->getHeight(),
+                                                                   preset);
+                bgCanvas->setCell(x, y, sym, juce::Colours::white, 0, brightness);
+            }
+        }
+    }
+#endif
 
     //==========================================================================
     // Transport bar layout (Apple Music style)
@@ -414,9 +762,11 @@ private:
     void layoutTransport(juce::Rectangle<int> area, bool landscape)
     {
         auto tb = area.reduced(landscape ? 16 : 16, landscape ? 2 : 4);
+        transportPlateBounds = {};
 
         if (landscape)
         {
+            transportPlateBounds = tb.reduced(6, 2);
             auto controlRow = tb.removeFromTop(tb.getHeight());
             const int smallBtnW = 28;
             const int playW = 40;
@@ -436,9 +786,9 @@ private:
 
             const auto fileName = transportFileLabel.getText();
             const auto fileNameLength = fileName.length();
-            const float fileFontSize = fileNameLength > 24 ? 10.5f
-                                      : fileNameLength > 16 ? 11.5f
-                                      : 12.5f;
+            const float fileFontSize = fileNameLength > 24 ? 11.5f
+                                      : fileNameLength > 16 ? 12.5f
+                                      : 13.5f;
             transportFileLabel.setFont(juce::Font(juce::FontOptions(fileFontSize)));
 
             auto progressArea = controlRow.withRight(buttonArea.getX() - groupGap);
@@ -462,9 +812,11 @@ private:
             return;
         }
 
+        transportPlateBounds = tb.reduced(4, 2);
+
         // File name (small, centered at top)
         transportFileLabel.setBounds(tb.removeFromTop(18));
-        transportFileLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+        transportFileLabel.setFont(juce::Font(juce::FontOptions(12.5f)));
         transportFileLabel.setJustificationType(juce::Justification::centred);
 
         // Row 1: time | progress slider | time
@@ -516,6 +868,17 @@ private:
         float shortTerm = processor.lufsShortTerm.load(std::memory_order_relaxed);
         float integrated = processor.lufsIntegrated.load(std::memory_order_relaxed);
         float phase = processor.phaseCorrelation.load(std::memory_order_relaxed);
+
+        // Codex: 主人在 iOS 第 2 页发现 Levels 里的 LU Range 一直像没接值。
+        // 桌面端会先把 short-term LUFS 推进 LRA history，再实时计算 LRA；
+        // iOS 这条 timer 之前漏了这两步，所以这里只补 page-2 的同款接线。
+        if (++lraFrameCounter >= 6)
+        {
+            processor.pushShortTermLUFSForLRA(shortTerm);
+            processor.calculateLRARealtime();
+            lraFrameCounter = 0;
+        }
+
         float luRangeVal = processor.luRange.load(std::memory_order_relaxed);
 
         // Update setter-based components
@@ -529,7 +892,55 @@ private:
             phaseMeter->updateCorrelation(phase);
 
         // ── Update transport ──
-        if (audioEngine.isFileLoaded())
+        const bool useExternalTransportNow = (hasExternalTransport != nullptr && hasExternalTransport());
+        if (useExternalTransportNow)
+        {
+            transportFileLabel.setText(getExternalTransportName != nullptr
+                                           ? getExternalTransportName()
+                                           : "No file loaded",
+                                       juce::dontSendNotification);
+
+            const double pos = getExternalTransportPosition != nullptr ? getExternalTransportPosition() : 0.0;
+            const double total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
+
+            currentTimeLabel.setText(fmtTime(pos), juce::dontSendNotification);
+            remainingTimeLabel.setText("-" + fmtTime(total - pos), juce::dontSendNotification);
+
+            if (!progressSlider.isMouseButtonDown() && total > 0.0)
+                progressSlider.setValue(pos / total, juce::dontSendNotification);
+
+            const bool nowPlaying = isExternalTransportPlaying != nullptr && isExternalTransportPlaying();
+            const auto nowMs = juce::Time::getMillisecondCounter();
+
+            if (transportUserIntentActive)
+            {
+                if (nowPlaying == transportUserIntentPlaying)
+                {
+                    transportUserIntentActive = false;
+                }
+                else if (static_cast<std::int32_t>(transportUserIntentUntilMs - nowMs) > 0)
+                {
+                    if (playPauseBtn.playing != transportUserIntentPlaying)
+                    {
+                        playPauseBtn.playing = transportUserIntentPlaying;
+                        playPauseBtn.repaint();
+                    }
+
+                    return;
+                }
+                else
+                {
+                    transportUserIntentActive = false;
+                }
+            }
+
+            if (playPauseBtn.playing != nowPlaying)
+            {
+                playPauseBtn.playing = nowPlaying;
+                playPauseBtn.repaint();
+            }
+        }
+        else if (audioEngine.isFileLoaded())
         {
             transportFileLabel.setText(audioEngine.getCurrentFileName(),
                                         juce::dontSendNotification);
@@ -543,7 +954,31 @@ private:
             if (!progressSlider.isMouseButtonDown() && total > 0.0)
                 progressSlider.setValue(pos / total, juce::dontSendNotification);
 
-            bool nowPlaying = audioEngine.isPlaying();
+            const bool nowPlaying = audioEngine.isPlaying();
+            const auto nowMs = juce::Time::getMillisecondCounter();
+
+            if (transportUserIntentActive)
+            {
+                if (nowPlaying == transportUserIntentPlaying)
+                {
+                    transportUserIntentActive = false;
+                }
+                else if (static_cast<std::int32_t>(transportUserIntentUntilMs - nowMs) > 0)
+                {
+                    if (playPauseBtn.playing != transportUserIntentPlaying)
+                    {
+                        playPauseBtn.playing = transportUserIntentPlaying;
+                        playPauseBtn.repaint();
+                    }
+
+                    return;
+                }
+                else
+                {
+                    transportUserIntentActive = false;
+                }
+            }
+
             if (playPauseBtn.playing != nowPlaying)
             {
                 playPauseBtn.playing = nowPlaying;
@@ -676,6 +1111,11 @@ private:
 
     // File name
     juce::Label transportFileLabel;
+    juce::Rectangle<int> transportPlateBounds;
+
+#if MARATHON_ART_STYLE
+    std::unique_ptr<DotMatrixCanvas> bgCanvas;
+#endif
 
     // Cards
     std::unique_ptr<MeterCardComponent> levelsCard, vuMeterCard, threeBandCard, spectrumCard;
@@ -693,4 +1133,9 @@ private:
 
     int columnOverride = 0;
     DisplayMode displayMode = DisplayMode::singleColumn;
+    bool isDarkTheme = false;
+    int lraFrameCounter = 0;
+    bool transportUserIntentActive = false;
+    bool transportUserIntentPlaying = false;
+    std::uint32_t transportUserIntentUntilMs = 0;
 };

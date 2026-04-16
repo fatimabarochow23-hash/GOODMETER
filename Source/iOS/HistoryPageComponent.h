@@ -18,6 +18,12 @@
 #include "../../JuceLibraryCode/BinaryData.h"
 #include "../GoodMeterLookAndFeel.h"
 
+#define MARATHON_ART_STYLE 1
+
+#if MARATHON_ART_STYLE
+    #include "MarathonRenderer.h"
+#endif
+
 class HistorySegmentButton : public juce::Button
 {
 public:
@@ -27,38 +33,52 @@ public:
         setClickingTogglesState(true);
     }
 
+    void setDarkMode(bool dark)
+    {
+        isDarkMode = dark;
+        repaint();
+    }
+
     void paintButton(juce::Graphics& g, bool isHovered, bool isPressed) override
     {
         auto area = getLocalBounds().toFloat().reduced(1.0f);
 
-        auto fill = GoodMeterLookAndFeel::bgMain;
-        auto outline = getToggleState() ? accent : GoodMeterLookAndFeel::textMain.withAlpha(0.16f);
+        auto fill = isDarkMode ? juce::Colours::black : GoodMeterLookAndFeel::bgMain;
+        auto outline = getToggleState() ? accent : (isDarkMode ? juce::Colours::white.withAlpha(0.16f) : GoodMeterLookAndFeel::textMain.withAlpha(0.16f));
 
         if (getToggleState())
-            fill = accent.withAlpha(0.08f);
+            fill = accent.withAlpha(isDarkMode ? 0.18f : 0.08f);
         else if (isHovered)
-            fill = GoodMeterLookAndFeel::textMain.withAlpha(0.03f);
+            fill = (isDarkMode ? juce::Colours::white : GoodMeterLookAndFeel::textMain).withAlpha(0.03f);
 
         if (isPressed)
-            fill = accent.withAlpha(0.14f);
+            fill = accent.withAlpha(isDarkMode ? 0.24f : 0.14f);
 
+        const float radius = isDarkMode ? 9.0f : 12.0f;
         g.setColour(fill);
-        g.fillRoundedRectangle(area, 14.0f);
+        g.fillRoundedRectangle(area, radius);
 
         g.setColour(outline);
-        g.drawRoundedRectangle(area, 14.0f, getToggleState() ? 2.5f : 1.2f);
+        g.drawRoundedRectangle(area, radius, getToggleState() ? 2.0f : 1.2f);
+
+        auto guideColour = getToggleState() ? accent.withAlpha(isDarkMode ? 0.55f : 0.35f)
+                                            : (isDarkMode ? juce::Colours::white : GoodMeterLookAndFeel::textMain).withAlpha(isDarkMode ? 0.16f : 0.10f);
+        g.setColour(guideColour);
+        g.drawLine(area.getX() + 12.0f, area.getY() + 10.0f,
+                   area.getX() + 30.0f, area.getY() + 10.0f, 1.0f);
 
         auto dotArea = area.removeFromTop(20.0f).removeFromLeft(20.0f).reduced(6.0f);
         g.setColour(accent.withAlpha(getToggleState() ? 1.0f : 0.35f));
         g.fillEllipse(dotArea);
 
-        g.setColour(GoodMeterLookAndFeel::textMain);
-        g.setFont(juce::Font(juce::FontOptions(15.0f)));
+        g.setColour(isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f) : GoodMeterLookAndFeel::textMain);
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(16.5f, juce::Font::bold));
         g.drawText(getName(), getLocalBounds().reduced(12, 8), juce::Justification::centred, false);
     }
 
 private:
     juce::Colour accent;
+    bool isDarkMode = false;
 };
 
 class HistoryPyramidButton : public juce::Component,
@@ -211,6 +231,46 @@ private:
     float targetRotation = 0.0f;
 };
 
+class HistoryLoadButton : public juce::Button
+{
+public:
+    HistoryLoadButton() : juce::Button("HistoryLoadButton")
+    {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    void setDarkMode(bool dark)
+    {
+        isDarkMode = dark;
+        repaint();
+    }
+
+    void paintButton(juce::Graphics& g, bool isHovered, bool isPressed) override
+    {
+        auto area = getLocalBounds().toFloat();
+        auto textColour = isDarkMode ? juce::Colour(0xFFF6EEE3)
+                                     : GoodMeterLookAndFeel::textMain;
+
+        if (isPressed)
+        {
+            g.setColour(textColour.withAlpha(isDarkMode ? 0.12f : 0.08f));
+            g.fillRoundedRectangle(area.reduced(1.0f), 8.0f);
+        }
+        else if (isHovered)
+        {
+            g.setColour(textColour.withAlpha(isDarkMode ? 0.07f : 0.05f));
+            g.fillRoundedRectangle(area.reduced(1.0f), 8.0f);
+        }
+
+        g.setColour(textColour);
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(13.0f, juce::Font::bold));
+        g.drawText("LOAD", getLocalBounds(), juce::Justification::centred, false);
+    }
+
+private:
+    bool isDarkMode = false;
+};
+
 class HistoryRowComponent : public juce::Component,
                             private juce::Timer
 {
@@ -222,19 +282,20 @@ public:
 
         nameLabel.setText(file.getFileName(), juce::dontSendNotification);
         nameLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
-        nameLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        nameLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(14.0f));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(nameLabel);
         nameLabel.setJustificationType(juce::Justification::centredLeft);
         nameLabel.setMinimumHorizontalScale(0.72f);
         addAndMakeVisible(nameLabel);
 
         metaLabel.setText(buildMetaText(file), juce::dontSendNotification);
         metaLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        metaLabel.setFont(juce::Font(juce::FontOptions(10.5f)));
+        metaLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(11.5f));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(metaLabel);
         metaLabel.setJustificationType(juce::Justification::centredLeft);
         metaLabel.setMinimumHorizontalScale(0.72f);
         addAndMakeVisible(metaLabel);
 
-        loadButton.setButtonText("LOAD");
         loadButton.setEnabled(false);
         loadButton.setVisible(false);
         loadButton.setAlpha(0.0f);
@@ -255,6 +316,17 @@ public:
 
     juce::String getFilePath() const { return file.getFullPathName(); }
     int64_t getFileSize() const { return file.getSize(); }
+
+    void setDarkMode(bool dark)
+    {
+        isDarkMode = dark;
+        auto textColor = isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f) : GoodMeterLookAndFeel::textMain;
+        auto mutedColor = isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.72f) : GoodMeterLookAndFeel::textMuted;
+        nameLabel.setColour(juce::Label::textColourId, textColor);
+        metaLabel.setColour(juce::Label::textColourId, mutedColor);
+        loadButton.setDarkMode(isDarkMode);
+        repaint();
+    }
 
     void setSelectionMode(bool shouldBeEnabled)
     {
@@ -307,8 +379,8 @@ public:
     {
         auto area = getLocalBounds().toFloat().reduced(1.0f);
 
-        auto fill = GoodMeterLookAndFeel::textMain.withAlpha(0.035f);
-        auto outline = GoodMeterLookAndFeel::textMain.withAlpha(0.14f);
+        auto fill = (isDarkMode ? juce::Colours::white : GoodMeterLookAndFeel::textMain).withAlpha(isDarkMode ? 0.035f : 0.022f);
+        auto outline = (isDarkMode ? juce::Colours::white : GoodMeterLookAndFeel::textMain).withAlpha(isDarkMode ? 0.14f : 0.11f);
 
         if (isSelected)
         {
@@ -324,14 +396,14 @@ public:
         if (selectionMode)
         {
             auto circle = selectionCircleArea.toFloat();
-            g.setColour(GoodMeterLookAndFeel::textMain.withAlpha(0.88f));
+            g.setColour((isDarkMode ? juce::Colours::white : GoodMeterLookAndFeel::textMain).withAlpha(0.88f));
             g.drawEllipse(circle, 1.8f);
 
             if (isSelected)
             {
                 g.setColour(accent);
                 g.fillEllipse(circle.reduced(2.8f));
-                g.setColour(GoodMeterLookAndFeel::bgMain.withAlpha(0.95f));
+                g.setColour((isDarkMode ? juce::Colours::black : GoodMeterLookAndFeel::bgMain).withAlpha(0.95f));
                 g.fillEllipse(circle.withSizeKeepingCentre(circle.getWidth() * 0.26f,
                                                            circle.getHeight() * 0.26f));
             }
@@ -496,6 +568,7 @@ private:
     juce::Colour accent;
     bool selectionMode = false;
     bool isSelected = false;
+    bool isDarkMode = false;
 
     bool pointerDown = false;
     bool pointerMoved = false;
@@ -509,7 +582,7 @@ private:
     juce::Rectangle<int> selectionCircleArea;
     juce::Label nameLabel;
     juce::Label metaLabel;
-    juce::TextButton loadButton;
+    HistoryLoadButton loadButton;
     HistoryPyramidButton pyramidButton;
 };
 
@@ -521,16 +594,19 @@ public:
         setInterceptsMouseClicks(true, true);
 
         titleLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
-        titleLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+        titleLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(18.0f, juce::Font::bold));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(titleLabel);
         titleLabel.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(titleLabel);
 
         bodyLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        bodyLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        bodyLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(13.0f));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(bodyLabel);
         bodyLabel.setJustificationType(juce::Justification::topLeft);
         addAndMakeVisible(bodyLabel);
 
         cancelButton.setButtonText("Keep");
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(cancelButton);
         cancelButton.onClick = [this]()
         {
             if (onCancel)
@@ -539,6 +615,7 @@ public:
         addAndMakeVisible(cancelButton);
 
         confirmButton.setButtonText("Remove");
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(confirmButton);
         confirmButton.onClick = [this]()
         {
             if (onConfirm)
@@ -677,6 +754,11 @@ public:
 
     HistoryPageComponent()
     {
+#if MARATHON_ART_STYLE
+        bgCanvas = std::make_unique<DotMatrixCanvas>(21, 24);
+        randomizeBackground();
+#endif
+
         viewport = std::make_unique<juce::Viewport>();
         contentComponent = std::make_unique<juce::Component>();
         addAndMakeVisible(viewport.get());
@@ -711,25 +793,30 @@ public:
         addAndMakeVisible(videoButton);
 
         summaryLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        summaryLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+        summaryLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(12.5f, juce::Font::bold));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(summaryLabel);
         summaryLabel.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(summaryLabel);
 
         emptyLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        emptyLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        emptyLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(14.0f));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(emptyLabel);
         emptyLabel.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(emptyLabel);
 
         selectionSummaryLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
-        selectionSummaryLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+        selectionSummaryLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(13.0f, juce::Font::bold));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(selectionSummaryLabel);
         selectionSummaryLabel.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(selectionSummaryLabel);
 
         cancelSelectionButton.setButtonText("CANCEL");
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(cancelSelectionButton);
         cancelSelectionButton.onClick = [this]() { exitSelectionMode(); };
         addAndMakeVisible(cancelSelectionButton);
 
         deleteSelectedButton.setButtonText("DELETE");
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(deleteSelectedButton);
         deleteSelectedButton.onClick = [this]() { confirmDeleteSelection(); };
         addAndMakeVisible(deleteSelectedButton);
 
@@ -750,12 +837,62 @@ public:
             deletePrompt->setCurrentSkin(currentSkinId);
     }
 
+    void setDarkTheme(bool dark)
+    {
+        isDarkTheme = dark;
+
+        auto textColor = isDarkTheme ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f) : GoodMeterLookAndFeel::textMain;
+        auto mutedColor = isDarkTheme ? juce::Colour(0xFFF6EEE3).withAlpha(0.72f) : GoodMeterLookAndFeel::textMuted;
+
+        audioButton.setDarkMode(isDarkTheme);
+        videoButton.setDarkMode(isDarkTheme);
+        summaryLabel.setColour(juce::Label::textColourId, mutedColor);
+        emptyLabel.setColour(juce::Label::textColourId, mutedColor);
+        selectionSummaryLabel.setColour(juce::Label::textColourId, textColor);
+
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(GoodMeterLookAndFeel::bgMain);
+        auto bgColor = isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain;
+        g.fillAll(bgColor);
+
+#if MARATHON_ART_STYLE
+        if (bgCanvas != nullptr)
+        {
+            juce::Font monoFont(juce::Font::getDefaultMonospacedFontName(), 18.0f, juce::Font::plain);
+            int gridH = bgCanvas->getHeight();
+            int gridW = bgCanvas->getWidth();
+            auto bounds = getLocalBounds().toFloat();
+            float cellW = bounds.getWidth() / gridW;
+            float cellH = bounds.getHeight() / gridH;
+
+            for (int y = 0; y < gridH; ++y)
+            {
+                for (int x = 0; x < gridW; ++x)
+                {
+                    auto cell = bgCanvas->getCell(x, y);
+                    float px = x * cellW;
+                    float py = y * cellH;
+
+                    auto drawColour = isDarkTheme
+                                          ? cell.color.withMultipliedAlpha(cell.brightness)
+                                          : GoodMeterLookAndFeel::textMain.withAlpha(0.040f + cell.brightness * 0.105f);
+                    g.setColour(drawColour);
+                    g.setFont(monoFont);
+                    juce::String str = juce::String::charToString(cell.symbol);
+                    g.drawText(str, (int)px, (int)py, (int)cellW, (int)cellH,
+                              juce::Justification::centred, false);
+                }
+            }
+        }
+#endif
 
         auto area = getLocalBounds().reduced(20, 0);
-        g.setColour(GoodMeterLookAndFeel::textMain.withAlpha(0.1f));
+        auto sepColor = isDarkTheme ? juce::Colours::white.withAlpha(0.1f)
+                                    : GoodMeterLookAndFeel::textMain.withAlpha(0.1f);
+        g.setColour(sepColor);
         g.drawHorizontalLine(sectionTabsY, static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
 
         if (selectionMode)
@@ -939,6 +1076,9 @@ public:
             contentComponent->addAndMakeVisible(row.get());
             rows.push_back(std::move(row));
         }
+
+        for (auto& row : rows)
+            row->setDarkMode(isDarkTheme);
 
         updateSelectionFooter();
         layoutRows();
@@ -1145,11 +1285,16 @@ private:
     FilterMode filterMode = FilterMode::audio;
     int currentSkinId = 1;
     bool selectionMode = false;
+    bool isDarkTheme = false;
     int sectionTabsY = 0;
     int selectionFooterY = 0;
     juce::String expandedPath;
     std::set<juce::String> selectedPaths;
     std::vector<juce::File> pendingDeleteFiles;
+
+#if MARATHON_ART_STYLE
+    std::unique_ptr<DotMatrixCanvas> bgCanvas;
+#endif
 
     std::unique_ptr<juce::Viewport> viewport;
     std::unique_ptr<juce::Component> contentComponent;
@@ -1164,4 +1309,59 @@ private:
     juce::Label selectionSummaryLabel;
     juce::TextButton cancelSelectionButton;
     juce::TextButton deleteSelectedButton;
+
+#if MARATHON_ART_STYLE
+    void randomizeBackground()
+    {
+        static const char32_t symbols[] = {U'.', U'·', U'/', U'\\', U'✕', U'+', U'□', U'■', U'◢', U'◯'};
+        juce::Random rng;
+        const auto preset = MarathonField::Preset::history;
+
+        for (int y = 0; y < bgCanvas->getHeight(); ++y)
+        {
+            int consecutiveCount = 0;
+            char32_t lastSymbol = 0;
+
+            for (int x = 0; x < bgCanvas->getWidth(); ++x)
+            {
+                if (MarathonField::shouldLeaveBlank(x, y, bgCanvas->getWidth(), bgCanvas->getHeight(), preset))
+                {
+                    bgCanvas->setCell(x, y, U' ', juce::Colours::white, 0, 0.0f);
+                    lastSymbol = U' ';
+                    consecutiveCount = 0;
+                    continue;
+                }
+
+                int idx = rng.nextInt(10);
+                char32_t sym = symbols[idx];
+
+                if (sym == lastSymbol)
+                {
+                    consecutiveCount++;
+                    if (consecutiveCount >= 3)
+                    {
+                        do {
+                            idx = rng.nextInt(9);
+                            sym = symbols[idx];
+                        } while (sym == lastSymbol);
+                        consecutiveCount = 0;
+                    }
+                }
+                else
+                {
+                    consecutiveCount = 0;
+                }
+
+                if (x % 7 == 0 && (sym == U'.' || sym == U'·'))
+                    sym = U'◯';
+                else if (y % 6 == 0 && (sym == U'.' || sym == U'·'))
+                    sym = U'✕';
+
+                lastSymbol = sym;
+                float brightness = MarathonField::brightnessForCell(x, y, bgCanvas->getWidth(), bgCanvas->getHeight(), preset);
+                bgCanvas->setCell(x, y, sym, juce::Colours::white, 0, brightness);
+            }
+        }
+    }
+#endif
 };
