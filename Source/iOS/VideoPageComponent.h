@@ -20,6 +20,7 @@
 #include "../StereoImageComponent.h"
 #include "../SpectrogramComponent.h"
 #include "../PsrMeterComponent.h"
+#include "MarkerModel.h"
 
 #define MARATHON_ART_STYLE 1
 
@@ -134,20 +135,50 @@ class VideoTapOverlay : public juce::Component
 {
 public:
     std::function<void()> onTap;
+    std::function<void()> onDoubleTap;
+    std::function<void()> onLongPress;
 
     void paint(juce::Graphics&) override {}
 
-    void mouseUp(const juce::MouseEvent&) override
+    void mouseDown(const juce::MouseEvent& e) override
     {
+        pressStart = e.position;
+        pressStartMs = juce::Time::getMillisecondCounterHiRes();
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        const auto heldMs = juce::Time::getMillisecondCounterHiRes() - pressStartMs;
+        const auto moved = e.position.getDistanceFrom(pressStart);
+
+        if (heldMs >= 380.0 && moved <= 18.0f)
+        {
+            if (onLongPress != nullptr)
+                onLongPress();
+            return;
+        }
+
+        if (e.getNumberOfClicks() >= 2)
+        {
+            if (onDoubleTap != nullptr)
+                onDoubleTap();
+            return;
+        }
+
         if (onTap != nullptr)
             onTap();
     }
+
+private:
+    juce::Point<float> pressStart;
+    double pressStartMs = 0.0;
 };
 
 class VideoSwipeOverlay : public juce::Component
 {
 public:
     std::function<void(int direction)> onSwipe;
+    std::function<void()> onDoubleTap;
 
     void paint(juce::Graphics&) override {}
 
@@ -159,6 +190,14 @@ public:
 
     void mouseUp(const juce::MouseEvent& e) override
     {
+        if (e.getNumberOfClicks() >= 2)
+        {
+            dragActive = false;
+            if (onDoubleTap != nullptr)
+                onDoubleTap();
+            return;
+        }
+
         if (!dragActive)
             return;
 
@@ -184,6 +223,7 @@ public:
     ~VideoPageComponent() override;
 
     void paint(juce::Graphics& g) override;
+    void paintOverChildren(juce::Graphics& g) override;
     void resized() override;
 
     bool loadVideo(const juce::File& file);
@@ -203,6 +243,9 @@ public:
     bool shouldConsumeHorizontalSwipe(juce::Point<float> point) const;
     void setDarkTheme(bool dark);
     bool isDark() const { return isDarkTheme; }
+    std::function<bool()> isMarkerModeActive;
+    std::function<void()> addMarkerAtCurrentPosition;
+    std::function<std::vector<GoodMeterMarkerItem>()> getCurrentMarkerItems;
 
 private:
     class NativeVideoPlayer;
@@ -221,12 +264,18 @@ private:
     void setDrawerOpen(bool shouldOpen);
     void rebuildMeterSlot(bool topSlot);
     void cycleMeterSlot(bool topSlot, int direction);
+    void applyMeterCardTheme(MeterCardComponent* card);
+    void applyEmbeddedMeterTheme(juce::Component* content);
+    void updateDrawerThemeColors();
     juce::Rectangle<int> getPresentedVideoBounds(juce::Rectangle<int> hostBounds) const;
     EmbeddedMeterKind wrapMeterKind(int rawIndex) const;
     bool attachSyncedAudioIfAvailable();
     void syncAudioTransportToPosition(double positionSeconds, bool preservePlayingState);
     juce::File getExpectedAudioFileForVideo(const juce::File& videoFile) const;
     void setPlayButtonVisualState(bool shouldShowPlaying);
+    void queueProgressSeek(double seconds);
+    void flushQueuedProgressSeek(bool force);
+    void refreshVideoPlaybackSurface(bool preservePlaybackState, const juce::String& reason);
 
     void timerCallback() override;
     static juce::String fmtTime(double seconds);
@@ -234,6 +283,7 @@ private:
     int getDrawerHeight(bool landscape) const;
     juce::Rectangle<int> getDrawerBounds() const;
     void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
 
@@ -292,6 +342,14 @@ private:
     bool userRequestedPlayingState = false;
     int playbackIntentHoldFrames = 0;
     double forcedPausePosition = 0.0;
+    bool progressScrubDragging = false;
+    bool progressSeekPending = false;
+    double pendingProgressSeekSeconds = 0.0;
+    std::uint32_t lastProgressSeekCommitMs = 0;
+    double lastObservedVideoPosition = 0.0;
+    int stagnantVideoFrameCount = 0;
+    int stagnantVideoRecoveryAttempts = 0;
+    std::uint32_t lastVideoRecoveryMs = 0;
 
 #if MARATHON_ART_STYLE
     std::unique_ptr<DotMatrixCanvas> bgCanvas;

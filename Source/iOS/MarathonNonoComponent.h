@@ -67,6 +67,8 @@ public:
         characterData = (s == SkinType::Nono)
             ? MarathonCharacterData::createNono()
             : MarathonCharacterData::createGuoba();
+        sourceSpriteImage = {};
+        explicitCharacterBounds = {};
         repaint();
     }
 
@@ -119,12 +121,12 @@ public:
         {
             const float occupiedAspect = static_cast<float>(occupied.getHeight())
                                        / static_cast<float>(juce::jmax(1, occupied.getWidth()));
-            const float maxW = target.getWidth() * 0.68f;
-            const float maxH = target.getHeight() * 0.44f;
+            const float maxW = target.getWidth() * 0.96f;
+            const float maxH = target.getHeight() * 0.66f;
             const float width = juce::jmin(maxW, maxH / occupiedAspect);
             const float height = width * occupiedAspect;
             const float x = target.getCentreX() - width * 0.5f;
-            const float y = target.getY() + target.getHeight() * 0.20f;
+            const float y = target.getY() + target.getHeight() * 0.10f;
             juce::Rectangle<float> spriteArea(x, y, width, height);
 
             juce::Font monoFont(juce::Font::getDefaultMonospacedFontName(), 22.0f, juce::Font::plain);
@@ -265,6 +267,474 @@ private:
         return static_cast<char32_t>(0x2800u + mask);
     }
 
+    static bool isPrimitiveGlyph(char32_t ch)
+    {
+        switch (ch)
+        {
+            case U'•':
+            case U'●':
+            case U'▪':
+            case U'■':
+            case U'│':
+            case U'─':
+            case U'╱':
+            case U'╲':
+            case U'⌒':
+            case U'⌣':
+            case U'∧':
+            case U'∨':
+            case U'+':
+            case U'×':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool drawPrimitiveGlyph(juce::Graphics& g, juce::Rectangle<float> cellBounds,
+                                   char32_t ch, juce::Colour colour, float scale)
+    {
+        const float cellW = cellBounds.getWidth();
+        const float cellH = cellBounds.getHeight();
+        const float cx = cellBounds.getCentreX();
+        const float cy = cellBounds.getCentreY();
+        const float minDim = juce::jmin(cellW, cellH);
+
+        g.setColour(colour);
+
+        switch (ch)
+        {
+            case U'•':
+            {
+                const float d = minDim * 0.24f * scale;
+                g.fillEllipse(cx - d * 0.5f, cy - d * 0.5f, d, d);
+                return true;
+            }
+
+            case U'●':
+            {
+                const float d = minDim * 0.52f * scale;
+                g.fillEllipse(cx - d * 0.5f, cy - d * 0.5f, d, d);
+                return true;
+            }
+
+            case U'▪':
+            case U'■':
+            {
+                const float w = minDim * ((ch == U'■') ? 0.68f : 0.52f) * scale;
+                const float radius = w * 0.14f;
+                g.fillRoundedRectangle(cx - w * 0.5f, cy - w * 0.5f, w, w, radius);
+                return true;
+            }
+
+            case U'│':
+            {
+                const float w = juce::jmax(1.6f, cellW * 0.16f * scale);
+                const float h = cellH * 0.92f;
+                g.fillRoundedRectangle(cx - w * 0.5f, cy - h * 0.5f, w, h, w * 0.5f);
+                return true;
+            }
+
+            case U'─':
+            {
+                const float h = juce::jmax(1.6f, cellH * 0.16f * scale);
+                const float w = cellW * 0.92f;
+                g.fillRoundedRectangle(cx - w * 0.5f, cy - h * 0.5f, w, h, h * 0.5f);
+                return true;
+            }
+
+            case U'╱':
+            case U'╲':
+            case U'∧':
+            case U'∨':
+            case U'+':
+            case U'×':
+            {
+                auto stroke = juce::PathStrokeType(juce::jmax(1.5f, minDim * 0.12f * scale),
+                                                   juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded);
+                juce::Path p;
+                if (ch == U'╱' || ch == U'×')
+                {
+                    p.startNewSubPath(cellBounds.getX() + cellW * 0.22f, cellBounds.getBottom() - cellH * 0.18f);
+                    p.lineTo(cellBounds.getRight() - cellW * 0.22f, cellBounds.getY() + cellH * 0.18f);
+                }
+                if (ch == U'╲' || ch == U'×')
+                {
+                    p.startNewSubPath(cellBounds.getX() + cellW * 0.22f, cellBounds.getY() + cellH * 0.18f);
+                    p.lineTo(cellBounds.getRight() - cellW * 0.22f, cellBounds.getBottom() - cellH * 0.18f);
+                }
+                if (ch == U'∧')
+                {
+                    p.startNewSubPath(cellBounds.getX() + cellW * 0.20f, cellBounds.getBottom() - cellH * 0.18f);
+                    p.lineTo(cx, cellBounds.getY() + cellH * 0.18f);
+                    p.lineTo(cellBounds.getRight() - cellW * 0.20f, cellBounds.getBottom() - cellH * 0.18f);
+                }
+                if (ch == U'∨')
+                {
+                    p.startNewSubPath(cellBounds.getX() + cellW * 0.20f, cellBounds.getY() + cellH * 0.18f);
+                    p.lineTo(cx, cellBounds.getBottom() - cellH * 0.18f);
+                    p.lineTo(cellBounds.getRight() - cellW * 0.20f, cellBounds.getY() + cellH * 0.18f);
+                }
+                if (ch == U'+')
+                {
+                    p.startNewSubPath(cx, cellBounds.getY() + cellH * 0.18f);
+                    p.lineTo(cx, cellBounds.getBottom() - cellH * 0.18f);
+                    p.startNewSubPath(cellBounds.getX() + cellW * 0.18f, cy);
+                    p.lineTo(cellBounds.getRight() - cellW * 0.18f, cy);
+                }
+                g.strokePath(p, stroke);
+                return true;
+            }
+
+            case U'⌒':
+            case U'⌣':
+            {
+                auto stroke = juce::PathStrokeType(juce::jmax(1.4f, minDim * 0.10f * scale),
+                                                   juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded);
+                juce::Path p;
+                const float left = cellBounds.getX() + cellW * 0.16f;
+                const float right = cellBounds.getRight() - cellW * 0.16f;
+
+                if (ch == U'⌒')
+                {
+                    p.startNewSubPath(left, cy + cellH * 0.06f);
+                    p.quadraticTo(cx, cellBounds.getY() + cellH * 0.14f,
+                                  right, cy + cellH * 0.06f);
+                }
+                else
+                {
+                    p.startNewSubPath(left, cy - cellH * 0.06f);
+                    p.quadraticTo(cx, cellBounds.getBottom() - cellH * 0.14f,
+                                  right, cy - cellH * 0.06f);
+                }
+
+                g.strokePath(p, stroke);
+                return true;
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    static bool isBrushLetter(char32_t ch)
+    {
+        switch (ch)
+        {
+            case U'A':
+            case U'C':
+            case U'D':
+            case U'G':
+            case U'J':
+            case U'M':
+            case U'O':
+            case U'P':
+            case U'Q':
+            case U'R':
+            case U'S':
+            case U'U':
+            case U'V':
+            case U'W':
+            case U'X':
+            case U'Y':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static int brushLetterIndex(char32_t ch)
+    {
+        if (ch >= U'A' && ch <= U'Z')
+            return static_cast<int>(ch - U'A');
+        return -1;
+    }
+
+    static char32_t takeCappedLetter(std::initializer_list<char32_t> candidates,
+                                     std::array<uint8_t, 26>& counts,
+                                     char32_t fallback)
+    {
+        for (auto ch : candidates)
+        {
+            const int idx = brushLetterIndex(ch);
+            if (idx >= 0 && counts[static_cast<size_t>(idx)] < 2)
+            {
+                ++counts[static_cast<size_t>(idx)];
+                return ch;
+            }
+        }
+
+        return fallback;
+    }
+
+    static char32_t chooseEdgeGlyph(float leftCoverage, float rightCoverage,
+                                    float upCoverage, float downCoverage,
+                                    float diagUL, float diagUR,
+                                    float diagDL, float diagDR,
+                                    int gx, int gy, int targetCols, int targetRows)
+    {
+        const bool openLeft = leftCoverage < 0.05f;
+        const bool openRight = rightCoverage < 0.05f;
+        const bool openUp = upCoverage < 0.05f;
+        const bool openDown = downCoverage < 0.05f;
+        const float nx = (static_cast<float>(gx) + 0.5f) / static_cast<float>(targetCols);
+        const float ny = (static_cast<float>(gy) + 0.5f) / static_cast<float>(targetRows);
+        juce::ignoreUnused(nx);
+
+        if ((openUp || openDown) && !(openLeft || openRight))
+            return openUp ? U'⌒' : U'⌣';
+
+        if ((openLeft || openRight) && !(openUp || openDown))
+            return U'│';
+
+        if ((openUp && openLeft) || (openDown && openRight))
+            return openUp ? U'∧' : (diagUL < diagDR ? U'╲' : U'⌣');
+
+        if ((openUp && openRight) || (openDown && openLeft))
+            return openUp ? U'∧' : (diagUR < diagDL ? U'╱' : U'⌣');
+
+        if (((gx + gy) % 6) == 0)
+            return gy < targetRows / 2 ? U'⌒' : U'⌣';
+
+        return gy < targetRows / 2 ? U'⌒' : U'⌣';
+    }
+
+    static char32_t chooseInteriorGlyph(float coverage, bool accentLike,
+                                        bool denseZone, bool faceZone,
+                                        bool torsoBand, int gx, int gy)
+    {
+        if (accentLike)
+            return denseZone ? U'■' : U'▪';
+
+        if (faceZone)
+        {
+            switch ((gx + gy) % 6)
+            {
+                case 0: return coverage > 0.64f ? U'●' : U'•';
+                case 1: return U'⌒';
+                case 2: return U'•';
+                case 3: return coverage > 0.52f ? U'⌣' : U'●';
+                case 4: return U'●';
+                default: return coverage > 0.50f ? U'•' : U'⌣';
+            }
+        }
+
+        if (torsoBand)
+        {
+            switch ((gx + gy) % 5)
+            {
+                case 0: return U'●';
+                case 1: return U'•';
+                case 2: return U'⌣';
+                case 3: return coverage > 0.56f ? U'⌣' : U'●';
+                default: return U'•';
+            }
+        }
+
+        if (denseZone)
+        {
+            switch ((gx * 3 + gy) % 8)
+            {
+                case 0: return U'●';
+                case 1: return U'•';
+                case 2: return U'•';
+                case 3: return coverage > 0.56f ? U'⌣' : U'╱';
+                case 4: return U'⌣';
+                case 5: return coverage > 0.56f ? U'⌒' : U'•';
+                case 6: return U'•';
+                case 7: return U'⌒';
+                default: return U'•';
+            }
+        }
+
+        if (coverage > 0.58f)
+            return ((gx + gy) & 1) == 0 ? U'●' : U'•';
+        if (coverage > 0.34f)
+        {
+            switch ((gx + gy) % 4)
+            {
+                case 0: return U'•';
+                case 1: return U'╱';
+                case 2: return U'╲';
+                default: return U'●';
+            }
+        }
+
+        return ((gx + gy) & 1) == 0 ? U'•' : U'⌒';
+    }
+
+    static float radialMass(float nx, float ny, float cx, float cy, float rx, float ry)
+    {
+        const float dx = (nx - cx) / juce::jmax(0.0001f, rx);
+        const float dy = (ny - cy) / juce::jmax(0.0001f, ry);
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        return juce::jlimit(0.0f, 1.0f, 1.0f - dist);
+    }
+
+    struct CharacterGuide
+    {
+        float face = 0.0f;
+        float jaw = 0.0f;
+        float ear = 0.0f;
+        float foot = 0.0f;
+        float body = 0.0f;
+        float core = 0.0f;
+        float silhouette = 0.0f;
+    };
+
+    static CharacterGuide computeCharacterGuide(SkinType skin, float nx, float ny)
+    {
+        CharacterGuide guide;
+
+        if (skin == SkinType::Guoba)
+        {
+            float halfWidth = 0.0f;
+            float verticalEnvelope = 0.0f;
+            if (ny >= 0.28f && ny <= 0.84f)
+            {
+                if (ny < 0.44f)
+                    halfWidth = juce::jmap(ny, 0.28f, 0.44f, 0.15f, 0.23f);
+                else if (ny < 0.60f)
+                    halfWidth = juce::jmap(ny, 0.44f, 0.60f, 0.23f, 0.31f);
+                else
+                    halfWidth = juce::jmap(ny, 0.60f, 0.84f, 0.31f, 0.19f);
+
+                verticalEnvelope = ny < 0.60f
+                    ? juce::jmap(ny, 0.28f, 0.60f, 0.55f, 1.0f)
+                    : juce::jmap(ny, 0.60f, 0.84f, 1.0f, 0.58f);
+            }
+
+            const float bodyBand = halfWidth > 0.0f
+                ? juce::jlimit(0.0f, 1.0f,
+                               (1.0f - std::abs(nx - 0.5f) / halfWidth) * verticalEnvelope)
+                : 0.0f;
+            const float crown = radialMass(nx, ny, 0.50f, 0.44f, 0.18f, 0.16f);
+            const float cheekL = radialMass(nx, ny, 0.37f, 0.58f, 0.15f, 0.17f);
+            const float cheekR = radialMass(nx, ny, 0.63f, 0.58f, 0.15f, 0.17f);
+            const float muzzle = radialMass(nx, ny, 0.50f, 0.63f, 0.20f, 0.15f);
+            guide.face = juce::jmax(bodyBand, juce::jmax(crown, juce::jmax(muzzle, juce::jmax(cheekL, cheekR))));
+            guide.jaw = radialMass(nx, ny, 0.50f, 0.80f, 0.20f, 0.11f);
+            guide.ear = juce::jmax(radialMass(nx, ny, 0.31f, 0.17f, 0.050f, 0.080f),
+                                   radialMass(nx, ny, 0.69f, 0.17f, 0.050f, 0.080f));
+            guide.foot = juce::jmax(radialMass(nx, ny, 0.39f, 0.92f, 0.065f, 0.040f),
+                                    radialMass(nx, ny, 0.61f, 0.92f, 0.065f, 0.040f));
+            guide.body = juce::jmax(guide.face, guide.jaw * 0.96f);
+            guide.core = juce::jmax(crown, muzzle * 0.92f);
+            guide.silhouette = juce::jmax(guide.body, juce::jmax(guide.ear * 0.84f, guide.foot * 0.82f));
+        }
+        else
+        {
+            const float crown = radialMass(nx, ny, 0.50f, 0.47f, 0.21f, 0.20f);
+            const float cheekL = radialMass(nx, ny, 0.38f, 0.55f, 0.15f, 0.18f);
+            const float cheekR = radialMass(nx, ny, 0.62f, 0.55f, 0.15f, 0.18f);
+            const float chin = radialMass(nx, ny, 0.50f, 0.68f, 0.20f, 0.14f);
+            guide.face = juce::jmax(crown, juce::jmax(chin, juce::jmax(cheekL, cheekR)));
+            guide.jaw = radialMass(nx, ny, 0.50f, 0.70f, 0.18f, 0.12f);
+            guide.ear = juce::jmax(radialMass(nx, ny, 0.31f, 0.17f, 0.045f, 0.075f),
+                                   radialMass(nx, ny, 0.69f, 0.17f, 0.045f, 0.075f));
+            guide.foot = juce::jmax(radialMass(nx, ny, 0.40f, 0.90f, 0.055f, 0.036f),
+                                    radialMass(nx, ny, 0.60f, 0.90f, 0.055f, 0.036f));
+            guide.body = juce::jmax(guide.face, guide.jaw * 0.92f);
+            guide.core = juce::jmax(crown, chin * 0.84f);
+            guide.silhouette = juce::jmax(guide.body, juce::jmax(guide.ear * 0.80f, guide.foot * 0.76f));
+        }
+
+        return guide;
+    }
+
+    static char32_t enrichGlyphWithLetterBrush(char32_t glyph, bool edge,
+                                               bool faceZone, bool torsoBand,
+                                               bool denseZone,
+                                               int gx, int gy,
+                                               int targetCols, int targetRows,
+                                               std::array<uint8_t, 26>& counts)
+    {
+        const float nx = (static_cast<float>(gx) + 0.5f) / static_cast<float>(targetCols);
+        const float ny = (static_cast<float>(gy) + 0.5f) / static_cast<float>(targetRows);
+        const bool upperCornerBand = ny < 0.28f && (nx < 0.32f || nx > 0.68f);
+        const bool lowerCornerBand = ny > 0.72f && (nx < 0.34f || nx > 0.66f);
+        const bool leftCheekBand = nx < 0.30f && ny > 0.28f && ny < 0.70f;
+        const bool rightCheekBand = nx > 0.70f && ny > 0.28f && ny < 0.70f;
+
+        if (edge)
+        {
+            if (upperCornerBand && ((gx + gy) % 7 == 0))
+                return takeCappedLetter({ U'A', U'M', U'W', U'Y' }, counts, glyph);
+            if (lowerCornerBand && ((gx + 2 * gy) % 9 == 2))
+                return takeCappedLetter({ U'V', U'W', U'Y', U'U' }, counts, glyph);
+            if (leftCheekBand && ((gx + gy) % 5 == 0))
+                return takeCappedLetter({ U'C', U'G', U'J', U'S' }, counts, glyph);
+            if (rightCheekBand && ((gx + gy) % 5 == 0))
+                return takeCappedLetter({ U'D', U'Q', U'R', U'U' }, counts, glyph);
+        }
+
+        if (faceZone && ((gx + 2 * gy) % 17 == 4) && ny > 0.42f && ny < 0.62f)
+            return takeCappedLetter({ U'O', U'Q', U'C', U'D' }, counts, glyph);
+
+        if (torsoBand && ((gx * 2 + gy) % 19 == 7))
+            return takeCappedLetter({ U'R', U'S', U'U', U'P' }, counts, glyph);
+
+        if (denseZone && ((gx + gy) % 21 == 6) && ny > 0.60f)
+            return takeCappedLetter({ U'V', U'W', U'X', U'Y' }, counts, glyph);
+
+        return glyph;
+    }
+
+    static uint8_t chooseGlyphSizeLevel(char32_t glyph, float coverage, bool edge,
+                                        bool accentLike, bool denseZone,
+                                        bool faceZone, bool torsoBand,
+                                        float faceMass, float jawMass, float earMass,
+                                        int gx, int gy)
+    {
+        juce::ignoreUnused(gx, gy);
+        const float bodyMass = juce::jmax(faceMass, jawMass);
+        uint8_t level = 0;
+
+        if (accentLike)
+            level = 2;
+        else if (edge)
+            level = bodyMass > 0.74f ? 1 : 0;
+        else if (bodyMass > 0.88f && coverage > 0.70f)
+            level = 2;
+        else if (bodyMass > 0.68f)
+            level = 1;
+        else if (bodyMass > 0.48f)
+            level = 1;
+        else if (denseZone)
+            level = coverage > 0.46f ? 1 : 0;
+        else if (faceZone)
+            level = bodyMass > 0.60f ? 1 : 0;
+        else if (torsoBand)
+            level = bodyMass > 0.58f ? 1 : 0;
+        else
+            level = coverage > 0.58f ? 1 : 0;
+
+        if (jawMass > 0.68f)
+            level = juce::jmax<uint8_t>(level, 1);
+
+        if (earMass > 0.16f)
+            level = juce::jmin<uint8_t>(level, static_cast<uint8_t>(0));
+        else if (earMass > 0.10f)
+            level = juce::jmin<uint8_t>(level, static_cast<uint8_t>(1));
+
+        if (glyph == U'•')
+            level = static_cast<uint8_t>(level > 0 ? level - 1 : 0);
+        else if (glyph == U'●')
+            level = juce::jmin<uint8_t>(3, static_cast<uint8_t>(level + 0));
+        else if (glyph == U'▪')
+            level = juce::jmin<uint8_t>(3, static_cast<uint8_t>(level + 0));
+        else if (glyph == U'■')
+            level = juce::jmin<uint8_t>(2, static_cast<uint8_t>(level + 0));
+        else if (isBrushLetter(glyph))
+            level = juce::jmin<uint8_t>(2, static_cast<uint8_t>(level + (edge ? 0 : 0)));
+        else if (glyph == U'⌒' || glyph == U'⌣' || glyph == U'∧' || glyph == U'∨')
+            level = juce::jmin<uint8_t>(3, static_cast<uint8_t>(level + 0));
+
+        return juce::jlimit<uint8_t>(0, 3, level);
+    }
+
     juce::Rectangle<int> getOccupiedBounds() const
     {
         int minX = canvasCols;
@@ -301,7 +771,7 @@ private:
     void drawCanvasSubset(juce::Graphics& g, juce::Rectangle<float> bounds, juce::Font font,
                           juce::Rectangle<int> subset)
     {
-        static constexpr float sizeScales[] = { 0.60f, 0.86f, 1.08f, 1.30f };
+        static constexpr float sizeScales[] = { 0.32f, 0.54f, 0.78f, 1.04f };
         const float cellW = bounds.getWidth() / static_cast<float>(juce::jmax(1, subset.getWidth()));
         const float cellH = bounds.getHeight() / static_cast<float>(juce::jmax(1, subset.getHeight()));
 
@@ -324,9 +794,14 @@ private:
                 const float px = bounds.getX() + (x - subset.getX()) * cellW;
                 const float py = bounds.getY() + (y - subset.getY()) * cellH;
                 const float scale = sizeScales[juce::jlimit<int>(0, 3, static_cast<int>(cell.sizeLevel))];
+                const auto cellBounds = juce::Rectangle<float>(px, py, cellW, cellH);
 
                 const char32_t ch = cell.symbol;
-                if (ch >= 0x2800u && ch <= 0x28FFu)
+                if (isPrimitiveGlyph(ch))
+                {
+                    drawPrimitiveGlyph(g, cellBounds, ch, drawColour, scale);
+                }
+                else if (ch >= 0x2800u && ch <= 0x28FFu)
                 {
                     // iOS system font renders Braille as tiny dots — draw programmatically instead
                     const uint8_t mask = static_cast<uint8_t>(ch - 0x2800u);
@@ -411,24 +886,134 @@ private:
         {
             const auto eyeColour = isDarkTheme ? juce::Colour(0xFFFFDB63) : juce::Colour(0xFFB97D08);
             const auto hoodColour = isDarkTheme ? juce::Colour(0xFFE9E0D4) : juce::Colour(0xFF6A7078);
-            stamp(9, 6, U'⠿', eyeColour, 0.98f, 3);
-            stamp(14, 6, U'⠿', eyeColour, 0.98f, 3);
-            stamp(12, 8, U'⠒', hoodColour, 0.70f, 2);
-            stamp(10, 13, U'⠶', hoodColour.withAlpha(0.86f), 0.76f, 2);
-            stamp(12, 13, U'⠶', hoodColour.withAlpha(0.86f), 0.76f, 2);
-            stamp(14, 13, U'⠶', hoodColour.withAlpha(0.86f), 0.76f, 2);
+            stamp(9, 6, U'▪', eyeColour, 0.98f, 3);
+            stamp(14, 6, U'▪', eyeColour, 0.98f, 3);
+            stamp(12, 8, U'•', hoodColour, 0.64f, 1);
+            stamp(10, 13, U'─', hoodColour.withAlpha(0.86f), 0.72f, 1);
+            stamp(12, 13, U'─', hoodColour.withAlpha(0.86f), 0.72f, 1);
+            stamp(14, 13, U'─', hoodColour.withAlpha(0.86f), 0.72f, 1);
+            stamp(8, 14, U'⌣', hoodColour.withAlpha(0.80f), 0.70f, 1);
+            stamp(10, 15, U'⌣', hoodColour.withAlpha(0.88f), 0.76f, 1);
+            stamp(12, 15, U'⌣', hoodColour.withAlpha(0.88f), 0.76f, 1);
+            stamp(14, 14, U'⌣', hoodColour.withAlpha(0.80f), 0.70f, 1);
         }
         else
         {
             const auto eyeColour = isDarkTheme ? juce::Colour(0xFF79F6F0) : juce::Colour(0xFF0A8C95);
             const auto edgeColour = isDarkTheme ? juce::Colour(0xFFD9EFFF) : juce::Colour(0xFF41659C);
-            stamp(9, 6, U'⠿', eyeColour, 0.98f, 3);
-            stamp(14, 6, U'⠿', eyeColour, 0.98f, 3);
-            stamp(8, 2, U'⠉', edgeColour.withAlpha(0.92f), 0.82f, 2);
-            stamp(15, 2, U'⠉', edgeColour.withAlpha(0.92f), 0.82f, 2);
-            stamp(7, 8, U'⠂', eyeColour.withAlpha(0.72f), 0.58f, 1);
-            stamp(16, 8, U'⠂', eyeColour.withAlpha(0.72f), 0.58f, 1);
+            stamp(9, 6, U'▪', eyeColour, 0.98f, 3);
+            stamp(14, 6, U'▪', eyeColour, 0.98f, 3);
+            stamp(8, 2, U'─', edgeColour.withAlpha(0.92f), 0.76f, 1);
+            stamp(15, 2, U'─', edgeColour.withAlpha(0.92f), 0.76f, 1);
+            stamp(7, 8, U'•', eyeColour.withAlpha(0.72f), 0.58f, 0);
+            stamp(16, 8, U'•', eyeColour.withAlpha(0.72f), 0.58f, 0);
         }
+    }
+
+    bool drawGuidedProceduralGuoba()
+    {
+        if (currentSkin != SkinType::Guoba)
+            return false;
+
+        const int targetCols = 22;
+        const int targetRows = 17;
+        const int startX = (canvasCols - targetCols) / 2;
+        const int startY = 5;
+        explicitCharacterBounds = {};
+
+        const auto neutralColour = isDarkTheme ? juce::Colour(0xFFEDE5DA) : juce::Colour(0xFF343B45);
+        const auto edgeColour = isDarkTheme ? juce::Colour(0xFFFFF8EE) : juce::Colour(0xFF20262E);
+        const auto accentColour = isDarkTheme ? juce::Colour(0xFFFFD35A) : juce::Colour(0xFFB27A18);
+        auto stamp = [this, startX, startY, targetCols, targetRows]
+                     (int x, int y, char32_t glyph, juce::Colour colour,
+                      float brightness, uint8_t sizeLevel)
+        {
+            if (x < 0 || x >= targetCols || y < 0 || y >= targetRows)
+                return;
+            canvas->setCell(startX + x, startY + y, glyph, colour, 1, brightness, sizeLevel);
+        };
+
+        auto placeBody = [&](int x, int y, int inset)
+        {
+            char32_t glyph = inset >= 3 ? U'■' : (inset == 2 ? U'■' : U'▪');
+            uint8_t sizeLevel = inset >= 3 ? 3 : (inset == 2 ? 2 : 1);
+            auto colour = neutralColour;
+            if (inset >= 3)
+                colour = colour.interpolatedWith(edgeColour, isDarkTheme ? 0.08f : 0.04f);
+            stamp(x, y, glyph, colour, isDarkTheme ? 0.94f : 0.92f, sizeLevel);
+        };
+
+        const int bodyLeft = 5;
+        const int bodyRight = 14;
+        const int bodyTop = 2;
+        const int bodyBottom = 11;
+        for (int y = bodyTop; y <= bodyBottom; ++y)
+        {
+            for (int x = bodyLeft; x <= bodyRight; ++x)
+            {
+                const int inset = juce::jmin(juce::jmin(x - bodyLeft, bodyRight - x),
+                                             juce::jmin(y - bodyTop, bodyBottom - y));
+                placeBody(x, y, inset);
+            }
+        }
+
+        // Head top and ears
+        stamp(5, 0, U'─', juce::Colour(0xFF8DB5EA), 0.88f, 1);
+        stamp(14, 0, U'─', juce::Colour(0xFF8DB5EA), 0.88f, 1);
+        stamp(2, 1, U'╲', edgeColour, 0.86f, 1);
+        stamp(3, 1, U'∧', edgeColour, 0.86f, 1);
+        stamp(4, 1, U'╱', edgeColour, 0.86f, 1);
+        stamp(15, 1, U'∧', edgeColour, 0.86f, 1);
+        stamp(16, 1, U'╲', edgeColour, 0.86f, 1);
+        stamp(17, 1, U'╱', edgeColour, 0.86f, 1);
+        stamp(6, 1, U'⌒', edgeColour, 0.80f, 1);
+        stamp(7, 1, U'⌒', edgeColour, 0.80f, 1);
+        stamp(8, 1, U'⌒', edgeColour, 0.80f, 1);
+        stamp(9, 1, U'⌒', edgeColour, 0.80f, 1);
+        stamp(10, 1, U'⌒', edgeColour, 0.80f, 1);
+
+        // Outer sides
+        for (int y = 3; y <= 9; ++y)
+        {
+            stamp(4, y, U'│', edgeColour, 0.82f, 1);
+            stamp(15, y, U'│', edgeColour, 0.82f, 1);
+        }
+
+        // Eyes
+        stamp(7, 4, U'▪', juce::Colour(0xFF3CCED8), 1.0f, 2);
+        stamp(12, 4, U'▪', juce::Colour(0xFF3CCED8), 1.0f, 2);
+
+        // Lower jaw and feet
+        for (int x = 6; x <= 11; ++x)
+            stamp(x, 12, U'⌣', edgeColour, 0.74f, 1);
+        stamp(2, 11, U'╲', edgeColour, 0.80f, 1);
+        stamp(3, 11, U'V', edgeColour, 0.86f, 1);
+        stamp(4, 11, U'V', edgeColour, 0.86f, 1);
+        stamp(15, 11, U'V', edgeColour, 0.86f, 1);
+        stamp(16, 11, U'╱', edgeColour, 0.80f, 1);
+        stamp(4, 13, U'∧', edgeColour, 0.78f, 0);
+        stamp(5, 13, U'∧', edgeColour, 0.78f, 0);
+        stamp(14, 13, U'∧', edgeColour, 0.78f, 0);
+        stamp(15, 13, U'∧', edgeColour, 0.78f, 0);
+
+        // Right-side capsule
+        stamp(18, 2, U'╲', edgeColour, 0.80f, 1);
+        stamp(19, 2, U'⌒', edgeColour, 0.80f, 1);
+        stamp(20, 2, U'╱', edgeColour, 0.80f, 1);
+        for (int y = 3; y <= 6; ++y)
+        {
+            stamp(18, y, U'│', edgeColour, 0.78f, 1);
+            stamp(20, y, U'│', edgeColour, 0.78f, 1);
+        }
+        stamp(19, 3, U'■', neutralColour, isDarkTheme ? 0.92f : 0.90f, 2);
+        stamp(19, 4, U'■', neutralColour, isDarkTheme ? 0.92f : 0.90f, 2);
+        stamp(19, 5, U'▪', neutralColour, isDarkTheme ? 0.88f : 0.86f, 1);
+        stamp(18, 7, U'∨', edgeColour, 0.78f, 0);
+        stamp(19, 7, U'⌣', edgeColour, 0.78f, 0);
+        stamp(20, 7, U'∧', edgeColour, 0.78f, 0);
+
+        explicitCharacterBounds = juce::Rectangle<int>(startX + 1, startY, 20, 15);
+        return true;
     }
 
     bool drawImageDrivenCharacter()
@@ -451,6 +1036,7 @@ private:
         const int startX = (canvasCols - targetCols) / 2;
         const int startY = 6;
         explicitCharacterBounds = juce::Rectangle<int>(startX, startY, targetCols, targetRows).expanded(1, 1);
+        std::array<uint8_t, 26> letterUseCounts {};
 
         std::vector<BrailleCell> cells(static_cast<size_t>(targetCols * targetRows));
         auto cellAt = [&cells, targetCols, targetRows](int x, int y) -> BrailleCell&
@@ -575,46 +1161,82 @@ private:
                 const float centerBias = juce::jlimit(0.0f, 1.0f,
                                                       centerBiasX * 0.58f + centerBiasY * 0.42f);
 
-                std::array<float, 8> boostedDots = cell.dots;
-                for (auto& dot : boostedDots)
-                {
-                    dot = juce::jlimit(0.0f, 1.0f,
-                                       dot
-                                       + cell.coverage * 0.08f
-                                       + centerBias * 0.10f
-                                       + (edge ? 0.12f : 0.0f));
-                }
-
-                const float threshold = edge ? 0.18f : (cell.coverage > 0.42f ? 0.15f : 0.20f);
-                const char32_t glyph = makeBrailleGlyph(boostedDots, threshold);
                 auto colour = remapBrailleColour(cell.average, cell.luminance, cell.saturation,
                                                  edge, cell.accentLike, centerBias);
                 if (edge)
                     colour = colour.interpolatedWith(outlineLight, isDarkTheme ? 0.20f : 0.12f);
 
+                const float nx = (static_cast<float>(gx) + 0.5f) / static_cast<float>(targetCols);
+                const float ny = (static_cast<float>(gy) + 0.5f) / static_cast<float>(targetRows);
+                const auto guide = computeCharacterGuide(currentSkin, nx, ny);
+                const float faceMass = guide.face;
+                const float jawMass = guide.jaw;
+                const float earMass = guide.ear;
+                const float footMass = guide.foot;
+                const float bodyMass = guide.body;
+                const float coreMass = guide.core;
+                const float silhouette = guide.silhouette;
+                const bool faceZone = faceMass > 0.16f;
+                const bool torsoBand = jawMass > 0.10f || (ny > 0.56f && bodyMass > 0.34f);
+                const bool denseZone = coreMass > 0.32f || jawMass > 0.18f;
+                if (silhouette < 0.10f && cell.coverage < 0.40f)
+                    continue;
+                if (bodyMass < 0.16f && cell.coverage < 0.58f && footMass < 0.12f)
+                    continue;
+                const float sourceWeight = currentSkin == SkinType::Guoba ? 0.38f : 0.50f;
+                const float guideWeight = currentSkin == SkinType::Guoba ? 0.66f : 0.54f;
+                const float shapedCoverage = juce::jlimit(0.0f, 1.0f,
+                                                          cell.coverage * sourceWeight
+                                                          + silhouette * guideWeight
+                                                          + coreMass * 0.16f
+                                                          + jawMass * 0.12f
+                                                          + footMass * 0.12f
+                                                          - earMass * 0.04f);
+                if (shapedCoverage < 0.22f)
+                    continue;
+                const char32_t glyph = edge
+                    ? chooseEdgeGlyph(getCoverage(gx - 1, gy), getCoverage(gx + 1, gy),
+                                      getCoverage(gx, gy - 1), getCoverage(gx, gy + 1),
+                                      getCoverage(gx - 1, gy - 1), getCoverage(gx + 1, gy - 1),
+                                      getCoverage(gx - 1, gy + 1), getCoverage(gx + 1, gy + 1),
+                                      gx, gy, targetCols, targetRows)
+                    : chooseInteriorGlyph(shapedCoverage, cell.accentLike,
+                                          denseZone, faceZone, torsoBand, gx, gy);
+                const char32_t finalGlyph = enrichGlyphWithLetterBrush(glyph, edge, faceZone, torsoBand,
+                                                                       denseZone, gx, gy,
+                                                                       targetCols, targetRows,
+                                                                       letterUseCounts);
                 const float pulse = 0.5f + 0.5f * std::sin(animationPhase * 3.2f + gx * 0.21f - gy * 0.17f);
                 const float energy = juce::jlimit(0.0f, 1.0f,
-                                                  cell.coverage * 0.60f
+                                                  shapedCoverage * 0.60f
                                                   + centerBias * 0.24f
                                                   + (edge ? 0.22f : 0.0f)
                                                   + (cell.accentLike ? 0.12f : 0.0f));
                 float brightness = juce::jlimit(isDarkTheme ? 0.56f : 0.74f, 1.0f,
                                                 (isDarkTheme ? 0.66f : 0.80f)
-                                                + cell.coverage * (isDarkTheme ? 0.30f : 0.22f)
+                                                + shapedCoverage * (isDarkTheme ? 0.30f : 0.22f)
                                                 + centerBias * 0.08f
+                                                + jawMass * 0.04f
+                                                + footMass * 0.03f
+                                                - earMass * 0.04f
                                                 + (edge ? 0.10f : 0.0f)
                                                 + pulse * (cell.accentLike ? 0.06f : 0.03f));
-                const uint8_t sizeLevel = energy > 0.82f ? 3 : (energy > 0.58f ? 2 : (energy > 0.26f ? 1 : 0));
+                juce::ignoreUnused(energy);
+                const uint8_t sizeLevel = chooseGlyphSizeLevel(finalGlyph, shapedCoverage, edge,
+                                                               cell.accentLike, denseZone,
+                                                               faceZone, torsoBand,
+                                                               faceMass, jawMass, earMass,
+                                                               gx, gy);
 
-                canvas->setCell(startX + gx, startY + gy, glyph, colour, 1, brightness, sizeLevel);
+                canvas->setCell(startX + gx, startY + gy, finalGlyph, colour, 1, brightness, sizeLevel);
 
                 if (edge && cell.coverage > 0.18f)
                 {
                     const float haloAlpha = isDarkTheme ? 0.10f : 0.07f;
                     if (gx > 0 && getCoverage(gx - 1, gy) < 0.025f)
-                        canvas->setCell(startX + gx - 1, startY + gy, U'⠂', colour.withAlpha(haloAlpha), 0, haloAlpha, 0);
+                        canvas->setCell(startX + gx - 1, startY + gy, U'•', colour.withAlpha(haloAlpha), 0, haloAlpha, 0);
                     if (gx < targetCols - 1 && getCoverage(gx + 1, gy) < 0.025f)
-                        canvas->setCell(startX + gx + 1, startY + gy, U'⠂', colour.withAlpha(haloAlpha), 0, haloAlpha, 0);
+                        canvas->setCell(startX + gx + 1, startY + gy, U'•', colour.withAlpha(haloAlpha), 0, haloAlpha, 0);
                 }
             }
         }
@@ -625,23 +1247,26 @@ private:
 
     void drawCharacter()
     {
+        if (drawGuidedProceduralGuoba())
+            return;
+
         if (!sourceSpriteImage.isNull() && drawImageDrivenCharacter())
             return;
 
         static const char32_t* guobaPixels[14] = {
             U"....................",
-            U"......##....##......",
-            U".....####..####.....",
-            U"....############....",
-            U"....##@######@##....",
-            U"....############....",
-            U".....###.##.###.....",
+            U".......#....#.......",
+            U"......###..###......",
             U".....##########.....",
-            U"....############....",
+            U"....###@####@###....",
             U"...##############...",
-            U"...#######..#####...",
-            U"....###......###....",
-            U".....##......##.....",
+            U"...##############...",
+            U"...##############...",
+            U"...##############...",
+            U"....############....",
+            U"....############....",
+            U".....##########.....",
+            U"......########......",
             U"...................."
         };
 
@@ -675,6 +1300,7 @@ private:
         const int startX = (canvasCols - targetCols) / 2;
         const int startY = 6;
         explicitCharacterBounds = juce::Rectangle<int>(startX, startY, targetCols, targetRows).expanded(1, 1);
+        std::array<uint8_t, 26> letterUseCounts {};
 
         const auto neutralColour = currentSkin == SkinType::Guoba
             ? (isDarkTheme ? juce::Colour(0xFFE8E1D6) : juce::Colour(0xFF49453E))
@@ -778,49 +1404,88 @@ private:
                 const bool torsoBand = currentSkin == SkinType::Guoba
                     ? (gy >= 10 && gy <= 13 && gx >= 7 && gx <= 16)
                     : (gy >= 9 && gy <= 13 && gx >= 7 && gx <= 16);
-                const bool faceZone = (gy >= 4 && gy <= 8 && gx >= 7 && gx <= 16);
+                const bool faceZone = (gy >= 4 && gy <= 11 && gx >= 5 && gx <= 18);
+                const float nx = (static_cast<float>(gx) + 0.5f) / static_cast<float>(targetCols);
+                const float ny = (static_cast<float>(gy) + 0.5f) / static_cast<float>(targetRows);
+                const auto guide = computeCharacterGuide(currentSkin, nx, ny);
+                const float faceMass = guide.face;
+                const float jawMass = guide.jaw;
+                const float earMass = guide.ear;
+                const float footMass = guide.foot;
+                const float bodyMass = guide.body;
+                const float coreMass = guide.core;
+                const float silhouette = guide.silhouette;
+                const bool denseZone = coreMass > 0.30f || jawMass > 0.18f || torsoBand;
+                const bool dynamicFaceZone = faceZone || faceMass > 0.16f;
+                const bool dynamicTorsoBand = torsoBand || (jawMass > 0.10f && ny > 0.54f);
+                if (silhouette < 0.10f && cell.coverage < 0.42f)
+                    continue;
+                if (bodyMass < 0.16f && cell.coverage < 0.58f && footMass < 0.12f)
+                    continue;
+                const float sourceWeight = currentSkin == SkinType::Guoba ? 0.34f : 0.46f;
+                const float guideWeight = currentSkin == SkinType::Guoba ? 0.72f : 0.58f;
+                const float shapedCoverage = juce::jlimit(0.0f, 1.0f,
+                                                          cell.coverage * sourceWeight
+                                                          + silhouette * guideWeight
+                                                          + coreMass * 0.18f
+                                                          + jawMass * 0.14f
+                                                          + footMass * 0.14f
+                                                          - earMass * 0.04f);
+                if (shapedCoverage < 0.20f)
+                    continue;
 
-                auto dots = cell.dots;
-                for (auto& dot : dots)
-                    dot = juce::jlimit(0.0f, 1.0f, dot + cell.coverage * 0.24f + centerBias * 0.22f + (edge ? 0.18f : 0.0f));
-
-                const char32_t glyph = makeBrailleGlyph(dots, edge ? 0.24f : 0.34f);
                 auto colour = neutralColour;
-                if (torsoBand)
+                if (dynamicTorsoBand)
                     colour = colour.interpolatedWith(accentColour, currentSkin == SkinType::Guoba ? 0.10f : 0.08f);
-                if (faceZone && !edge)
+                if (dynamicFaceZone && !edge)
                     colour = colour.interpolatedWith(accentSecondary, currentSkin == SkinType::Guoba ? 0.06f : 0.10f);
                 if (edge)
                     colour = colour.interpolatedWith(edgeColour, isDarkTheme ? 0.52f : 0.28f);
 
+                const char32_t glyph = edge
+                    ? chooseEdgeGlyph(coverageAt(gx - 1, gy), coverageAt(gx + 1, gy),
+                                      coverageAt(gx, gy - 1), coverageAt(gx, gy + 1),
+                                      coverageAt(gx - 1, gy - 1), coverageAt(gx + 1, gy - 1),
+                                      coverageAt(gx - 1, gy + 1), coverageAt(gx + 1, gy + 1),
+                                      gx, gy, targetCols, targetRows)
+                    : chooseInteriorGlyph(shapedCoverage, false,
+                                          denseZone, dynamicFaceZone, dynamicTorsoBand, gx, gy);
+                const char32_t finalGlyph = enrichGlyphWithLetterBrush(glyph, edge, dynamicFaceZone, dynamicTorsoBand,
+                                                                       denseZone, gx, gy,
+                                                                       targetCols, targetRows,
+                                                                       letterUseCounts);
                 const float pulse = 0.5f + 0.5f * std::sin(animationPhase * 2.6f + gx * 0.24f - gy * 0.17f);
                 float brightness = isDarkTheme
-                    ? juce::jlimit(0.78f, 1.0f, 0.80f + cell.coverage * 0.24f + centerBias * 0.08f + pulse * 0.05f)
-                    : juce::jlimit(0.90f, 1.0f, 0.92f + cell.coverage * 0.10f + centerBias * 0.04f + pulse * 0.03f);
-                const uint8_t sizeLevel = edge ? 3 : (cell.coverage > 0.48f ? 2 : 1);
-                stamp(gx, gy, glyph, colour, brightness, sizeLevel);
+                    ? juce::jlimit(0.78f, 1.0f, 0.80f + shapedCoverage * 0.24f + centerBias * 0.08f + jawMass * 0.04f + footMass * 0.03f + pulse * 0.05f - earMass * 0.05f)
+                    : juce::jlimit(0.90f, 1.0f, 0.92f + shapedCoverage * 0.10f + centerBias * 0.04f + jawMass * 0.04f + footMass * 0.03f + pulse * 0.03f - earMass * 0.05f);
+                const uint8_t sizeLevel = chooseGlyphSizeLevel(finalGlyph, shapedCoverage, edge,
+                                                               false, denseZone,
+                                                               dynamicFaceZone, dynamicTorsoBand,
+                                                               faceMass, jawMass, earMass,
+                                                               gx, gy);
+                stamp(gx, gy, finalGlyph, colour, brightness, sizeLevel);
             }
         }
 
         if (currentSkin == SkinType::Guoba)
         {
-            stamp(9, 5, U'⣿', accentColour, 1.0f, 3);
-            stamp(14, 5, U'⣿', accentColour, 1.0f, 3);
-            stamp(11, 7, U'⠒', edgeColour, isDarkTheme ? 0.92f : 0.86f, 2);
-            stamp(10, 11, U'⣶', accentColour.interpolatedWith(accentSecondary, 0.18f), 0.96f, 3);
-            stamp(11, 11, U'⣿', accentColour, 1.0f, 3);
-            stamp(12, 11, U'⣿', accentColour, 1.0f, 3);
-            stamp(13, 11, U'⣶', accentColour.interpolatedWith(accentSecondary, 0.18f), 0.96f, 3);
+            stamp(9, 5, U'▪', accentColour, 1.0f, 3);
+            stamp(14, 5, U'▪', accentColour, 1.0f, 3);
+            stamp(11, 7, U'⌣', edgeColour, isDarkTheme ? 0.88f : 0.80f, 1);
+            stamp(10, 11, U'∧', accentColour.interpolatedWith(accentSecondary, 0.18f), 0.90f, 1);
+            stamp(11, 11, U'▪', accentColour, 0.98f, 2);
+            stamp(12, 11, U'▪', accentColour, 0.98f, 2);
+            stamp(13, 11, U'∨', accentColour.interpolatedWith(accentSecondary, 0.18f), 0.90f, 1);
         }
         else
         {
-            stamp(9, 5, U'⣿', accentColour, 1.0f, 3);
-            stamp(14, 5, U'⣿', accentColour, 1.0f, 3);
-            stamp(6, 6, U'⠂', accentSecondary, isDarkTheme ? 0.82f : 0.74f, 1);
-            stamp(17, 6, U'⠂', accentSecondary, isDarkTheme ? 0.82f : 0.74f, 1);
-            stamp(7, 2, U'⣀', accentColour, isDarkTheme ? 0.74f : 0.70f, 2);
-            stamp(14, 2, U'⣀', accentColour, isDarkTheme ? 0.74f : 0.70f, 2);
-            stamp(10, 10, U'⠒', edgeColour, isDarkTheme ? 0.82f : 0.76f, 2);
+            stamp(9, 5, U'▪', accentColour, 1.0f, 3);
+            stamp(14, 5, U'▪', accentColour, 1.0f, 3);
+            stamp(6, 6, U'•', accentSecondary, isDarkTheme ? 0.82f : 0.74f, 0);
+            stamp(17, 6, U'•', accentSecondary, isDarkTheme ? 0.82f : 0.74f, 0);
+            stamp(7, 2, U'⌒', accentColour, isDarkTheme ? 0.74f : 0.70f, 1);
+            stamp(14, 2, U'⌒', accentColour, isDarkTheme ? 0.74f : 0.70f, 1);
+            stamp(10, 10, U'⌣', edgeColour, isDarkTheme ? 0.82f : 0.76f, 1);
         }
     }
 

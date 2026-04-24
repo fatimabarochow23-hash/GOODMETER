@@ -32,6 +32,7 @@
 #include "../SpectrogramComponent.h"
 #include "../PsrMeterComponent.h"
 #include "iOSAudioEngine.h"
+#include "MarkerModel.h"
 
 #define MARATHON_ART_STYLE 1
 
@@ -100,6 +101,29 @@ private:
     juce::Colour iconColour = GoodMeterLookAndFeel::bgMain;
 };
 
+class TransportGestureHandle : public juce::Component
+{
+public:
+    std::function<void(const juce::MouseEvent&)> onDown;
+    std::function<void(const juce::MouseEvent&)> onDrag;
+    std::function<void(const juce::MouseEvent&)> onUp;
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (onDown) onDown(e);
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (onDrag) onDrag(e);
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (onUp) onUp(e);
+    }
+};
+
 class MetersPageComponent : public juce::Component,
                              public juce::Timer
 {
@@ -125,6 +149,9 @@ public:
     std::function<void()> rewindExternalTransport;
     std::function<void(double)> seekExternalTransport;
     std::function<void()> jumpToEndExternalTransport;
+    std::function<bool()> isMarkerModeActive;
+    std::function<void()> addMarkerAtCurrentPosition;
+    std::function<std::vector<GoodMeterMarkerItem>()> getCurrentMarkerItems;
 
     MetersPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEngine& engine)
         : processor(proc), audioEngine(engine)
@@ -140,6 +167,8 @@ public:
         addAndMakeVisible(viewport.get());
         viewport->setViewedComponent(contentComponent.get(), false);
         viewport->setScrollBarsShown(false, false, true, false);
+        viewport->addMouseListener(this, true);
+        contentComponent->addMouseListener(this, true);
         // iPhone page 2 uses custom vertical drag forwarding from each card.
         // Disable Viewport's own drag scrolling so the two systems don't fight.
         viewport->setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::never);
@@ -169,6 +198,13 @@ public:
         progressSlider.setColour(juce::Slider::thumbColourId, GoodMeterLookAndFeel::textMain);
         progressSlider.setColour(juce::Slider::trackColourId, GoodMeterLookAndFeel::textMain.withAlpha(0.15f));
         progressSlider.setColour(juce::Slider::backgroundColourId, GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
+        progressSlider.onDragStart = [this]()
+        {
+            transportScrubDragging = true;
+            transportSeekPending = false;
+            pendingTransportSeekSeconds = 0.0;
+            lastTransportSeekCommitMs = 0;
+        };
         progressSlider.onValueChange = [this]()
         {
             if (hasExternalTransport != nullptr && hasExternalTransport())
@@ -176,16 +212,29 @@ public:
                 if (progressSlider.isMouseButtonDown() && seekExternalTransport != nullptr)
                 {
                     const double total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
-                    seekExternalTransport(progressSlider.getValue() * total);
+                    const double target = progressSlider.getValue() * total;
+                    queueTransportSeek(target);
+                    currentTimeLabel.setText(fmtTime(target), juce::dontSendNotification);
+                    remainingTimeLabel.setText("-" + fmtTime(juce::jmax(0.0, total - target)),
+                                               juce::dontSendNotification);
                 }
                 return;
             }
 
             if (progressSlider.isMouseButtonDown())
             {
-                double total = audioEngine.getTotalLength();
-                audioEngine.seek(progressSlider.getValue() * total);
+                const double total = audioEngine.getTotalLength();
+                const double target = progressSlider.getValue() * total;
+                queueTransportSeek(target);
+                currentTimeLabel.setText(fmtTime(target), juce::dontSendNotification);
+                remainingTimeLabel.setText("-" + fmtTime(juce::jmax(0.0, total - target)),
+                                           juce::dontSendNotification);
             }
+        };
+        progressSlider.onDragEnd = [this]()
+        {
+            transportScrubDragging = false;
+            flushQueuedTransportSeek(true);
         };
         addAndMakeVisible(progressSlider);
 
@@ -218,22 +267,20 @@ public:
             const bool shouldPlay = !currentlyPlaying;
             transportUserIntentActive = true;
             transportUserIntentPlaying = shouldPlay;
-            transportUserIntentUntilMs = juce::Time::getMillisecondCounter() + 320;
+            transportUserIntentUntilMs = juce::Time::getMillisecondCounter() + 650;
 
             playPauseBtn.playing = shouldPlay;
             playPauseBtn.repaint();
 
             juce::Component::SafePointer<MetersPageComponent> safeThis(this);
-            juce::MessageManager::callAsync([safeThis, shouldPlay]()
+
+            if (useExternal)
             {
-                if (safeThis == nullptr)
-                    return;
-
-                const bool useExternal = (safeThis->hasExternalTransport != nullptr
-                                          && safeThis->hasExternalTransport());
-
-                if (useExternal)
+                juce::Timer::callAfterDelay(16, [safeThis, shouldPlay]()
                 {
+                    if (safeThis == nullptr)
+                        return;
+
                     if (shouldPlay)
                     {
                         if (safeThis->playExternalTransport != nullptr)
@@ -243,11 +290,17 @@ public:
                     {
                         safeThis->pauseExternalTransport();
                     }
+                });
 
-                    return;
-                }
+                return;
+            }
 
-                if (!safeThis->audioEngine.isFileLoaded())
+            if (!audioEngine.isFileLoaded())
+                return;
+
+            juce::Timer::callAfterDelay(16, [safeThis, shouldPlay]()
+            {
+                if (safeThis == nullptr || !safeThis->audioEngine.isFileLoaded())
                     return;
 
                 if (shouldPlay)
@@ -328,9 +381,39 @@ public:
         transportFileLabel.setFont(juce::Font(juce::FontOptions(12.5f)));
         transportFileLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMain);
         transportFileLabel.setJustificationType(juce::Justification::centred);
-        transportFileLabel.setMinimumHorizontalScale(0.72f);
+        transportFileLabel.setMinimumHorizontalScale(1.0f);
         GoodMeterLookAndFeel::markAsIOSEnglishMono(transportFileLabel);
         addAndMakeVisible(transportFileLabel);
+
+        transportGestureHandle.onDown = [this](const juce::MouseEvent& e)
+        {
+            transportHandleDragging = true;
+            dragStartTransportReveal = transportReveal;
+            dragStartTransportY = e.getScreenPosition().y;
+            transportTargetReveal = transportReveal;
+        };
+        transportGestureHandle.onDrag = [this](const juce::MouseEvent& e)
+        {
+            if (!transportHandleDragging)
+                return;
+
+            const bool landscape = isLandscapeLayout();
+            const float dragRange = (float) juce::jmax(1, getExpandedTransportBarHeight(landscape)
+                                                          - getCollapsedTransportBarHeight(landscape));
+            const float deltaY = (float) (e.getScreenPosition().y - dragStartTransportY);
+            transportReveal = juce::jlimit(0.0f, 1.0f, dragStartTransportReveal - deltaY / dragRange);
+            resized();
+            repaint();
+        };
+        transportGestureHandle.onUp = [this](const juce::MouseEvent&)
+        {
+            if (!transportHandleDragging)
+                return;
+
+            transportHandleDragging = false;
+            transportTargetReveal = (transportReveal < 0.56f) ? 0.0f : 1.0f;
+        };
+        addAndMakeVisible(transportGestureHandle);
 
         //==================================================================
         // Create all 8 meter cards
@@ -419,11 +502,6 @@ public:
         g.fillAll(isDarkTheme ? juce::Colour(0xFF07080B) : GoodMeterLookAndFeel::bgMain);
 
         const bool landscape = isLandscapeLayout();
-        auto transportTop = getHeight() - getTransportBarHeight(landscape);
-        auto lineColor = isDarkTheme ? juce::Colours::white.withAlpha(0.08f)
-                                     : GoodMeterLookAndFeel::textMain.withAlpha(0.12f);
-        g.setColour(lineColor);
-        g.drawHorizontalLine(transportTop, 0.0f, static_cast<float>(getWidth()));
 
         if (bgCanvas != nullptr)
         {
@@ -471,31 +549,76 @@ public:
 #endif
         }
 
-        if (!transportPlateBounds.isEmpty())
+        if (!transportPlateBounds.isEmpty() && transportReveal > 0.04f)
         {
             auto plate = transportPlateBounds.toFloat();
             const float radius = 18.0f;
             const auto plateFill = isDarkTheme
-                                       ? juce::Colour(0xFF0B1017).withAlpha(0.30f)
-                                       : juce::Colour(0xFFFFFFFF).withAlpha(0.58f);
+                                       ? juce::Colour(0xFF0B1017).withAlpha(0.15f)
+                                       : juce::Colour(0xFFFFFFFF).withAlpha(0.18f);
             const auto plateOutline = isDarkTheme
-                                          ? juce::Colour(0xFFF6EEE3).withAlpha(0.18f)
-                                          : juce::Colour(0xFF1A1A24).withAlpha(0.16f);
-            const auto shadowColour = isDarkTheme
-                                          ? juce::Colours::black.withAlpha(0.24f)
-                                          : juce::Colours::black.withAlpha(0.08f);
-
+                                          ? juce::Colour(0xFFF6EEE3).withAlpha(0.08f)
+                                          : juce::Colour(0xFF1A1A24).withAlpha(0.06f);
             juce::Path platePath;
             platePath.addRoundedRectangle(plate, radius);
-
-            g.setColour(shadowColour);
-            g.fillRoundedRectangle(plate.translated(2.0f, 2.0f), radius);
 
             g.setColour(plateFill);
             g.fillPath(platePath);
 
             g.setColour(plateOutline);
             g.drawRoundedRectangle(plate.reduced(0.5f), radius, 0.95f);
+        }
+
+        if (transportReveal < 0.98f)
+        {
+            const auto hookArea = getTransportHookBounds(landscape).toFloat();
+            const auto hookColour = isDarkTheme
+                ? juce::Colour(0xFFF6EEE3).withAlpha(0.92f)
+                : GoodMeterLookAndFeel::textMain.withAlpha(0.78f);
+            g.setColour(hookColour);
+
+            juce::Path hook;
+            const float w = hookArea.getWidth();
+            const float h = hookArea.getHeight();
+            const float x = hookArea.getX();
+            const float y = hookArea.getY();
+            hook.startNewSubPath(x + w * 0.16f, y + h * 0.28f);
+            hook.quadraticTo(x + w * 0.24f, y + h * 0.80f, x + w * 0.50f, y + h * 0.80f);
+            hook.quadraticTo(x + w * 0.76f, y + h * 0.80f, x + w * 0.84f, y + h * 0.28f);
+            g.strokePath(hook, juce::PathStrokeType(2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+    }
+
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        if (getCurrentMarkerItems == nullptr)
+            return;
+
+        const auto markers = getCurrentMarkerItems();
+        if (markers.empty() || !progressSlider.isVisible())
+            return;
+
+        double total = 0.0;
+        if (hasExternalTransport != nullptr && hasExternalTransport())
+            total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
+        else
+            total = audioEngine.getTotalLength();
+
+        if (total <= 0.001)
+            return;
+
+        auto rail = progressSlider.getBounds().toFloat();
+        const float centerY = rail.getCentreY();
+        for (const auto& marker : markers)
+        {
+            const float t = (float) juce::jlimit(0.0, 1.0, marker.seconds / total);
+            const float x = rail.getX() + rail.getWidth() * t;
+            const auto glowColour = marker.colour.withAlpha(isDarkTheme ? 0.20f : 0.14f);
+            const auto dotColour = marker.colour.withAlpha(isDarkTheme ? 0.94f : 0.78f);
+            g.setColour(glowColour);
+            g.fillEllipse(x - 4.6f, centerY - 4.6f, 9.2f, 9.2f);
+            g.setColour(dotColour);
+            g.fillEllipse(x - 2.05f, centerY - 2.05f, 4.1f, 4.1f);
         }
     }
 
@@ -507,13 +630,20 @@ public:
         auto topArea = bounds.removeFromTop(getTopAreaHeight(landscape));
         layoutTopArea(topArea, landscape);
 
-        // ── Transport bar at bottom ──
-        auto transportArea = bounds.removeFromBottom(getTransportBarHeight(landscape));
-        layoutTransport(transportArea, landscape);
-
-        // Viewport fills the middle
+        // Viewport owns the full remaining page; transport is an overlay above it.
         viewport->setBounds(bounds);
+        layoutTransport(bounds, landscape);
         layoutCards();
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent&) override
+    {
+        if (isMarkerModeActive != nullptr
+            && isMarkerModeActive()
+            && addMarkerAtCurrentPosition != nullptr)
+        {
+            addMarkerAtCurrentPosition();
+        }
     }
 
     //==========================================================================
@@ -743,7 +873,19 @@ private:
 
     int getTransportBarHeight(bool landscape) const
     {
+        const int expanded = getExpandedTransportBarHeight(landscape);
+        const int collapsed = getCollapsedTransportBarHeight(landscape);
+        return juce::roundToInt((float) collapsed + ((float) expanded - (float) collapsed) * transportReveal);
+    }
+
+    int getExpandedTransportBarHeight(bool landscape) const
+    {
         return landscape ? landscapeTransportBarH : portraitTransportBarH;
+    }
+
+    int getCollapsedTransportBarHeight(bool landscape) const
+    {
+        return landscape ? 18 : 22;
     }
 
     void layoutTopArea(juce::Rectangle<int> area, bool landscape)
@@ -761,7 +903,11 @@ private:
 
     void layoutTransport(juce::Rectangle<int> area, bool landscape)
     {
-        auto tb = area.reduced(landscape ? 16 : 16, landscape ? 2 : 4);
+        const int expandedHeight = getExpandedTransportBarHeight(landscape);
+        const int collapsedHeight = getCollapsedTransportBarHeight(landscape);
+        const int hiddenOffset = juce::roundToInt(((float) expandedHeight - (float) collapsedHeight) * (1.0f - transportReveal));
+        auto fullTransportArea = juce::Rectangle<int>(0, getHeight() - expandedHeight + hiddenOffset, getWidth(), expandedHeight);
+        auto tb = fullTransportArea.reduced(landscape ? 16 : 16, landscape ? 2 : 4);
         transportPlateBounds = {};
 
         if (landscape)
@@ -784,17 +930,14 @@ private:
             transportFileLabel.setBounds(rightArea.reduced(0, 8));
             transportFileLabel.setJustificationType(juce::Justification::centredLeft);
 
-            const auto fileName = transportFileLabel.getText();
-            const auto fileNameLength = fileName.length();
-            const float fileFontSize = fileNameLength > 24 ? 11.5f
-                                      : fileNameLength > 16 ? 12.5f
-                                      : 13.5f;
+            const float fileFontSize = rightArea.getWidth() > 230 ? 13.2f : 12.4f;
             transportFileLabel.setFont(juce::Font(juce::FontOptions(fileFontSize)));
+            refreshTransportFileLabelText();
 
             auto progressArea = controlRow.withRight(buttonArea.getX() - groupGap);
 
-            currentTimeLabel.setBounds(progressArea.removeFromLeft(36));
-            remainingTimeLabel.setBounds(progressArea.removeFromRight(40));
+            currentTimeLabel.setBounds(progressArea.removeFromLeft(42));
+            remainingTimeLabel.setBounds(progressArea.removeFromRight(52));
             progressSlider.setBounds(progressArea.reduced(0, 7));
 
             auto btnArea = buttonArea;
@@ -809,6 +952,9 @@ private:
             stopBtn.setBounds(btnArea.removeFromLeft(smallBtnW));
 
             volumeSlider.setBounds(volumeArea);
+            updateTransportChildPresentation();
+            transportGestureHandle.setBounds(transportReveal < 0.45f ? getTransportHookBounds(landscape)
+                                                                     : getExpandedGestureBounds(landscape));
             return;
         }
 
@@ -816,13 +962,14 @@ private:
 
         // File name (small, centered at top)
         transportFileLabel.setBounds(tb.removeFromTop(18));
-        transportFileLabel.setFont(juce::Font(juce::FontOptions(12.5f)));
+        transportFileLabel.setFont(juce::Font(juce::FontOptions(12.4f)));
         transportFileLabel.setJustificationType(juce::Justification::centred);
+        refreshTransportFileLabelText();
 
         // Row 1: time | progress slider | time
         auto progressRow = tb.removeFromTop(28);
-        currentTimeLabel.setBounds(progressRow.removeFromLeft(36));
-        remainingTimeLabel.setBounds(progressRow.removeFromRight(40));
+        currentTimeLabel.setBounds(progressRow.removeFromLeft(42));
+        remainingTimeLabel.setBounds(progressRow.removeFromRight(52));
         progressSlider.setBounds(progressRow);
 
         tb.removeFromTop(2);
@@ -852,6 +999,52 @@ private:
         // Volume slider takes remaining right space
         controlRow.removeFromLeft(8);
         volumeSlider.setBounds(controlRow.reduced(0, 6));
+        updateTransportChildPresentation();
+        transportGestureHandle.setBounds(transportReveal < 0.45f ? getTransportHookBounds(landscape)
+                                                                 : getExpandedGestureBounds(landscape));
+    }
+
+    juce::Rectangle<int> getExpandedGestureBounds(bool landscape) const
+    {
+        if (transportPlateBounds.isEmpty())
+            return {};
+
+        const auto plate = transportPlateBounds;
+        const int width = landscape ? 120 : juce::jmin(160, plate.getWidth() - 20);
+        const int height = landscape ? 18 : 22;
+        return juce::Rectangle<int>(width, height)
+            .withCentre({ plate.getCentreX(), plate.getY() + height / 2 + 2 });
+    }
+
+    juce::Rectangle<int> getTransportHookBounds(bool landscape) const
+    {
+        const int width = landscape ? 34 : 38;
+        const int height = landscape ? 12 : 14;
+        return juce::Rectangle<int>(width, height)
+            .withCentre({ getWidth() / 2, getHeight() - getCollapsedTransportBarHeight(landscape) / 2 });
+    }
+
+    void updateTransportChildPresentation()
+    {
+        const float alpha = juce::jlimit(0.0f, 1.0f, (transportReveal - 0.10f) / 0.90f);
+        const bool interactive = alpha > 0.35f;
+        for (juce::Component* component : { static_cast<juce::Component*>(&currentTimeLabel),
+                                            static_cast<juce::Component*>(&remainingTimeLabel),
+                                            static_cast<juce::Component*>(&progressSlider),
+                                            static_cast<juce::Component*>(&rewindBtn),
+                                            static_cast<juce::Component*>(&skipBackBtn),
+                                            static_cast<juce::Component*>(&playPauseBtn),
+                                            static_cast<juce::Component*>(&skipFwdBtn),
+                                            static_cast<juce::Component*>(&stopBtn),
+                                            static_cast<juce::Component*>(&volumeSlider),
+                                            static_cast<juce::Component*>(&transportFileLabel) })
+        {
+            if (component == nullptr)
+                continue;
+            component->setAlpha(alpha);
+            component->setVisible(alpha > 0.02f);
+            component->setEnabled(interactive);
+        }
     }
 
     //==========================================================================
@@ -859,6 +1052,17 @@ private:
     //==========================================================================
     void timerCallback() override
     {
+        if (!transportHandleDragging && std::abs(transportReveal - transportTargetReveal) > 0.001f)
+        {
+            transportReveal += (transportTargetReveal - transportReveal) * 0.22f;
+            if (std::abs(transportReveal - transportTargetReveal) < 0.01f)
+                transportReveal = transportTargetReveal;
+            resized();
+            repaint();
+        }
+
+        flushQueuedTransportSeek(false);
+
         // Read atomic values from processor
         float peakL = processor.peakLevelL.load(std::memory_order_relaxed);
         float peakR = processor.peakLevelR.load(std::memory_order_relaxed);
@@ -895,10 +1099,14 @@ private:
         const bool useExternalTransportNow = (hasExternalTransport != nullptr && hasExternalTransport());
         if (useExternalTransportNow)
         {
-            transportFileLabel.setText(getExternalTransportName != nullptr
-                                           ? getExternalTransportName()
-                                           : "No file loaded",
-                                       juce::dontSendNotification);
+            const auto nextName = getExternalTransportName != nullptr
+                                      ? getExternalTransportName()
+                                      : juce::String("No file loaded");
+            if (transportFileLabelSourceText != nextName)
+            {
+                transportFileLabelSourceText = nextName;
+                refreshTransportFileLabelText();
+            }
 
             const double pos = getExternalTransportPosition != nullptr ? getExternalTransportPosition() : 0.0;
             const double total = getExternalTransportLength != nullptr ? getExternalTransportLength() : 0.0;
@@ -906,7 +1114,7 @@ private:
             currentTimeLabel.setText(fmtTime(pos), juce::dontSendNotification);
             remainingTimeLabel.setText("-" + fmtTime(total - pos), juce::dontSendNotification);
 
-            if (!progressSlider.isMouseButtonDown() && total > 0.0)
+            if (!transportScrubDragging && total > 0.0)
                 progressSlider.setValue(pos / total, juce::dontSendNotification);
 
             const bool nowPlaying = isExternalTransportPlaying != nullptr && isExternalTransportPlaying();
@@ -942,8 +1150,12 @@ private:
         }
         else if (audioEngine.isFileLoaded())
         {
-            transportFileLabel.setText(audioEngine.getCurrentFileName(),
-                                        juce::dontSendNotification);
+            const auto nextName = audioEngine.getCurrentFileName();
+            if (transportFileLabelSourceText != nextName)
+            {
+                transportFileLabelSourceText = nextName;
+                refreshTransportFileLabelText();
+            }
 
             double pos = audioEngine.getCurrentPosition();
             double total = audioEngine.getTotalLength();
@@ -951,7 +1163,7 @@ private:
             currentTimeLabel.setText(fmtTime(pos), juce::dontSendNotification);
             remainingTimeLabel.setText("-" + fmtTime(total - pos), juce::dontSendNotification);
 
-            if (!progressSlider.isMouseButtonDown() && total > 0.0)
+            if (!transportScrubDragging && total > 0.0)
                 progressSlider.setValue(pos / total, juce::dontSendNotification);
 
             const bool nowPlaying = audioEngine.isPlaying();
@@ -987,10 +1199,61 @@ private:
         }
         else
         {
-            transportFileLabel.setText("No file loaded", juce::dontSendNotification);
+            if (transportFileLabelSourceText != "No file loaded")
+            {
+                transportFileLabelSourceText = "No file loaded";
+                refreshTransportFileLabelText();
+            }
             currentTimeLabel.setText("0:00", juce::dontSendNotification);
             remainingTimeLabel.setText("-0:00", juce::dontSendNotification);
         }
+    }
+
+    static juce::String compressTransportNameToWidth(const juce::String& text,
+                                                     const juce::Font& font,
+                                                     float maxWidth)
+    {
+        const auto clean = juce::URL::removeEscapeChars(text.trim());
+        if (clean.isEmpty())
+            return {};
+
+        if (font.getStringWidthFloat(clean) <= maxWidth)
+            return clean;
+
+        const int length = clean.length();
+        int keepFront = juce::jmax(4, length / 2 - 2);
+        int keepBack = juce::jmax(4, length - keepFront - 1);
+
+        while (keepFront > 1 || keepBack > 1)
+        {
+            const auto candidate = clean.substring(0, keepFront)
+                                 + juce::String::fromUTF8("…")
+                                 + clean.substring(clean.length() - keepBack);
+            if (font.getStringWidthFloat(candidate) <= maxWidth)
+                return candidate;
+
+            if (keepFront >= keepBack && keepFront > 1)
+                --keepFront;
+            else if (keepBack > 1)
+                --keepBack;
+            else
+                break;
+        }
+
+        return clean.substring(0, juce::jmin(6, clean.length()))
+             + juce::String::fromUTF8("…");
+    }
+
+    void refreshTransportFileLabelText()
+    {
+        const auto bounds = transportFileLabel.getBounds();
+        if (bounds.getWidth() <= 4)
+            return;
+
+        const auto displayText = compressTransportNameToWidth(transportFileLabelSourceText,
+                                                              transportFileLabel.getFont(),
+                                                              (float) bounds.getWidth() - 8.0f);
+        transportFileLabel.setText(displayText, juce::dontSendNotification);
     }
 
     static juce::String fmtTime(double t)
@@ -999,6 +1262,36 @@ private:
         int m = static_cast<int>(t) / 60;
         int s = static_cast<int>(t) % 60;
         return juce::String(m) + ":" + juce::String(s).paddedLeft('0', 2);
+    }
+
+    void queueTransportSeek(double seconds)
+    {
+        pendingTransportSeekSeconds = juce::jmax(0.0, seconds);
+        transportSeekPending = true;
+    }
+
+    void flushQueuedTransportSeek(bool force)
+    {
+        if (!transportSeekPending)
+            return;
+
+        const auto nowMs = juce::Time::getMillisecondCounter();
+        if (!force && static_cast<std::int32_t>(nowMs - lastTransportSeekCommitMs) < 70)
+            return;
+
+        const bool useExternal = (hasExternalTransport != nullptr && hasExternalTransport());
+        if (useExternal)
+        {
+            if (seekExternalTransport != nullptr)
+                seekExternalTransport(pendingTransportSeekSeconds);
+        }
+        else
+        {
+            audioEngine.seek(pendingTransportSeekSeconds);
+        }
+
+        lastTransportSeekCommitMs = nowMs;
+        transportSeekPending = false;
     }
 
     //==========================================================================
@@ -1025,8 +1318,12 @@ private:
             const int columnWidth = usableWidth;
             const int totalGridWidth = columnWidth * numColumns;
             const int startX = juce::jmax(sideInset, (width - totalGridWidth) / 2);
-            const int expandedCardHeight = landscape ? juce::jmax(280, viewHeight - spacing)
-                                                     : 280;
+            const bool transportHidden = transportReveal < 0.35f;
+            const int rowsVisible = transportHidden ? (landscape ? 2 : 3) : 1;
+            const int expandedCardHeight = transportHidden
+                ? juce::jmax(140, (viewHeight - spacing * (rowsVisible + 1)) / rowsVisible)
+                : (landscape ? juce::jmax(280, viewHeight - spacing)
+                             : 280);
 
             int y = spacing;
             for (int i = 0; i < numCards; ++i)
@@ -1112,6 +1409,8 @@ private:
     // File name
     juce::Label transportFileLabel;
     juce::Rectangle<int> transportPlateBounds;
+    juce::String transportFileLabelSourceText = "No file loaded";
+    TransportGestureHandle transportGestureHandle;
 
 #if MARATHON_ART_STYLE
     std::unique_ptr<DotMatrixCanvas> bgCanvas;
@@ -1138,4 +1437,13 @@ private:
     bool transportUserIntentActive = false;
     bool transportUserIntentPlaying = false;
     std::uint32_t transportUserIntentUntilMs = 0;
+    bool transportScrubDragging = false;
+    bool transportSeekPending = false;
+    double pendingTransportSeekSeconds = 0.0;
+    std::uint32_t lastTransportSeekCommitMs = 0;
+    float transportReveal = 1.0f;
+    float transportTargetReveal = 1.0f;
+    bool transportHandleDragging = false;
+    float dragStartTransportReveal = 1.0f;
+    int dragStartTransportY = 0;
 };

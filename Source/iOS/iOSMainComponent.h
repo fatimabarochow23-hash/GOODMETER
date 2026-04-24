@@ -26,7 +26,8 @@
 #include "HistoryPageComponent.h"
 #include "VideoPageComponent.h"
 
-class iOSMainComponent : public juce::Component
+class iOSMainComponent : public juce::Component,
+                         private juce::Timer
 {
 public:
     iOSMainComponent()
@@ -73,6 +74,17 @@ public:
         settingsPage->onShowImportButtonChanged = [this](bool show)
         {
             nonoPage->setShowImportButton(show);
+        };
+
+        settingsPage->onShowClipNamesChanged = [this](bool show)
+        {
+            nonoPage->setShowClipFileNames(show);
+        };
+
+        settingsPage->onExportFeedbackWithMidiChanged = [this](bool enabled)
+        {
+            if (historyPage != nullptr)
+                historyPage->setExportFeedbackWithMidi(enabled);
         };
 
         settingsPage->onMeterDisplayModeChanged = [this](int mode)
@@ -171,11 +183,86 @@ public:
             if (videoPage != nullptr)
                 videoPage->jumpToEndTransport();
         };
+        metersPage->isMarkerModeActive = [this]()
+        {
+            return nonoPage != nullptr && nonoPage->isMarkerModeEnabled();
+        };
+        metersPage->addMarkerAtCurrentPosition = [this]()
+        {
+            if (nonoPage != nullptr)
+                nonoPage->addMarkerAtCurrentPositionFromExternal();
+        };
+        metersPage->getCurrentMarkerItems = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getMarkerItemsForCurrentFile() : std::vector<GoodMeterMarkerItem>{};
+        };
+
+        videoPage->isMarkerModeActive = [this]()
+        {
+            return nonoPage != nullptr && nonoPage->isMarkerModeEnabled();
+        };
+        videoPage->addMarkerAtCurrentPosition = [this]()
+        {
+            if (nonoPage != nullptr)
+                nonoPage->addMarkerAtCurrentPositionFromExternal();
+        };
+        videoPage->getCurrentMarkerItems = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getMarkerItemsForCurrentFile() : std::vector<GoodMeterMarkerItem>{};
+        };
+
+        historyPage->getMarkerCurrentFileName = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getCurrentMarkerDisplayName() : juce::String();
+        };
+        historyPage->getMarkerCurrentFilePath = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getCurrentMarkerFilePath() : juce::String();
+        };
+        historyPage->getMarkerCurrentMetadataSummary = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getCurrentMarkerMetadataSummary() : juce::String();
+        };
+        historyPage->getMarkerCurrentDurationSeconds = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getCurrentMarkerSourceDurationSeconds() : 0.0;
+        };
+        historyPage->getCurrentMarkerItems = [this]()
+        {
+            return nonoPage != nullptr ? nonoPage->getMarkerItemsForCurrentFile() : std::vector<GoodMeterMarkerItem>{};
+        };
+        historyPage->updateMarkerNote = [this](const juce::String& markerId, const juce::String& note)
+        {
+            if (nonoPage != nullptr)
+                nonoPage->updateMarkerNoteForCurrentFile(markerId, note);
+        };
+        historyPage->updateMarkerTags = [this](const juce::String& markerId, const juce::StringArray& tags)
+        {
+            if (nonoPage != nullptr)
+                nonoPage->updateMarkerTagsForCurrentFile(markerId, tags);
+        };
+        historyPage->formatMarkerTimecode = [this](double seconds)
+        {
+            return nonoPage != nullptr
+                ? nonoPage->formatMarkerTimecodeForDisplay(seconds)
+                : juce::String();
+        };
+        nonoPage->onMarkerDataChanged = [this]()
+        {
+            if (historyPage != nullptr)
+                historyPage->refreshList();
+            if (metersPage != nullptr)
+                metersPage->repaint();
+            if (videoPage != nullptr)
+                videoPage->repaint();
+        };
 
         // Sync initial state
         settingsPage->setCurrentSkin(nonoPage->getCurrentSkinId());
         settingsPage->setCharacterRenderMode(nonoPage->getCharacterRenderMode());
         settingsPage->setShowImportButton(false);  // default OFF
+        settingsPage->setShowClipNames(false);
+        settingsPage->setExportFeedbackWithMidi(false);
         settingsPage->setMeterDisplayMode(0);
         settingsPage->setLoudnessStandard(2);
         metersPage->setDisplayMode(0);
@@ -205,13 +292,6 @@ public:
                                 : GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
         g.fillRect(navBar.removeFromTop(1));
 
-        juce::String labels[] = {
-            juce::CharPointer_UTF8("\xe7\x81\xb5"),  // 灵
-            juce::CharPointer_UTF8("\xe9\x9f\xb3"),  // 音
-            juce::CharPointer_UTF8("\xe5\xae\x9a"),  // 定
-            juce::CharPointer_UTF8("\xe8\xae\xb0"),  // 记
-            juce::CharPointer_UTF8("\xe8\xa7\x86")   // 视
-        };
         float btnW = navBar.getWidth() / 5.0f;
 
         for (int i = 0; i < numPages; ++i)
@@ -223,9 +303,94 @@ public:
                                             : GoodMeterLookAndFeel::textMain;
             auto inactiveColour = isDarkTheme ? juce::Colours::white.withAlpha(0.4f)
                                               : GoodMeterLookAndFeel::textMuted.withAlpha(0.82f);
-            g.setColour(active ? activeColour : inactiveColour);
-            g.setFont(juce::Font(32.0f, juce::Font::bold));
-            g.drawText(labels[i], btnArea, juce::Justification::centred);
+            const auto ink = active ? activeColour : inactiveColour;
+            const auto navBackground = isDarkTheme ? juce::Colours::black
+                                                   : GoodMeterLookAndFeel::bgMain;
+            auto iconArea = btnArea.toFloat().withSizeKeepingCentre(34.0f, 34.0f);
+            const auto centre = iconArea.getCentre();
+
+            auto drawDot = [&](float x, float y, float size)
+            {
+                g.fillEllipse(x - size * 0.5f, y - size * 0.5f, size, size);
+            };
+
+            auto drawPill = [&](float cx, float cy, float w, float h)
+            {
+                g.fillRoundedRectangle(cx - w * 0.5f, cy - h * 0.5f, w, h, juce::jmin(w, h) * 0.48f);
+            };
+
+            g.setColour(ink);
+
+            switch (i)
+            {
+                case 0: // 灵 - solid concentric circles
+                {
+                    auto outer = juce::Rectangle<float>(22.2f, 22.2f).withCentre(centre);
+                    auto inner = juce::Rectangle<float>(14.5f, 14.5f).withCentre(centre);
+                    g.drawEllipse(outer, 2.5f);
+                    g.drawEllipse(inner, 2.2f);
+                    break;
+                }
+                case 1: // 音 - three rising capsules
+                {
+                    drawPill(centre.x - 7.5f, centre.y + 0.2f, 4.2f, 13.0f);
+                    drawPill(centre.x,        centre.y - 1.0f, 4.2f, 18.0f);
+                    drawPill(centre.x + 7.5f, centre.y + 1.0f, 4.2f, 15.0f);
+                    break;
+                }
+                case 2: // 定 - hollow D-pad cross
+                {
+                    const float outerArm = 24.0f;
+                    const float outerThickness = 10.1f;
+                    const float innerArm = 16.8f;
+                    const float innerThickness = 4.3f;
+
+                    juce::Path outerCross;
+                    outerCross.addRectangle(centre.x - outerThickness * 0.5f, centre.y - outerArm * 0.5f,
+                                            outerThickness, outerArm);
+                    outerCross.addRectangle(centre.x - outerArm * 0.5f, centre.y - outerThickness * 0.5f,
+                                            outerArm, outerThickness);
+
+                    juce::Path innerCross;
+                    innerCross.addRectangle(centre.x - innerThickness * 0.5f, centre.y - innerArm * 0.5f,
+                                            innerThickness, innerArm);
+                    innerCross.addRectangle(centre.x - innerArm * 0.5f, centre.y - innerThickness * 0.5f,
+                                            innerArm, innerThickness);
+
+                    juce::Graphics::ScopedSaveState save(g);
+                    g.addTransform(juce::AffineTransform::rotation(settingsIconRotation, centre.x, centre.y));
+                    g.fillPath(outerCross);
+                    g.setColour(navBackground);
+                    g.fillPath(innerCross);
+                    break;
+                }
+                case 3: // 记 - stacked record lines
+                {
+                    drawPill(centre.x - 2.0f, centre.y - 7.2f, 17.0f, 3.2f);
+                    drawPill(centre.x + 1.5f, centre.y,        21.0f, 3.2f);
+                    drawPill(centre.x - 2.5f, centre.y + 7.2f, 15.0f, 3.2f);
+                    drawDot(centre.x - 12.0f, centre.y - 7.2f, 2.7f);
+                    break;
+                }
+                case 4: // 视 - double hollow play triangles
+                {
+                    juce::Path outerTriangle;
+                    outerTriangle.addTriangle(centre.x - 8.0f, centre.y - 10.0f,
+                                              centre.x - 8.0f, centre.y + 10.0f,
+                                              centre.x + 10.5f, centre.y);
+
+                    juce::Path innerTriangle;
+                    innerTriangle.addTriangle(centre.x - 4.0f, centre.y - 6.2f,
+                                              centre.x - 4.0f, centre.y + 6.2f,
+                                              centre.x + 6.7f, centre.y);
+
+                    g.strokePath(outerTriangle, juce::PathStrokeType(2.35f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                    g.strokePath(innerTriangle, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                    break;
+                }
+                default:
+                    break;
+            }
         }
     }
 
@@ -321,9 +486,26 @@ public:
     }
 
 private:
+    void timerCallback() override
+    {
+        const float delta = settingsIconTargetRotation - settingsIconRotation;
+        if (std::abs(delta) < 0.0025f)
+        {
+            settingsIconRotation = settingsIconTargetRotation;
+            stopTimer();
+            repaint();
+            return;
+        }
+
+        settingsIconRotation += delta * 0.22f;
+        repaint();
+    }
+
     void applyDarkTheme(bool dark)
     {
+        const bool themeChanged = (isDarkTheme != dark);
         isDarkTheme = dark;
+        settingsIconTargetRotation = isDarkTheme ? (juce::MathConstants<float>::pi * 0.25f) : 0.0f;
 
         // Codex: 主人要求我接手 iOS 主题，但别污染插件版和 standalone。
         // 所以这里我先把主题只往 iOS 五页和底部导航同步，不改共享 meter 本体。
@@ -332,6 +514,10 @@ private:
         metersPage->setDarkTheme(isDarkTheme);
         nonoPage->setDarkTheme(isDarkTheme);
         videoPage->setDarkTheme(isDarkTheme);
+
+        if (themeChanged)
+            startTimerHz(60);
+
         repaint();
     }
 
@@ -384,4 +570,6 @@ private:
     bool suppressPageSwipe = false;
     bool navClickConsumed = false;
     bool isDarkTheme = false;
+    float settingsIconRotation = 0.0f;
+    float settingsIconTargetRotation = 0.0f;
 };

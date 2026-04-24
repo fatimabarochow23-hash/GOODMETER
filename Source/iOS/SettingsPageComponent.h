@@ -81,6 +81,67 @@ private:
     bool isDarkMode = false;
 };
 
+class CapsuleToggleSwitch : public juce::Button
+{
+public:
+    CapsuleToggleSwitch(const juce::String& nameToUse)
+        : juce::Button(nameToUse)
+    {
+        setClickingTogglesState(true);
+    }
+
+    void setDarkMode(bool dark)
+    {
+        isDarkMode = dark;
+        repaint();
+    }
+
+    void paintButton(juce::Graphics& g, bool isHovered, bool isPressed) override
+    {
+        auto area = getLocalBounds().toFloat().reduced(1.0f);
+        const auto textCol = isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                        : GoodMeterLookAndFeel::textMain;
+        const auto mutedCol = isDarkMode ? juce::Colours::white.withAlpha(0.18f)
+                                         : GoodMeterLookAndFeel::textMain.withAlpha(0.14f);
+        const auto accent = isDarkMode ? juce::Colour(0xFFF3EEE4)
+                                       : GoodMeterLookAndFeel::textMain;
+
+        auto switchArea = area.removeFromRight(56.0f).withSizeKeepingCentre(48.0f, 26.0f);
+        auto textArea = area.reduced(10.0f, 0.0f);
+        const float radius = switchArea.getHeight() * 0.5f;
+
+        auto fill = getToggleState()
+            ? accent.withAlpha(isDarkMode ? 0.28f : 0.16f)
+            : (isDarkMode ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
+        if (isHovered)
+            fill = fill.interpolatedWith(accent.withAlpha(isDarkMode ? 0.16f : 0.08f), 0.35f);
+        if (isPressed)
+            fill = fill.interpolatedWith(accent.withAlpha(isDarkMode ? 0.24f : 0.12f), 0.45f);
+
+        g.setColour(fill);
+        g.fillRoundedRectangle(switchArea, radius);
+
+        g.setColour(getToggleState() ? accent.withAlpha(0.92f) : mutedCol);
+        g.drawRoundedRectangle(switchArea, radius, getToggleState() ? 2.0f : 1.2f);
+
+        const float knobSize = switchArea.getHeight() - 8.0f;
+        const float knobX = getToggleState()
+            ? switchArea.getRight() - knobSize - 4.0f
+            : switchArea.getX() + 4.0f;
+        auto knob = juce::Rectangle<float>(knobSize, knobSize)
+                        .withPosition(knobX, switchArea.getY() + 4.0f);
+        g.setColour(getToggleState() ? accent : textCol.withAlpha(0.75f));
+        g.fillEllipse(knob);
+
+        g.setColour(textCol);
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(14.5f, juce::Font::bold));
+        g.drawText(getName(), textArea, juce::Justification::centredLeft, false);
+    }
+
+private:
+    bool isDarkMode = false;
+};
+
 class SettingsPageComponent : public juce::Component
 {
 public:
@@ -92,6 +153,8 @@ public:
     std::function<void(int displayMode)> onMeterDisplayModeChanged; // 0=Single, 1=4-Up, 2=8-Up
     std::function<void(int standardId)> onLoudnessStandardChanged;  // 1..7
     std::function<void(bool show)> onShowImportButtonChanged;
+    std::function<void(bool show)> onShowClipNamesChanged;
+    std::function<void(bool enabled)> onExportFeedbackWithMidiChanged;
     std::function<void(bool isDark)> onThemeChanged;         // false=Light, true=Dark
 
     SettingsPageComponent()
@@ -162,33 +225,6 @@ public:
 
         addAndMakeVisible(nonoButton);
         addAndMakeVisible(guobaButton);
-
-        // ── Section: Character render ──
-        renderSectionLabel.setText("RENDER", juce::dontSendNotification);
-        renderSectionLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(12.5f, juce::Font::bold));
-        GoodMeterLookAndFeel::markAsIOSEnglishMono(renderSectionLabel);
-        renderSectionLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
-        addAndMakeVisible(renderSectionLabel);
-
-        pngRenderButton.setRadioGroupId(2501);
-        asciiRenderButton.setRadioGroupId(2501);
-        pngRenderButton.setToggleState(true, juce::dontSendNotification);
-
-        pngRenderButton.onClick = [this]()
-        {
-            if (pngRenderButton.getToggleState() && onCharacterRenderModeChanged)
-                onCharacterRenderModeChanged(0);
-            updateButtonStyles();
-        };
-        asciiRenderButton.onClick = [this]()
-        {
-            if (asciiRenderButton.getToggleState() && onCharacterRenderModeChanged)
-                onCharacterRenderModeChanged(1);
-            updateButtonStyles();
-        };
-
-        addAndMakeVisible(pngRenderButton);
-        addAndMakeVisible(asciiRenderButton);
 
         // ── Section: Meter display ──
         displaySectionLabel.setText("DISPLAY", juce::dontSendNotification);
@@ -274,6 +310,24 @@ public:
         };
         addAndMakeVisible(showImportToggle);
 
+        showClipNamesToggle.setButtonText("Show Clip Names");
+        showClipNamesToggle.setToggleState(false, juce::dontSendNotification);
+        showClipNamesToggle.onClick = [this]()
+        {
+            if (onShowClipNamesChanged)
+                onShowClipNamesChanged(showClipNamesToggle.getToggleState());
+        };
+        addAndMakeVisible(showClipNamesToggle);
+
+        exportFeedbackWithMidiToggle.setButtonText("EXPORT FEEDBACK WITH MIDI");
+        exportFeedbackWithMidiToggle.setToggleState(false, juce::dontSendNotification);
+        exportFeedbackWithMidiToggle.onClick = [this]()
+        {
+            if (onExportFeedbackWithMidiChanged)
+                onExportFeedbackWithMidiChanged(exportFeedbackWithMidiToggle.getToggleState());
+        };
+        addAndMakeVisible(exportFeedbackWithMidiToggle);
+
         importHintLabel.setText("When OFF, double-tap the character to import audio",
                                 juce::dontSendNotification);
         importHintLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(12.0f));
@@ -333,7 +387,6 @@ public:
 
         drawSep(sectionThemeY);
         drawSep(sectionCharacterY);
-        drawSep(sectionRenderY);
         drawSep(sectionDisplayY);
         drawSep(sectionLoudnessY);
         drawSep(sectionImportY);
@@ -371,20 +424,6 @@ public:
         nonoButton.setBounds(skinRow.removeFromLeft(btnW));
         skinRow.removeFromLeft(12);
         guobaButton.setBounds(skinRow.removeFromLeft(btnW));
-
-        area.removeFromTop(16);
-
-        // ── Render section ──
-        sectionRenderY = area.getY();
-        area.removeFromTop(8);
-        renderSectionLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
-
-        auto renderRow = area.removeFromTop(52);
-        int renderBtnW = (renderRow.getWidth() - 12) / 2;
-        pngRenderButton.setBounds(renderRow.removeFromLeft(renderBtnW));
-        renderRow.removeFromLeft(12);
-        asciiRenderButton.setBounds(renderRow.removeFromLeft(renderBtnW));
 
         area.removeFromTop(16);
 
@@ -444,6 +483,10 @@ public:
         importSectionLabel.setBounds(area.removeFromTop(20));
         area.removeFromTop(8);
         showImportToggle.setBounds(area.removeFromTop(36));
+        area.removeFromTop(8);
+        showClipNamesToggle.setBounds(area.removeFromTop(36));
+        area.removeFromTop(8);
+        exportFeedbackWithMidiToggle.setBounds(area.removeFromTop(36));
         area.removeFromTop(4);
         importHintLabel.setBounds(area.removeFromTop(20));
     }
@@ -461,6 +504,16 @@ public:
         showImportToggle.setToggleState(show, juce::dontSendNotification);
     }
 
+    void setShowClipNames(bool show)
+    {
+        showClipNamesToggle.setToggleState(show, juce::dontSendNotification);
+    }
+
+    void setExportFeedbackWithMidi(bool enabled)
+    {
+        exportFeedbackWithMidiToggle.setToggleState(enabled, juce::dontSendNotification);
+    }
+
     void setMeterDisplayMode(int mode)
     {
         singleModeButton.setToggleState(mode == 0, juce::dontSendNotification);
@@ -471,9 +524,7 @@ public:
 
     void setCharacterRenderMode(int mode)
     {
-        pngRenderButton.setToggleState(mode == 0, juce::dontSendNotification);
-        asciiRenderButton.setToggleState(mode == 1, juce::dontSendNotification);
-        updateButtonStyles();
+        juce::ignoreUnused(mode);
     }
 
     void setLoudnessStandard(int standardId)
@@ -506,20 +557,19 @@ private:
 
         themeLabel.setColour(juce::Label::textColourId, mutedColor);
         characterLabel.setColour(juce::Label::textColourId, mutedColor);
-        renderSectionLabel.setColour(juce::Label::textColourId, mutedColor);
         displaySectionLabel.setColour(juce::Label::textColourId, mutedColor);
         loudnessSectionLabel.setColour(juce::Label::textColourId, mutedColor);
         importSectionLabel.setColour(juce::Label::textColourId, mutedColor);
         showImportToggle.setColour(juce::ToggleButton::textColourId, textColor);
         showImportToggle.setColour(juce::ToggleButton::tickColourId, textColor);
+        showClipNamesToggle.setDarkMode(isDarkTheme);
+        exportFeedbackWithMidiToggle.setDarkMode(isDarkTheme);
         importHintLabel.setColour(juce::Label::textColourId, mutedColor);
 
         lightThemeButton.setDarkMode(isDarkTheme);
         darkThemeButton.setDarkMode(isDarkTheme);
         nonoButton.setDarkMode(isDarkTheme);
         guobaButton.setDarkMode(isDarkTheme);
-        pngRenderButton.setDarkMode(isDarkTheme);
-        asciiRenderButton.setDarkMode(isDarkTheme);
         singleModeButton.setDarkMode(isDarkTheme);
         fourUpModeButton.setDarkMode(isDarkTheme);
         eightUpModeButton.setDarkMode(isDarkTheme);
@@ -540,8 +590,6 @@ private:
     {
         nonoButton.repaint();
         guobaButton.repaint();
-        pngRenderButton.repaint();
-        asciiRenderButton.repaint();
         singleModeButton.repaint();
         fourUpModeButton.repaint();
         eightUpModeButton.repaint();
@@ -612,7 +660,6 @@ private:
     // Layout tracking
     int sectionThemeY = 0;
     int sectionCharacterY = 0;
-    int sectionRenderY = 0;
     int sectionDisplayY = 0;
     int sectionLoudnessY = 0;
     int sectionImportY = 0;
@@ -633,10 +680,6 @@ private:
     CharacterOptionButton nonoButton { "Nono", GoodMeterLookAndFeel::accentBlue };
     CharacterOptionButton guobaButton { "Guoba", GoodMeterLookAndFeel::accentYellow };
 
-    juce::Label renderSectionLabel;
-    CharacterOptionButton pngRenderButton { "PNG", GoodMeterLookAndFeel::accentGreen };
-    CharacterOptionButton asciiRenderButton { "ASCII", GoodMeterLookAndFeel::accentSoftPink };
-
     juce::Label displaySectionLabel;
     CharacterOptionButton singleModeButton { "Single", GoodMeterLookAndFeel::accentBlue };
     CharacterOptionButton fourUpModeButton { "1x4", GoodMeterLookAndFeel::accentCyan };
@@ -653,5 +696,7 @@ private:
 
     juce::Label importSectionLabel;
     juce::ToggleButton showImportToggle;
+    CapsuleToggleSwitch showClipNamesToggle { "Show Clip Names" };
+    CapsuleToggleSwitch exportFeedbackWithMidiToggle { "EXPORT FEEDBACK WITH MIDI" };
     juce::Label importHintLabel;
 };

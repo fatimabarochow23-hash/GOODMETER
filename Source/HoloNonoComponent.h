@@ -89,6 +89,14 @@ public:
     // Callback: double-click test tube → enter jiggle/edit mode
     std::function<void()> onTestTubeDoubleClicked;
 
+    // Callback: long-press test tube
+    std::function<void()> onTestTubeLongPressed;
+
+    // Marker mode routing: when active, double-clicking the character surface
+    // should place a marker instead of triggering the normal body flip/clear flow.
+    std::function<bool()> isMarkerModeActive;
+    std::function<void()> onMarkerModeDoubleClicked;
+
     // Callback: double-click NONO body while in edit mode → exit jiggle mode
     std::function<void()> onExitJiggleMode;
 
@@ -339,6 +347,8 @@ public:
     {
         // Cancel any pending smile click (this is a double-click, not a single-click)
         pendingSmileClick = false;
+        pendingTubeLongPress = false;
+        tubeLongPressTriggered = false;
 
         // Block all interactions during orbit
         if (isOrbitLocked) return;
@@ -358,6 +368,14 @@ public:
         {
             if (!isEditMode && onTestTubeDoubleClicked)
                 onTestTubeDoubleClicked();
+            return;
+        }
+
+        if (isMarkerModeActive != nullptr
+            && isMarkerModeActive()
+            && onMarkerModeDoubleClicked != nullptr)
+        {
+            onMarkerModeDoubleClicked();
             return;
         }
 
@@ -718,6 +736,15 @@ public:
         // Record drag start position for all clicks
         dragStartPos = e.getScreenPosition();
         isDraggingWindow = false;
+        pendingTubeLongPress = false;
+        tubeLongPressTriggered = false;
+
+        if (tubeHitRect.contains(e.position) && !e.mods.isRightButtonDown())
+        {
+            pendingTubeLongPress = true;
+            pendingTubeLongPressTime = juce::Time::getMillisecondCounter();
+            tubePressStartPos = e.position;
+        }
 
         // ===== Ear-pinch flip back =====
         // When Nono is showing back face or results, clicking an ear flips back to front
@@ -757,6 +784,12 @@ public:
     {
         if (isOrbitLocked) return;
 
+        if (pendingTubeLongPress
+            && e.position.getDistanceFrom(tubePressStartPos) > 8.0f)
+        {
+            pendingTubeLongPress = false;
+        }
+
         auto currentScreenPos = e.getScreenPosition();
         auto delta = currentScreenPos - dragStartPos;
 
@@ -766,6 +799,7 @@ public:
             isDraggingWindow = true;
             // Cancel pending smile since this is a drag, not a click
             pendingSmileClick = false;
+            pendingTubeLongPress = false;
 
             if (useLocalDrag)
             {
@@ -805,6 +839,8 @@ public:
     void mouseUp(const juce::MouseEvent&) override
     {
         isDraggingWindow = false;
+        pendingTubeLongPress = false;
+        tubeLongPressTriggered = false;
     }
 
     void mouseMove(const juce::MouseEvent& e) override
@@ -1301,6 +1337,10 @@ private:
     int orbitLockFramesLeft = 0;      // interaction lock countdown (1.5s = 90 frames)
     bool pendingSmileClick = false;   // delayed single-click detection
     juce::uint32 pendingSmileClickTime = 0;
+    bool pendingTubeLongPress = false;
+    bool tubeLongPressTriggered = false;
+    juce::uint32 pendingTubeLongPressTime = 0;
+    juce::Point<float> tubePressStartPos;
 
     // Hit test regions (computed in paint, used in mouse handlers)
     juce::Rectangle<float> bodyHitRect;
@@ -1722,6 +1762,16 @@ private:
         {
             pendingSmileClick = false;
             triggerSmileOrbit();
+        }
+
+        if (pendingTubeLongPress
+            && !tubeLongPressTriggered
+            && juce::Time::getMillisecondCounter() - pendingTubeLongPressTime > 480)
+        {
+            pendingTubeLongPress = false;
+            tubeLongPressTriggered = true;
+            if (onTestTubeLongPressed)
+                onTestTubeLongPressed();
         }
 
         // Orbit animation progress (1.2s = 72 frames at 60Hz)

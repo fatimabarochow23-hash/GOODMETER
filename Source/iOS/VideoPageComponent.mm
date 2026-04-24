@@ -183,6 +183,8 @@ public:
         }
 
         player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
+        player.automaticallyWaitsToMinimizeStalling = NO;
+        playerItem.preferredForwardBufferDuration = 0.0;
         videoView.playerLayer.player = player;
 
         durationSeconds = CMTimeGetSeconds(asset.duration);
@@ -212,6 +214,14 @@ public:
 
     void clear()
     {
+        lifeToken->store(false, std::memory_order_relaxed);
+        lifeToken = std::make_shared<std::atomic<bool>>(true);
+        isSeekInProgress = false;
+        hasChasePosition = false;
+        chaseNeedsExact = false;
+        resumeAfterSeek = false;
+        chasePositionSeconds = 0.0;
+
         if (player != nil)
             [player pause];
 
@@ -253,13 +263,65 @@ public:
         return player != nil && player.rate > 0.001f;
     }
 
-    void setPosition(double seconds)
+    void setPosition(double seconds, bool precise = true)
     {
         if (player == nil)
             return;
 
+        lifeToken->store(false, std::memory_order_relaxed);
+        lifeToken = std::make_shared<std::atomic<bool>>(true);
+        isSeekInProgress = false;
+        hasChasePosition = false;
+        chaseNeedsExact = false;
+        resumeAfterSeek = false;
+        chasePositionSeconds = juce::jlimit(0.0, getDuration(), seconds);
+
         auto target = CMTimeMakeWithSeconds(seconds, 600);
-        [player seekToTime:target toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        const auto tolerance = precise ? kCMTimeZero : CMTimeMakeWithSeconds(0.08, 600);
+        [player seekToTime:target toleranceBefore:tolerance toleranceAfter:tolerance];
+    }
+
+    void queueSmoothSeek(double seconds, bool preciseFinal)
+    {
+        if (player == nil)
+            return;
+
+        const bool wasPlaying = isPlaying();
+        chasePositionSeconds = juce::jlimit(0.0, getDuration(), seconds);
+        hasChasePosition = true;
+        // While actively playing we prioritize visual response over frame-perfect refine.
+        // Exact refine is still used when the user is paused/stopped at a position.
+        chaseNeedsExact = chaseNeedsExact || (preciseFinal && !wasPlaying);
+        resumeAfterSeek = resumeAfterSeek || wasPlaying;
+
+        if (!isSeekInProgress)
+            performQueuedSeek(false);
+    }
+
+    void seekPreview(double seconds)
+    {
+        if (player == nil)
+            return;
+
+        lifeToken->store(false, std::memory_order_relaxed);
+        lifeToken = std::make_shared<std::atomic<bool>>(true);
+        isSeekInProgress = false;
+        hasChasePosition = false;
+        chaseNeedsExact = false;
+        resumeAfterSeek = false;
+        chasePositionSeconds = juce::jlimit(0.0, getDuration(), seconds);
+
+        if (playerItem != nil)
+            [playerItem cancelPendingSeeks];
+
+        auto target = CMTimeMakeWithSeconds(chasePositionSeconds, 600);
+        auto tolerance = CMTimeMakeWithSeconds(0.28, 600);
+        [player seekToTime:target toleranceBefore:tolerance toleranceAfter:tolerance];
+    }
+
+    bool hasPendingSeek() const
+    {
+        return isSeekInProgress || hasChasePosition;
     }
 
     double getPosition() const
@@ -292,8 +354,36 @@ public:
             player.volume = volume;
     }
 
+    bool reloadPreservingState(double targetSeconds, bool shouldResume, juce::String& error)
+    {
+        if (currentPath.isEmpty())
+        {
+            error = "No current video to reload";
+            return false;
+        }
+
+        const auto path = currentPath;
+        const auto volume = player != nil ? player.volume : 1.0f;
+        const auto target = juce::jlimit(0.0, getDuration(), targetSeconds);
+
+        if (!load(juce::File(path), error))
+            return false;
+
+        setThemeDark(isThemeDark);
+        setVolume(volume);
+        setPosition(target, false);
+
+        if (shouldResume)
+            play();
+        else
+            pause();
+
+        return true;
+    }
+
     void setThemeDark(bool dark)
     {
+        isThemeDark = dark;
         if (videoView == nil)
             return;
 
@@ -312,6 +402,61 @@ public:
     std::function<void()> onVideoTapped;
 
 private:
+    void performQueuedSeek(bool exactPhase)
+    {
+        if (player == nil || !hasChasePosition)
+        {
+            isSeekInProgress = false;
+            return;
+        }
+
+        isSeekInProgress = true;
+        const double seekTimeSeconds = chasePositionSeconds;
+        const bool shouldRefine = chaseNeedsExact;
+        auto target = CMTimeMakeWithSeconds(seekTimeSeconds, 600);
+        const auto tolerance = exactPhase ? kCMTimeZero : CMTimeMakeWithSeconds(0.12, 600);
+        auto life = lifeToken;
+
+        [player seekToTime:target toleranceBefore:tolerance toleranceAfter:tolerance completionHandler:^(BOOL finished)
+        {
+            if (!life->load(std::memory_order_relaxed))
+                return;
+
+            this->isSeekInProgress = false;
+
+            if (this->player == nil)
+                return;
+
+            if (!finished)
+            {
+                if (this->hasChasePosition)
+                    this->performQueuedSeek(false);
+                return;
+            }
+
+            const bool targetChanged = std::abs(this->chasePositionSeconds - seekTimeSeconds) > 0.01;
+
+            if (targetChanged)
+            {
+                this->performQueuedSeek(false);
+                return;
+            }
+
+            if (!exactPhase && shouldRefine && this->hasChasePosition)
+            {
+                this->chaseNeedsExact = false;
+                this->performQueuedSeek(true);
+                return;
+            }
+
+            this->hasChasePosition = false;
+            const bool shouldResume = this->resumeAfterSeek;
+            this->resumeAfterSeek = false;
+            if (shouldResume && this->player != nil)
+                [this->player play];
+        }];
+    }
+
     juce::UIViewComponent host;
     GOODMETERVideoView* videoView = nil;
     AVPlayer* player = nil;
@@ -320,6 +465,13 @@ private:
     juce::String currentPath;
     CGSize presentationSize = CGSizeZero;
     bool sourceWasPortrait = false;
+    bool isSeekInProgress = false;
+    bool hasChasePosition = false;
+    bool chaseNeedsExact = false;
+    bool resumeAfterSeek = false;
+    double chasePositionSeconds = 0.0;
+    std::shared_ptr<std::atomic<bool>> lifeToken = std::make_shared<std::atomic<bool>>(true);
+    bool isThemeDark = false;
 };
 
 #else
@@ -333,7 +485,8 @@ public:
     void play() {}
     void pause() {}
     bool isPlaying() const { return false; }
-    void setPosition(double) {}
+    void setPosition(double, bool = true) {}
+    void seekPreview(double) {}
     double getPosition() const { return 0.0; }
     double getDuration() const { return 0.0; }
     void setVolume(float) {}
@@ -360,6 +513,15 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
         if (hasVideoLoaded)
             setDrawerOpen(!drawerOpen);
     };
+    tapOverlay.onDoubleTap = [this]()
+    {
+        if (isMarkerModeActive != nullptr
+            && isMarkerModeActive()
+            && addMarkerAtCurrentPosition != nullptr)
+        {
+            addMarkerAtCurrentPosition();
+        }
+    };
     addAndMakeVisible(tapOverlay);
     nativePlayer->onVideoTapped = [this]()
     {
@@ -369,6 +531,16 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
 
     topMeterSwipe.onSwipe = [this](int direction) { cycleMeterSlot(true, direction); };
     bottomMeterSwipe.onSwipe = [this](int direction) { cycleMeterSlot(false, direction); };
+    topMeterSwipe.onDoubleTap = [this]()
+    {
+        if (isMarkerModeActive != nullptr
+            && isMarkerModeActive()
+            && addMarkerAtCurrentPosition != nullptr)
+        {
+            addMarkerAtCurrentPosition();
+        }
+    };
+    bottomMeterSwipe.onDoubleTap = topMeterSwipe.onDoubleTap;
     addAndMakeVisible(topMeterSwipe);
     addAndMakeVisible(bottomMeterSwipe);
 
@@ -403,6 +575,13 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
     progressSlider.setColour(juce::Slider::thumbColourId, GoodMeterLookAndFeel::textMain);
     progressSlider.setColour(juce::Slider::trackColourId, GoodMeterLookAndFeel::textMain.withAlpha(0.15f));
     progressSlider.setColour(juce::Slider::backgroundColourId, GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
+    progressSlider.onDragStart = [this]()
+    {
+        progressScrubDragging = true;
+        progressSeekPending = false;
+        pendingProgressSeekSeconds = 0.0;
+        lastProgressSeekCommitMs = 0;
+    };
     progressSlider.onValueChange = [this]()
     {
         if (progressSlider.isMouseButtonDown())
@@ -411,10 +590,24 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
             if (duration > 0.01)
             {
                 auto target = progressSlider.getValue() * duration;
-                nativePlayer->setPosition(target);
-                syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+                nativePlayer->seekPreview(target);
+                queueProgressSeek(target);
+                currentTimeLabel.setText(fmtTime(target), juce::dontSendNotification);
+                remainingTimeLabel.setText("-" + fmtTime(juce::jmax(0.0, duration - target)),
+                                           juce::dontSendNotification);
             }
         }
+    };
+    progressSlider.onDragEnd = [this]()
+    {
+        progressScrubDragging = false;
+        if (hasVideoLoaded && nativePlayer != nullptr)
+        {
+            auto target = juce::jlimit(0.0, getDurationSeconds(), progressSlider.getValue() * getDurationSeconds());
+            queueProgressSeek(target);
+            nativePlayer->queueSmoothSeek(target, true);
+        }
+        flushQueuedProgressSeek(false);
     };
     addAndMakeVisible(progressSlider);
 
@@ -437,8 +630,8 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
         if (!hasVideoLoaded)
             return;
 
-        nativePlayer->setPosition(0.0);
-        syncAudioTransportToPosition(0.0, nativePlayer->isPlaying());
+        nativePlayer->queueSmoothSeek(0.0, true);
+        queueProgressSeek(0.0);
     };
     skipBackBtn.onClick = [this]()
     {
@@ -446,17 +639,28 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
             return;
 
         auto pos = juce::jmax(0.0, nativePlayer->getPosition() - 5.0);
-        nativePlayer->setPosition(pos);
-        syncAudioTransportToPosition(pos, nativePlayer->isPlaying());
+        nativePlayer->queueSmoothSeek(pos, true);
+        queueProgressSeek(pos);
     };
     playPauseBtn.onClick = [this]()
     {
         if (!hasVideoLoaded)
             return;
-        if (nativePlayer->isPlaying())
-            pauseTransport();
-        else
-            playTransport();
+
+        const bool shouldPlay = !nativePlayer->isPlaying();
+        setPlayButtonVisualState(shouldPlay);
+
+        juce::Component::SafePointer<VideoPageComponent> safeThis(this);
+        juce::Timer::callAfterDelay(16, [safeThis, shouldPlay]()
+        {
+            if (safeThis == nullptr || !safeThis->hasVideoLoaded)
+                return;
+
+            if (shouldPlay)
+                safeThis->playTransport();
+            else
+                safeThis->pauseTransport();
+        });
     };
     skipFwdBtn.onClick = [this]()
     {
@@ -465,8 +669,8 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
 
         auto duration = getDurationSeconds();
         auto pos = juce::jmin(duration, nativePlayer->getPosition() + 5.0);
-        nativePlayer->setPosition(pos);
-        syncAudioTransportToPosition(pos, nativePlayer->isPlaying());
+        nativePlayer->queueSmoothSeek(pos, true);
+        queueProgressSeek(pos);
     };
     stopBtn.onClick = [this]()
     {
@@ -475,8 +679,8 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
 
         auto duration = getDurationSeconds();
         auto target = juce::jmax(0.0, duration - 0.05);
-        nativePlayer->setPosition(target);
-        syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+        nativePlayer->queueSmoothSeek(target, true);
+        queueProgressSeek(target);
     };
 
     volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -510,19 +714,87 @@ VideoPageComponent::~VideoPageComponent()
 void VideoPageComponent::setDarkTheme(bool dark)
 {
     isDarkTheme = dark;
+    GoodMeterLookAndFeel::setEditorialPopupMode(true, dark);
     if (nativePlayer != nullptr)
         nativePlayer->setThemeDark(isDarkTheme);
 
-    // Codex: 主人明确说第 5 页之前还没有白色版本。
-    // 我这里先只把 iOS 视频页的页面层接进主题系统，不改桌面端/插件端共享 meter 逻辑。
     fileNameLabel.setColour(juce::Label::textColourId,
-                            isDarkTheme ? juce::Colours::white.withAlpha(0.85f)
+                            isDarkTheme ? juce::Colour(0xFFF3EEE4).withAlpha(0.96f)
                                         : GoodMeterLookAndFeel::textMain.withAlpha(0.92f));
     hintLabel.setColour(juce::Label::textColourId,
-                        isDarkTheme ? juce::Colours::white.withAlpha(0.52f)
+                        isDarkTheme ? juce::Colour(0xFFF3EEE4).withAlpha(0.60f)
                                     : GoodMeterLookAndFeel::textMuted);
+
+    applyMeterCardTheme(topMeterCard.get());
+    applyMeterCardTheme(bottomMeterCard.get());
+    updateDrawerThemeColors();
     resized();
     repaint();
+}
+
+void VideoPageComponent::applyEmbeddedMeterTheme(juce::Component* content)
+{
+    if (content == nullptr)
+        return;
+
+    if (auto* meter = dynamic_cast<LevelsMeterComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<VUMeterComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<Band3Component*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<SpectrumAnalyzerComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<PhaseCorrelationComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<StereoImageComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<SpectrogramComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<PsrMeterComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+}
+
+void VideoPageComponent::applyMeterCardTheme(MeterCardComponent* card)
+{
+    if (card == nullptr)
+        return;
+
+    card->isDarkTheme = isDarkTheme;
+    card->useEditorialDarkStyle = isDarkTheme;
+    card->useEditorialLightStyle = !isDarkTheme;
+    card->useMonospacedTitleFont = true;
+    applyEmbeddedMeterTheme(card->getContentComponent());
+    card->resized();
+    card->repaint();
+}
+
+void VideoPageComponent::updateDrawerThemeColors()
+{
+    const auto transportTextCol = isDarkTheme ? juce::Colour(0xFFF3EEE4)
+                                              : GoodMeterLookAndFeel::textMain;
+    const auto transportBgCol = isDarkTheme ? juce::Colour(0xFF1E2230)
+                                            : GoodMeterLookAndFeel::bgMain;
+    const auto thumbCol = transportTextCol;
+    const auto trackCol = transportTextCol.withAlpha(isDarkTheme ? 0.28f : 0.15f);
+    const auto railCol = transportTextCol.withAlpha(isDarkTheme ? 0.10f : 0.08f);
+
+    currentTimeLabel.setColour(juce::Label::textColourId, transportTextCol.withAlpha(isDarkTheme ? 0.96f : 0.78f));
+    remainingTimeLabel.setColour(juce::Label::textColourId, transportTextCol.withAlpha(isDarkTheme ? 0.96f : 0.78f));
+
+    rewindBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+    skipBackBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+    skipFwdBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+    stopBtn.setColour(juce::TextButton::textColourOffId, transportTextCol);
+
+    progressSlider.setColour(juce::Slider::thumbColourId, thumbCol);
+    progressSlider.setColour(juce::Slider::trackColourId, trackCol);
+    progressSlider.setColour(juce::Slider::backgroundColourId, railCol);
+    volumeSlider.setColour(juce::Slider::thumbColourId, thumbCol);
+    volumeSlider.setColour(juce::Slider::trackColourId, trackCol);
+    volumeSlider.setColour(juce::Slider::backgroundColourId, railCol);
+    playPauseBtn.setColours(isDarkTheme ? juce::Colour(0xFFF3EEE4) : transportTextCol,
+                            isDarkTheme ? juce::Colour(0xFF1E2230) : transportBgCol);
 }
 
 bool VideoPageComponent::shouldConsumeHorizontalSwipe(juce::Point<float> point) const
@@ -656,6 +928,7 @@ void VideoPageComponent::rebuildMeterSlot(bool topSlot)
     {
         addAndMakeVisible(slotCard.get());
         slotCard->setAlpha(topSlot ? topMeterAlpha : bottomMeterAlpha);
+        applyMeterCardTheme(slotCard.get());
         if (topSlot)
             topMeterSwipe.toFront(false);
         else
@@ -830,12 +1103,40 @@ void VideoPageComponent::paint(juce::Graphics& g)
     if (drawerOpen)
     {
         auto overlay = drawerArea;
-        g.setColour(isDarkTheme ? juce::Colour(0xFF121620).withAlpha(0.88f)
-                                : juce::Colours::white.withAlpha(0.76f));
+        g.setColour(isDarkTheme ? juce::Colour(0xFF121620).withAlpha(0.18f)
+                                : juce::Colours::white.withAlpha(0.20f));
         g.fillRoundedRectangle(overlay, 16.0f);
-        g.setColour(isDarkTheme ? juce::Colours::white.withAlpha(0.12f)
-                                : GoodMeterLookAndFeel::textMain.withAlpha(0.14f));
+        g.setColour(isDarkTheme ? juce::Colours::white.withAlpha(0.08f)
+                                : GoodMeterLookAndFeel::textMain.withAlpha(0.07f));
         g.drawRoundedRectangle(overlay.reduced(0.5f), 16.0f, 1.0f);
+    }
+}
+
+void VideoPageComponent::paintOverChildren(juce::Graphics& g)
+{
+    if (getCurrentMarkerItems == nullptr)
+        return;
+
+    const auto markers = getCurrentMarkerItems();
+    if (markers.empty() || !progressSlider.isVisible() || !drawerOpen)
+        return;
+
+    const double total = getDurationSeconds();
+    if (total <= 0.001)
+        return;
+
+    auto rail = progressSlider.getBounds().toFloat();
+    const float centerY = rail.getCentreY();
+    for (const auto& marker : markers)
+    {
+        const float t = (float) juce::jlimit(0.0, 1.0, marker.seconds / total);
+        const float x = rail.getX() + rail.getWidth() * t;
+        const auto glowColour = marker.colour.withAlpha(isDarkTheme ? 0.20f : 0.14f);
+        const auto dotColour = marker.colour.withAlpha(isDarkTheme ? 0.94f : 0.78f);
+        g.setColour(glowColour);
+        g.fillEllipse(x - 4.6f, centerY - 4.6f, 9.2f, 9.2f);
+        g.setColour(dotColour);
+        g.fillEllipse(x - 2.05f, centerY - 2.05f, 4.1f, 4.1f);
     }
 }
 
@@ -866,9 +1167,6 @@ void VideoPageComponent::resized()
     videoBounds = safeArea.reduced(0, landscape ? 0 : 4);
     drawerArea = getDrawerBounds();
     availableMediaBounds = videoBounds.reduced(landscape ? 10 : 0, landscape ? 8 : 0);
-
-    if (drawerOpen && !drawerArea.isEmpty())
-        availableMediaBounds = availableMediaBounds.withTrimmedBottom(drawerArea.getHeight() + (landscape ? 8 : 6));
 
     presentedBounds = getPresentedVideoBounds(availableMediaBounds);
 
@@ -930,35 +1228,23 @@ void VideoPageComponent::resized()
 
     topMeterSwipe.setBounds(topMeterBounds);
     bottomMeterSwipe.setBounds(bottomMeterBounds);
-    topMeterSwipe.setVisible(!topMeterBounds.isEmpty());
-    bottomMeterSwipe.setVisible(!bottomMeterBounds.isEmpty());
+    topMeterSwipe.setVisible(!topMeterBounds.isEmpty() && !drawerOpen);
+    bottomMeterSwipe.setVisible(!bottomMeterBounds.isEmpty() && !drawerOpen);
 
     const bool overlayMode = drawerOpen;
-    const auto labelColour = overlayMode
-        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.88f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.90f))
-        : (isDarkTheme ? juce::Colours::white.withAlpha(0.56f)
-                       : GoodMeterLookAndFeel::textMuted);
-    const auto buttonColour = overlayMode
-        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.82f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.92f))
-        : (isDarkTheme ? juce::Colours::white.withAlpha(0.82f)
-                       : GoodMeterLookAndFeel::textMain);
-    const auto trackColour = overlayMode
-        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.58f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.22f))
-        : (isDarkTheme ? juce::Colours::white.withAlpha(0.28f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.15f));
-    const auto railColour = overlayMode
-        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.16f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.08f))
-        : (isDarkTheme ? juce::Colours::white.withAlpha(0.10f)
-                       : GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
-    const auto thumbColour = overlayMode
-        ? (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
-                       : GoodMeterLookAndFeel::textMain)
-        : (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
-                       : GoodMeterLookAndFeel::textMain);
+    const auto transportTextCol = isDarkTheme ? juce::Colour(0xFFF3EEE4)
+                                              : GoodMeterLookAndFeel::textMain;
+    const auto transportBgCol = isDarkTheme ? juce::Colour(0xFF1E2230)
+                                            : GoodMeterLookAndFeel::bgMain;
+    const auto labelColour = transportTextCol.withAlpha(overlayMode ? (isDarkTheme ? 0.96f : 0.90f)
+                                                                     : (isDarkTheme ? 0.78f : 0.78f));
+    const auto buttonColour = transportTextCol.withAlpha(overlayMode ? (isDarkTheme ? 0.96f : 0.92f)
+                                                                      : (isDarkTheme ? 0.92f : 1.0f));
+    const auto trackColour = transportTextCol.withAlpha(overlayMode ? (isDarkTheme ? 0.38f : 0.22f)
+                                                                     : (isDarkTheme ? 0.28f : 0.15f));
+    const auto railColour = transportTextCol.withAlpha(overlayMode ? (isDarkTheme ? 0.14f : 0.08f)
+                                                                    : (isDarkTheme ? 0.10f : 0.08f));
+    const auto thumbColour = transportTextCol.withAlpha(isDarkTheme ? 0.96f : 1.0f);
 
     currentTimeLabel.setColour(juce::Label::textColourId, labelColour);
     remainingTimeLabel.setColour(juce::Label::textColourId, labelColour);
@@ -974,14 +1260,8 @@ void VideoPageComponent::resized()
     volumeSlider.setColour(juce::Slider::thumbColourId, thumbColour);
     volumeSlider.setColour(juce::Slider::trackColourId, trackColour);
     volumeSlider.setColour(juce::Slider::backgroundColourId, railColour);
-    playPauseBtn.setColours(overlayMode
-                                ? (isDarkTheme ? juce::Colours::white.withAlpha(0.95f)
-                                               : GoodMeterLookAndFeel::textMain)
-                                : (isDarkTheme ? juce::Colours::white.withAlpha(0.92f)
-                                               : GoodMeterLookAndFeel::textMain),
-                            (overlayMode && isDarkTheme) || (!overlayMode && isDarkTheme)
-                                ? juce::Colour(0xFF11151F)
-                                : GoodMeterLookAndFeel::bgMain);
+    playPauseBtn.setColours(thumbColour,
+                            isDarkTheme ? transportBgCol : GoodMeterLookAndFeel::bgMain);
 
     const bool showDrawerContent = drawerOpen;
     currentTimeLabel.setVisible(showDrawerContent);
@@ -999,8 +1279,8 @@ void VideoPageComponent::resized()
 
     auto content = drawerArea.reduced(landscape ? 16 : 12, landscape ? 8 : 4);
     auto progressRow = content.removeFromTop(22);
-    currentTimeLabel.setBounds(progressRow.removeFromLeft(34));
-    remainingTimeLabel.setBounds(progressRow.removeFromRight(38));
+    currentTimeLabel.setBounds(progressRow.removeFromLeft(50));
+    remainingTimeLabel.setBounds(progressRow.removeFromRight(72));
     progressSlider.setBounds(progressRow.reduced(4, 5));
     content.removeFromTop(4);
 
@@ -1025,9 +1305,32 @@ void VideoPageComponent::resized()
     skipFwdBtn.setBounds(buttonArea.removeFromLeft(smallBtnW));
     buttonArea.removeFromLeft(gap);
     stopBtn.setBounds(buttonArea.removeFromLeft(smallBtnW));
+
+    // Keep the floating transport actually interactive: swipe overlays are hidden
+    // while open, and the controls are brought above any surviving siblings.
+    currentTimeLabel.toFront(false);
+    remainingTimeLabel.toFront(false);
+    progressSlider.toFront(false);
+    rewindBtn.toFront(false);
+    skipBackBtn.toFront(false);
+    playPauseBtn.toFront(false);
+    skipFwdBtn.toFront(false);
+    stopBtn.toFront(false);
+    volumeSlider.toFront(false);
 }
 
 #if MARATHON_ART_STYLE
+void VideoPageComponent::mouseDoubleClick(const juce::MouseEvent&)
+{
+    if (isMarkerModeActive != nullptr
+        && isMarkerModeActive()
+        && addMarkerAtCurrentPosition != nullptr)
+    {
+        addMarkerAtCurrentPosition();
+        return;
+    }
+}
+
 void VideoPageComponent::mouseDown(const juce::MouseEvent& e)
 {
     if (hasVideoLoaded)
@@ -1311,6 +1614,16 @@ void VideoPageComponent::updateLongPressRipple()
 void VideoPageComponent::mouseDown(const juce::MouseEvent&)
 {
 }
+
+void VideoPageComponent::mouseDoubleClick(const juce::MouseEvent&)
+{
+    if (isMarkerModeActive != nullptr
+        && isMarkerModeActive()
+        && addMarkerAtCurrentPosition != nullptr)
+    {
+        addMarkerAtCurrentPosition();
+    }
+}
 #endif
 
 bool VideoPageComponent::loadVideo(const juce::File& file)
@@ -1341,6 +1654,10 @@ bool VideoPageComponent::loadVideo(const juce::File& file)
     forcedPausePosition = 0.0;
     userRequestedPlayingState = false;
     playbackIntentHoldFrames = 0;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = 0.0;
+    lastVideoRecoveryMs = 0;
     fileNameLabel.setText(currentFileName, juce::dontSendNotification);
     hintLabel.setVisible(false);
     nativePlayer->setPosition(0.0);
@@ -1373,6 +1690,10 @@ void VideoPageComponent::clearVideo()
     forcedPausePosition = 0.0;
     userRequestedPlayingState = false;
     playbackIntentHoldFrames = 0;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = 0.0;
+    lastVideoRecoveryMs = 0;
     fileNameLabel.setText("No video loaded", juce::dontSendNotification);
     hintLabel.setText("Import a video on Page 1 or load one from History", juce::dontSendNotification);
     hintLabel.setVisible(true);
@@ -1433,6 +1754,9 @@ void VideoPageComponent::playTransport()
     forcedPausePosition = 0.0;
     userRequestedPlayingState = true;
     playbackIntentHoldFrames = 8;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = nativePlayer->getPosition();
     setPlayButtonVisualState(true);
     attachSyncedAudioIfAvailable();
     syncAudioTransportToPosition(nativePlayer->getPosition(), false);
@@ -1449,26 +1773,21 @@ void VideoPageComponent::pauseTransport()
     forcedPausePosition = nativePlayer->getPosition();
     userRequestedPlayingState = false;
     playbackIntentHoldFrames = 0;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = forcedPausePosition;
     setPlayButtonVisualState(false);
     nativePlayer->pause();
+    if (std::abs(nativePlayer->getPosition() - forcedPausePosition) > 0.02)
+        nativePlayer->setPosition(forcedPausePosition, true);
 
-    juce::Component::SafePointer<VideoPageComponent> safeThis(this);
-    const double pausePosition = forcedPausePosition;
-    juce::Timer::callAfterDelay(1, [safeThis, pausePosition]()
+    if (syncedAudioLoaded)
     {
-        if (safeThis == nullptr || safeThis->userRequestedPlayingState)
-            return;
+        audioEngine.pause();
+        audioEngine.seek(forcedPausePosition);
+    }
 
-        safeThis->nativePlayer->pause();
-        if (std::abs(safeThis->nativePlayer->getPosition() - pausePosition) > 0.02)
-            safeThis->nativePlayer->setPosition(pausePosition);
-
-        if (safeThis->syncedAudioLoaded)
-        {
-            safeThis->audioEngine.pause();
-            safeThis->audioEngine.seek(pausePosition);
-        }
-    });
+    refreshVideoPlaybackSurface(false, "pause-refresh");
 }
 
 void VideoPageComponent::rewindTransport()
@@ -1478,10 +1797,13 @@ void VideoPageComponent::rewindTransport()
 
     userRequestedPlayingState = false;
     playbackIntentHoldFrames = 0;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = 0.0;
     setPlayButtonVisualState(false);
     nativePlayer->pause();
-    nativePlayer->setPosition(0.0);
-    syncAudioTransportToPosition(0.0, false);
+    nativePlayer->queueSmoothSeek(0.0, true);
+    queueProgressSeek(0.0);
 }
 
 void VideoPageComponent::seekTransport(double seconds)
@@ -1490,8 +1812,11 @@ void VideoPageComponent::seekTransport(double seconds)
         return;
 
     auto target = juce::jlimit(0.0, getDurationSeconds(), seconds);
-    nativePlayer->setPosition(target);
-    syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = target;
+    nativePlayer->queueSmoothSeek(target, true);
+    queueProgressSeek(target);
 }
 
 void VideoPageComponent::jumpToEndTransport()
@@ -1500,8 +1825,71 @@ void VideoPageComponent::jumpToEndTransport()
         return;
 
     auto target = juce::jmax(0.0, getDurationSeconds() - 0.05);
-    nativePlayer->setPosition(target);
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = target;
+    nativePlayer->queueSmoothSeek(target, true);
+    queueProgressSeek(target);
+}
+
+void VideoPageComponent::queueProgressSeek(double seconds)
+{
+    pendingProgressSeekSeconds = juce::jmax(0.0, seconds);
+    progressSeekPending = true;
+}
+
+void VideoPageComponent::flushQueuedProgressSeek(bool force)
+{
+    if (!progressSeekPending || !hasVideoLoaded || nativePlayer == nullptr)
+        return;
+
+    if (progressScrubDragging && !force)
+        return;
+
+    if (nativePlayer->hasPendingSeek())
+        return;
+
+    const auto nowMs = juce::Time::getMillisecondCounter();
+    if (!force && static_cast<std::int32_t>(nowMs - lastProgressSeekCommitMs) < 35)
+        return;
+
+    const auto target = juce::jlimit(0.0, getDurationSeconds(), pendingProgressSeekSeconds);
     syncAudioTransportToPosition(target, nativePlayer->isPlaying());
+    lastProgressSeekCommitMs = nowMs;
+    progressSeekPending = false;
+}
+
+void VideoPageComponent::refreshVideoPlaybackSurface(bool preservePlaybackState, const juce::String&)
+{
+    if (!hasVideoLoaded || nativePlayer == nullptr || currentFilePath.isEmpty())
+        return;
+
+    juce::String error;
+    double refreshPosition = 0.0;
+
+    if (syncedAudioLoaded && audioEngine.getCurrentFilePath().isNotEmpty())
+        refreshPosition = audioEngine.getCurrentPosition();
+    else
+        refreshPosition = nativePlayer->getPosition();
+
+    refreshPosition = juce::jlimit(0.0, getDurationSeconds(), refreshPosition);
+
+    if (!nativePlayer->reloadPreservingState(refreshPosition, preservePlaybackState, error))
+    {
+        DBG("GOODMETER video refresh failed: " + error);
+        return;
+    }
+
+    if (syncedAudioLoaded)
+        syncAudioTransportToPosition(refreshPosition, preservePlaybackState);
+
+    userRequestedPlayingState = preservePlaybackState;
+    stagnantVideoFrameCount = 0;
+    stagnantVideoRecoveryAttempts = 0;
+    lastObservedVideoPosition = refreshPosition;
+    lastVideoRecoveryMs = juce::Time::getMillisecondCounter();
+    setPlayButtonVisualState(preservePlaybackState);
+    repaint();
 }
 
 void VideoPageComponent::timerCallback()
@@ -1626,16 +2014,71 @@ void VideoPageComponent::timerCallback()
         return;
     }
 
+    flushQueuedProgressSeek(false);
+
     auto duration = getDurationSeconds();
     auto position = juce::jlimit(0.0, duration, nativePlayer->getPosition());
+    if (progressScrubDragging && duration > 0.01)
+        position = juce::jlimit(0.0, duration, progressSlider.getValue() * duration);
 
     currentTimeLabel.setText(fmtTime(position), juce::dontSendNotification);
     remainingTimeLabel.setText("-" + fmtTime(juce::jmax(0.0, duration - position)), juce::dontSendNotification);
 
-    if (!progressSlider.isMouseButtonDown() && duration > 0.01)
+    if (!progressScrubDragging && duration > 0.01)
         progressSlider.setValue(position / duration, juce::dontSendNotification);
 
     auto nowPlaying = nativePlayer->isPlaying();
+
+    if (userRequestedPlayingState && syncedAudioLoaded && audioEngine.isPlaying()
+        && !progressScrubDragging && !nativePlayer->hasPendingSeek())
+    {
+        const bool nearEnd = duration > 0.01 && position >= duration - 0.05;
+        if (!nearEnd)
+        {
+            if (std::abs(position - lastObservedVideoPosition) < 0.0015)
+                ++stagnantVideoFrameCount;
+            else
+            {
+                stagnantVideoFrameCount = 0;
+                stagnantVideoRecoveryAttempts = 0;
+            }
+
+            lastObservedVideoPosition = position;
+
+            const auto nowMs = juce::Time::getMillisecondCounter();
+            if (stagnantVideoFrameCount >= 12
+                && static_cast<std::int32_t>(nowMs - lastVideoRecoveryMs) > 250)
+            {
+                auto audioPos = juce::jlimit(0.0, duration, audioEngine.getCurrentPosition());
+                auto recoveryTarget = std::abs(audioPos - position) > 0.02 ? audioPos : position;
+                ++stagnantVideoRecoveryAttempts;
+
+                if (stagnantVideoRecoveryAttempts >= 2)
+                    refreshVideoPlaybackSurface(true, "watchdog-reload");
+                else
+                {
+                    nativePlayer->setPosition(recoveryTarget, false);
+                    nativePlayer->play();
+                }
+
+                lastVideoRecoveryMs = nowMs;
+                lastObservedVideoPosition = recoveryTarget;
+                stagnantVideoFrameCount = 0;
+            }
+        }
+        else
+        {
+            stagnantVideoFrameCount = 0;
+            stagnantVideoRecoveryAttempts = 0;
+            lastObservedVideoPosition = position;
+        }
+    }
+    else
+    {
+        stagnantVideoFrameCount = 0;
+        stagnantVideoRecoveryAttempts = 0;
+        lastObservedVideoPosition = position;
+    }
 
     if (playbackIntentHoldFrames > 0)
     {
@@ -1666,9 +2109,16 @@ juce::String VideoPageComponent::fmtTime(double seconds)
         seconds = 0.0;
 
     auto totalSeconds = (int) std::round(seconds);
-    auto minutes = totalSeconds / 60;
+    auto hours = totalSeconds / 3600;
+    auto minutes = (totalSeconds / 60) % 60;
     auto remainSeconds = totalSeconds % 60;
-    return juce::String(minutes) + ":" + juce::String(remainSeconds).paddedLeft('0', 2);
+
+    if (hours > 0)
+        return juce::String(hours) + ":"
+             + juce::String(minutes).paddedLeft('0', 2) + ":"
+             + juce::String(remainSeconds).paddedLeft('0', 2);
+
+    return juce::String((totalSeconds / 60)) + ":" + juce::String(remainSeconds).paddedLeft('0', 2);
 }
 
 double VideoPageComponent::getDurationSeconds() const
