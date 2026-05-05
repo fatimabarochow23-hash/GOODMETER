@@ -15,7 +15,8 @@
               pluginIsMidiEffectPlugin="0" pluginEditorRequiresKeys="0" pluginRTASDisableBypass="0"
               pluginRTASDisableMultiMono="0" buildVST3="1" buildAU="1" buildStandalone="1"
               enableIAA="0" pluginManufacturerEmail="" vstNumMidiInputs="16"
-              vstNumMidiOutputs="16">
+              vstNumMidiOutputs="16"
+              headerPath="../../ThirdParty/onnxruntime-osx-arm64-1.20.1/include">
   <MAINGROUP id="Kpwd8d" name="GOODMETER">
     <FILE id="NonoIcn1" name="nono_icon.png" compile="0" resource="1" file="nono_icon.png"/>
     <FILE id="BlueprintBg1" name="blueprint_paper_bg.png" compile="0" resource="1"
@@ -28,6 +29,8 @@
           file="no2beijing.png"/>
     <FILE id="AnfangIcon1" name="anfang.PNG" compile="0" resource="1"
           file="anfang.PNG"/>
+    <FILE id="AudioDoctorIcon1" name="AAADOCTOR.PNG" compile="0" resource="1"
+          file="AAADOCTOR.PNG"/>
     <FILE id="BtnSettings1" name="btn_settings.png" compile="0" resource="1"
           file="Assets/btn_settings.png"/>
     <FILE id="BtnRecord1" name="btn_record.png" compile="0" resource="1"
@@ -74,6 +77,12 @@
             file="Source/SkillTreeComponent.h"/>
       <FILE id="AudioLab1" name="AudioLabComponent.h" compile="0" resource="0"
             file="Source/AudioLabComponent.h"/>
+      <FILE id="AudDoc1" name="AudioDoctorComponent.h" compile="0" resource="0"
+            file="Source/AudioDoctorComponent.h"/>
+      <FILE id="AudDoc2" name="AudioDoctorPluginHost.h" compile="0" resource="0"
+            file="Source/AudioDoctorPluginHost.h"/>
+      <FILE id="AudDoc3" name="AudioDoctorAnalysis.h" compile="0" resource="0"
+            file="Source/AudioDoctorAnalysis.h"/>
       <FILE id="RoomTone1" name="RoomToneExtractor.h" compile="0" resource="0"
             file="Source/RoomToneExtractor.h"/>
       <FILE id="DeepFilt1" name="DeepFilterProcessor.h" compile="0" resource="0"
@@ -104,7 +113,8 @@
     <MODULE id="juce_opengl" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_VST3_CAN_REPLACE_VST2="0"
-               JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP="1"/>
+               JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP="1" JUCE_PLUGINHOST_AU="1"
+               JUCE_PLUGINHOST_VST3="1" JUCE_PLUGINHOST_VST="0"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" developmentTeamID="33NJKA4738" extraDefs="JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1"
                bigIcon="NonoIcn1" smallIcon="NonoIcn1" microphonePermissionNeeded="1"

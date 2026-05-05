@@ -36,6 +36,7 @@
 #include "VideoAudioExtractor.h"
 #include "SkillTreeComponent.h"
 #include "AudioLabComponent.h"
+#include "AudioDoctorComponent.h"
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
 
 //==============================================================================
@@ -561,9 +562,97 @@ public:
         return (holoNono != nullptr) ? holoNono->getSkin() : HoloNonoComponent::SkinType::Guoba;
     }
 
+    class AudioDoctorWindow final : public juce::DocumentWindow
+    {
+    public:
+        AudioDoctorWindow(const juce::File& exportDir,
+                          juce::LookAndFeel& lookAndFeel,
+                          juce::Component& centreAround,
+                          std::function<void()> closeCallback)
+            : juce::DocumentWindow("AUDIO DOCTOR",
+                                   juce::Colour(0xFF07080B),
+                                   juce::DocumentWindow::closeButton),
+              onClose(std::move(closeCallback))
+        {
+            setUsingNativeTitleBar(false);
+            setResizable(true, true);
+            setAlwaysOnTop(false);
+            setLookAndFeel(&lookAndFeel);
+
+            auto* content = new AudioDoctorContent(exportDir);
+            content->setSize(1080, 820);
+            content->setLookAndFeel(&lookAndFeel);
+            setContentOwned(content, true);
+
+            setResizeLimits(980, 650, 1800, 1300);
+
+            auto bounds = getCentredVisibleBounds(centreAround, 1080, 820);
+            setBounds(bounds);
+            setVisible(true);
+            toFront(true);
+        }
+
+        ~AudioDoctorWindow() override
+        {
+            setLookAndFeel(nullptr);
+        }
+
+        void closeButtonPressed() override
+        {
+            if (onClose != nullptr)
+                juce::MessageManager::callAsync(onClose);
+        }
+
+    private:
+        std::function<void()> onClose;
+
+        static juce::Rectangle<int> getCentredVisibleBounds(juce::Component& centreAround, int width, int height)
+        {
+            auto& displays = juce::Desktop::getInstance().getDisplays();
+            auto anchor = centreAround.getScreenBounds().getCentre();
+            auto* display = displays.getDisplayForPoint(anchor);
+            if (display == nullptr)
+                display = displays.getPrimaryDisplay();
+
+            const auto workArea = display != nullptr ? display->userArea
+                                                     : juce::Rectangle<int>(0, 0, width, height);
+            const int windowW = juce::jmin(width,  juce::jmax(640, workArea.getWidth()  - 24));
+            const int windowH = juce::jmin(height, juce::jmax(520, workArea.getHeight() - 24));
+
+            auto bounds = juce::Rectangle<int>(0, 0, windowW, windowH)
+                              .withCentre(workArea.getCentre());
+
+            bounds.setX(juce::jlimit(workArea.getX(),
+                                     workArea.getRight() - bounds.getWidth(),
+                                     bounds.getX()));
+            bounds.setY(juce::jlimit(workArea.getY(),
+                                     workArea.getBottom() - bounds.getHeight(),
+                                     bounds.getY()));
+            return bounds;
+        }
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioDoctorWindow)
+    };
+
+    void openAudioDoctorDialog()
+    {
+        if (audioDoctorWindow != nullptr)
+        {
+            audioDoctorWindow->toFront(true);
+            return;
+        }
+
+        audioDoctorWindow = std::make_unique<AudioDoctorWindow>(
+            getRecordingDirectory(),
+            customLookAndFeel,
+            *this,
+            [this] { audioDoctorWindow.reset(); });
+    }
+
 private:
     GOODMETERAudioProcessor& audioProcessor;
     GoodMeterLookAndFeel customLookAndFeel;
+    std::unique_ptr<AudioDoctorWindow> audioDoctorWindow;
     std::unique_ptr<HoloNonoComponent> holoNono;
     int lraFrameCounter = 0;
 
@@ -789,6 +878,7 @@ private:
     juce::Image btnRewindImg;
     juce::Image btnVideoExtractImg;
     juce::Image btnAudioLabImg;
+    juce::Image btnAudioDoctorImg;
     bool hoverBtnIconsLoaded = false;
 
     // Recording state (for tape button pulse)
@@ -811,7 +901,8 @@ private:
             case SkillID::Stow:         return btnStowImg;
             case SkillID::Rewind:       return btnRewindImg;
             case SkillID::VideoExtract: return btnVideoExtractImg;
-            case SkillID::AudioLab:     return btnAudioLabImg;  // placeholder until art
+            case SkillID::AudioLab:     return btnAudioLabImg;
+            case SkillID::AudioDoctor:  return btnAudioDoctorImg;
             default:                    return btnSettingsImg;
         }
     }
@@ -935,6 +1026,8 @@ private:
             BinaryData::video_extract_icon_png, BinaryData::video_extract_icon_pngSize);
         btnAudioLabImg = juce::ImageCache::getFromMemory(
             BinaryData::anfang_PNG, BinaryData::anfang_PNGSize);
+        btnAudioDoctorImg = juce::ImageCache::getFromMemory(
+            BinaryData::AAADOCTOR_PNG, BinaryData::AAADOCTOR_PNGSize);
         hoverBtnIconsLoaded = true;
     }
 
@@ -1217,6 +1310,7 @@ private:
             case SkillID::Rewind:       handleRewindButtonClick();   break;
             case SkillID::VideoExtract: handleVideoExtractClick();   break;
             case SkillID::AudioLab:     handleAudioLabClick();       break;
+            case SkillID::AudioDoctor:  handleAudioDoctorClick();    break;
             default: break;
         }
     }
@@ -1244,6 +1338,15 @@ private:
         auto* dialog = opts.launchAsync();
         if (dialog != nullptr)
             dialog->setLookAndFeel(&customLookAndFeel);
+    }
+
+    /** Audio Doctor — A/B plugin analysis and thesis figure export */
+    void handleAudioDoctorClick()
+    {
+        hoverBtnState = HoverButtonState::retracting;
+        hoverBtnProgress = 1.0f;
+        hoverBtnHotIndex = -1;
+        openAudioDoctorDialog();
     }
 
     // Forward declarations for button click handlers (implemented in later phases)

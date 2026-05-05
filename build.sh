@@ -18,14 +18,21 @@
 
 set -euo pipefail
 
-PROJECT_DIR="/Users/MediaStorm/Desktop/GOODMETER"
-PROJUCER="/Users/MediaStorm/Downloads/JUCE/Projucer.app/Contents/MacOS/Projucer"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
+PROJUCER_CANDIDATES=(
+    "${PROJUCER:-}"
+    "/Users/caiyiyang/Downloads/JUCE/Projucer.app/Contents/MacOS/Projucer"
+    "/Users/MediaStorm/Downloads/JUCE/Projucer.app/Contents/MacOS/Projucer"
+)
 DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
 SIMCTL="$DEVELOPER_DIR/usr/bin/simctl"
 
 JLCODE_DIR="$PROJECT_DIR/JuceLibraryCode"
 JLCODE_CACHE="$PROJECT_DIR/.jlcode_cache"
+ONNXRUNTIME_LIB_DIR="$PROJECT_DIR/ThirdParty/onnxruntime-osx-arm64-1.20.1/lib"
+ONNXRUNTIME_DYLIB="$ONNXRUNTIME_LIB_DIR/libonnxruntime.1.20.1.dylib"
 
 # .jucer → xcodeproj mapping
 JUCER_STANDALONE="$PROJECT_DIR/GOODMETER.jucer"
@@ -35,6 +42,14 @@ JUCER_IOS="$PROJECT_DIR/GOODMETER_iOS.jucer"
 XCPROJ_STANDALONE="$PROJECT_DIR/Builds/MacOSX/GOODMETER.xcodeproj"
 XCPROJ_PLUGIN="$PROJECT_DIR/Builds/MacOSX_Plugin/GOODMETER.xcodeproj"
 XCPROJ_IOS="$PROJECT_DIR/Builds/iOS/GOODMETER.xcodeproj"
+
+PROJUCER=""
+for candidate in "${PROJUCER_CANDIDATES[@]}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        PROJUCER="$candidate"
+        break
+    fi
+done
 
 #==============================================================================
 # JuceLibraryCode snapshot management
@@ -58,12 +73,35 @@ restore_jlcode() {
     return 1
 }
 
+bundle_onnxruntime_for_app() {
+    local app_bundle="$1"
+    local frameworks_dir="$app_bundle/Contents/Frameworks"
+
+    if [ ! -f "$ONNXRUNTIME_DYLIB" ]; then
+        echo "ONNX Runtime dylib not found: $ONNXRUNTIME_DYLIB"
+        exit 1
+    fi
+
+    mkdir -p "$frameworks_dir"
+    cp "$ONNXRUNTIME_DYLIB" "$frameworks_dir/"
+    ln -sf "libonnxruntime.1.20.1.dylib" "$frameworks_dir/libonnxruntime.dylib"
+
+    /usr/bin/codesign --force --sign - "$frameworks_dir/libonnxruntime.1.20.1.dylib" >/dev/null
+    /usr/bin/codesign --force --sign - --preserve-metadata=entitlements,requirements,flags "$app_bundle" >/dev/null
+    echo "  [bundle] Copied ONNX Runtime → GOODMETER.app/Contents/Frameworks"
+}
+
 #==============================================================================
 # Projucer resave + cache
 #==============================================================================
 resave_target() {
     local target="$1"
     local jucer_file
+
+    if [ -z "$PROJUCER" ]; then
+        echo "Projucer not found. Set PROJUCER or install JUCE Projucer first."
+        exit 1
+    fi
 
     case "$target" in
         standalone) jucer_file="$JUCER_STANDALONE" ;;
@@ -103,6 +141,7 @@ build_standalone() {
         -scheme "GOODMETER - Standalone Plugin" \
         -configuration Release \
         build 2>&1 | tail -3
+    bundle_onnxruntime_for_app "$PROJECT_DIR/Builds/MacOSX/build/Release/GOODMETER.app"
     echo "  ✓ Standalone build complete"
     echo "  → $PROJECT_DIR/Builds/MacOSX/build/Release/GOODMETER.app"
 }
