@@ -65,6 +65,7 @@
 		AF97806B3692C2C3717612A5 /* include_juce_audio_processors.mm */ = {isa = PBXBuildFile; fileRef = E4E596BC727C13DD213F0D8F; };
 		B06BED72AFB9B8EF005685BD /* Cocoa.framework */ = {isa = PBXBuildFile; fileRef = B7E650A5EE761F17327853E9; };
 		B0D60DB8C6EFA1D1E491AD33 /* CoreAudio.framework */ = {isa = PBXBuildFile; fileRef = D161F4458F8D421F8A2C22A9; };
+		B0DD6EBE891289AD44B4121B /* BinaryData6.cpp */ = {isa = PBXBuildFile; fileRef = 4F9431719653795EB5A8096D; };
 		BE80C5BAED60D7083A3557A2 /* WebKit.framework */ = {isa = PBXBuildFile; fileRef = 8BA27885A1EB41AF3BBF9157; };
 		C1D9FC6A951532F9C7771932 /* include_juce_dsp.mm */ = {isa = PBXBuildFile; fileRef = D5604F7D792898DCF266BB32; };
 		C2824A9332876464D4AC7110 /* BinaryData4.cpp */ = {isa = PBXBuildFile; fileRef = 7FA7F492B31F9D2C4D886B64; };
@@ -120,6 +121,7 @@
 		477B905673014DB8A21EB92B /* AU */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.component; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A083AA4F293CE59F1C5FE51 /* guoba.png */ /* guoba.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba.png; path = ../../guoba.png; sourceTree = SOURCE_ROOT; };
 		4EB4089F706DCB7AC8DCFEBD /* VST3 */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GOODMETER.vst3; sourceTree = BUILT_PRODUCTS_DIR; };
+		4F9431719653795EB5A8096D /* BinaryData6.cpp */ /* BinaryData6.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = BinaryData6.cpp; path = ../../JuceLibraryCode/BinaryData6.cpp; sourceTree = SOURCE_ROOT; };
 		519AFDF014306BEB3643783D /* guoba_nose.png */ /* guoba_nose.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba_nose.png; path = ../../guoba_nose.png; sourceTree = SOURCE_ROOT; };
 		55B967DFBCAD0AE0F81E71D8 /* juce_dsp */ /* juce_dsp */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_dsp; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_dsp; sourceTree = "<absolute>"; };
 		5601F5084588B7882643E6D8 /* Accelerate.framework */ /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
@@ -170,6 +172,7 @@
 		B9451C0F3BA92F7CC5CFBC25 /* Info-AU.plist */ /* Info-AU.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Info-AU.plist"; path = "Info-AU.plist"; sourceTree = SOURCE_ROOT; };
 		BBB63E78B2896782208B6412 /* OpenGL.framework */ /* OpenGL.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenGL.framework; path = System/Library/Frameworks/OpenGL.framework; sourceTree = SDKROOT; };
 		BC99D7F6E2556507D106422C /* AAADOCTOR.PNG */ /* AAADOCTOR.PNG */ = {isa = PBXFileReference; lastKnownFileType = image.PNG; name = AAADOCTOR.PNG; path = ../../AAADOCTOR.PNG; sourceTree = SOURCE_ROOT; };
+		BDD18E21FF0391626B855368 /* guoba_app_icon.png */ /* guoba_app_icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba_app_icon.png; path = ../../guoba_app_icon.png; sourceTree = SOURCE_ROOT; };
 		BEB62B3780E8B2B19C51FB7F /* Standalone Plugin */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GOODMETER.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF6B22E8694C1ADA91063344 /* include_juce_core.mm */ /* include_juce_core.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_core.mm; path = ../../JuceLibraryCode/include_juce_core.mm; sourceTree = SOURCE_ROOT; };
 		C4C636B6A43DFC5177E93688 /* juce_audio_basics */ /* juce_audio_basics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_audio_basics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_audio_basics; sourceTree = "<absolute>"; };
@@ -333,6 +336,7 @@
 				ABE05E0E75D328C23BCFA99B,
 				7FA7F492B31F9D2C4D886B64,
 				0AE4363B0918AAB229BCD21F,
+				4F9431719653795EB5A8096D,
 				D1C8F7EC0F7C44CD33535556,
 				088DAF6C632435002A2FC4F7,
 				DFD9513F5791F928759A4D6B,
@@ -418,6 +422,7 @@
 			isa = PBXGroup;
 			children = (
 				B41C7EFCC61C703722C48C16,
+				BDD18E21FF0391626B855368,
 				7D9E2BAB22D1BFB4921259E2,
 				3EABA46F78B87CBC05549F33,
 				42C9D15B661CD7B43A2BCF28,
@@ -827,6 +832,7 @@
 				53BAEAB702B9C25B802FAB8E,
 				C2824A9332876464D4AC7110,
 				1DD01455F9EA3413EE3FCB27,
+				B0DD6EBE891289AD44B4121B,
 				D0904EDCEF7C3B7B758009EE,
 				66A146E041AC88445E1C4947,
 				CBC0BECE84CBFB772C66F358,

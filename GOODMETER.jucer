@@ -19,6 +19,8 @@
               headerPath="../../ThirdParty/onnxruntime-osx-arm64-1.20.1/include">
   <MAINGROUP id="Kpwd8d" name="GOODMETER">
     <FILE id="NonoIcn1" name="nono_icon.png" compile="0" resource="1" file="nono_icon.png"/>
+    <FILE id="GuobaAppIcon3" name="guoba_app_icon.png" compile="0" resource="1"
+          file="guoba_app_icon.png"/>
     <FILE id="BlueprintBg1" name="blueprint_paper_bg.png" compile="0" resource="1"
           file="blueprint_paper_bg.png"/>
     <FILE id="MainNonoSprite1" name="main_nono_sprite.PNG" compile="0"
@@ -117,7 +119,7 @@
                JUCE_PLUGINHOST_VST3="1" JUCE_PLUGINHOST_VST="0"/>
   <EXPORTFORMATS>
     <XCODE_MAC targetFolder="Builds/MacOSX" developmentTeamID="33NJKA4738" extraDefs="JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1"
-               bigIcon="NonoIcn1" smallIcon="NonoIcn1" microphonePermissionNeeded="1"
+               bigIcon="GuobaAppIcon3" smallIcon="GuobaAppIcon3" microphonePermissionNeeded="1"
                microphonePermissionsText="GOODMETER needs microphone access to analyze audio in real-time."
                extraFrameworks="CoreMedia,CoreAudio,AVFoundation,Accelerate"
                extraLinkerFlags="-L../../ThirdParty/onnxruntime-osx-arm64-1.20.1/lib -lonnxruntime -rpath @executable_path/../Frameworks"

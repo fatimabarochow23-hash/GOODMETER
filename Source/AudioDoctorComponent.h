@@ -2364,6 +2364,23 @@ private:
         return ext == ".vst3" || ext == ".component";
     }
 
+    static juce::File findSupportedPluginBundle(juce::File file)
+    {
+        for (int depth = 0; depth < 8 && file != juce::File{}; ++depth)
+        {
+            if (isSupportedPluginBundle(file))
+                return file;
+
+            auto parent = file.getParentDirectory();
+            if (parent == file || parent == juce::File{})
+                break;
+
+            file = parent;
+        }
+
+        return {};
+    }
+
     void refreshPluginSlotLabel()
     {
         juce::String text = "Plugins: ";
@@ -2402,32 +2419,21 @@ private:
                                  | juce::FileBrowserComponent::canSelectDirectories,
             [this, slot](const juce::FileChooser& fc)
             {
-                const auto file = fc.getResult();
-                if (file == juce::File{})
+                const auto selected = fc.getResult();
+                if (selected == juce::File{})
                     return;
 
-                if (!isSupportedPluginBundle(file))
+                const auto pluginBundle = findSupportedPluginBundle(selected);
+                if (pluginBundle == juce::File{})
                 {
-                    lastPluginDirectory = file.isDirectory() ? file : file.getParentDirectory();
+                    lastPluginDirectory = selected.isDirectory() ? selected : selected.getParentDirectory();
                     setStatus("Select one .vst3 or .component plugin bundle, then click Open.");
+                    updateButtonStates();
                     return;
                 }
 
-                lastPluginDirectory = file.getParentDirectory();
-                const auto message = "Load Plugin " + juce::String(slotName(slot)) + ": "
-                                   + file.getFileName() + "?";
-                juce::AlertWindow::showOkCancelBox(
-                    juce::AlertWindow::QuestionIcon,
-                    "Confirm plugin load",
-                    message,
-                    "Load",
-                    "Cancel",
-                    this,
-                    juce::ModalCallbackFunction::create([this, slot, file](int result)
-                    {
-                        if (result != 0)
-                            loadPluginFromFile(slot, file);
-                    }));
+                lastPluginDirectory = pluginBundle.getParentDirectory();
+                loadPluginFromFile(slot, pluginBundle);
             });
     }
 
@@ -2443,7 +2449,10 @@ private:
         auto& host = getPluginHost(slot);
         if (!host.loadPluginFromFile(file, error))
         {
-            setStatus(error);
+            setStatus("Plugin " + juce::String(slotName(slot)) + " load failed: " + error);
+            refreshPluginSlotLabel();
+            updateButtonStates();
+            repaint();
             return;
         }
 

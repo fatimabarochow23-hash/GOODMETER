@@ -203,14 +203,30 @@ public:
         {
             int cacheW = static_cast<int>(headerBounds.getWidth());
             bool arrowHidden = isArrowHovered && showDetachButton && !isDocked;
+
+            auto makeTitleTextArea = [&](float localPad, float localDd)
+            {
+                const int textX = static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f));
+                int textRight = cacheW;
+
+                if (headerWidget != nullptr)
+                {
+                    const auto widgetBounds = headerWidget->getBounds();
+                    const int widgetX = widgetBounds.getX() - static_cast<int>(headerBounds.getX());
+                    if (widgetBounds.getWidth() > 0 && widgetX > textX)
+                        textRight = juce::jmin(textRight, widgetX - static_cast<int>(isMiniMode ? 4.0f : 8.0f));
+                }
+
+                const int textW = juce::jmax(0, textRight - textX);
+                return juce::Rectangle<int>(textX, 0, textW, hh);
+            };
+
             if (GoodMeterLookAndFeel::preferDirectChartText())
             {
                 float titleFont = GoodMeterLookAndFeel::chartFont(isMiniMode ? 10.0f : 15.0f);
                 float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
                 float localDd = isMiniMode ? 8.0f : dotDiameter;
-                auto textArea = juce::Rectangle<int>(
-                    static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
-                    cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
+                auto textArea = makeTitleTextArea(localPad, localDd);
                 textArea.translate(static_cast<int>(headerBounds.getX()), static_cast<int>(headerBounds.getY()));
                 auto textCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3)
                                : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.96f)
@@ -261,6 +277,7 @@ public:
                                     lastHeaderCacheExpanded != isExpanded ||
                                     lastHeaderCacheDocked != isDocked ||
                                     lastHeaderCacheArrowHidden != arrowHidden ||
+                                    lastHeaderWidgetBounds != (headerWidget != nullptr ? headerWidget->getBounds() : juce::Rectangle<int>()) ||
                                     std::abs(lastHeaderCacheScale - juce::Component::getApproximateScaleFactorForComponent(this)) > 0.01f;
 
                 if (needsRebuild)
@@ -271,6 +288,7 @@ public:
                     lastHeaderCacheExpanded = isExpanded;
                     lastHeaderCacheDocked = isDocked;
                     lastHeaderCacheArrowHidden = arrowHidden;
+                    lastHeaderWidgetBounds = headerWidget != nullptr ? headerWidget->getBounds() : juce::Rectangle<int>();
                     lastHeaderCacheScale = scale;
                     headerTextCache = juce::Image(juce::Image::ARGB,
                                                   juce::jmax(1, juce::roundToInt(static_cast<float>(cacheW) * scale)),
@@ -282,9 +300,7 @@ public:
                     float titleFont = GoodMeterLookAndFeel::chartFont(isMiniMode ? 10.0f : 15.0f);
                     float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
                     float localDd = isMiniMode ? 8.0f : dotDiameter;
-                    auto textArea = juce::Rectangle<int>(
-                        static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), 0,
-                        cacheW - static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f)), hh);
+                    auto textArea = makeTitleTextArea(localPad, localDd);
                     auto textCol = useEditorialDarkStyle ? juce::Colour(0xFFF6EEE3)
                                        : useEditorialLightStyle ? juce::Colour(0xFF1A1A24).withAlpha(0.96f)
                                        : isDarkTheme ? GoodMeterLookAndFeel::textMainDark
@@ -974,6 +990,7 @@ private:
     bool lastHeaderCacheExpanded = false;
     bool lastHeaderCacheDocked = false;
     bool lastHeaderCacheArrowHidden = false;
+    juce::Rectangle<int> lastHeaderWidgetBounds;
 
     // Animation state
     float currentHeight = 0.0f;

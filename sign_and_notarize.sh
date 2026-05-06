@@ -27,6 +27,7 @@ APPLE_ID="bidagosila@icloud.com"
 NOTARIZATION_PROFILE="GOODMETER-Notarization"
 VERSION="1.0.0"
 BUNDLE_ID_BASE="com.solaris.GOODMETER"
+ENTITLEMENTS="$PROJECT_DIR/Builds/MacOSX/GOODMETER.entitlements"
 
 VST3_NAME="GOODMETER.vst3"
 AU_NAME="GOODMETER.component"
@@ -94,9 +95,16 @@ sign_bundle() {
     done
 
     # Sign main bundle
-    codesign --force --sign "$APP_IDENTITY" \
-        --timestamp --options runtime --deep \
-        --identifier "$bid" "$path"
+    if [ -f "$ENTITLEMENTS" ]; then
+        codesign --force --sign "$APP_IDENTITY" \
+            --timestamp --options runtime --deep \
+            --entitlements "$ENTITLEMENTS" \
+            --identifier "$bid" "$path"
+    else
+        codesign --force --sign "$APP_IDENTITY" \
+            --timestamp --options runtime --deep \
+            --identifier "$bid" "$path"
+    fi
 
     # Verify
     codesign --verify --deep --strict --verbose=2 "$path"
