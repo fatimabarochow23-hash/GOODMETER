@@ -887,6 +887,27 @@ public:
             drawHoloTitleBar(g, w, h, window.getName());
             return;
         }
+        if (window.getName().equalsIgnoreCase("AUDIO DOCTOR"))
+        {
+            const bool light = static_cast<bool>(window.getProperties().getWithDefault("audioDoctorLightTheme", false));
+            const auto bar = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
+            g.setColour(light ? juce::Colour(0xFFF2F4F7) : juce::Colour(0xFF05070B));
+            g.fillRect(bar);
+
+            const auto plate = bar.reduced(8.0f, 4.0f);
+            g.setColour(light ? juce::Colours::white.withAlpha(0.82f)
+                              : juce::Colour(0xFF0B1017).withAlpha(0.92f));
+            g.fillRoundedRectangle(plate, 14.0f);
+            g.setColour(light ? juce::Colour(0xFF1E2530).withAlpha(0.14f)
+                              : juce::Colours::white.withAlpha(0.12f));
+            g.drawRoundedRectangle(plate.reduced(0.5f), 14.0f, 0.95f);
+
+            g.setColour(light ? juce::Colour(0xFF171D27).withAlpha(0.92f)
+                              : juce::Colour(0xFFF6F8FB).withAlpha(0.94f));
+            g.setFont(juce::Font(14.0f, juce::Font::bold));
+            g.drawText(window.getName(), 0, 0, w, h, juce::Justification::centred, true);
+            return;
+        }
 
         // ── Default: Blueprint paper title bar ──
         static const juce::Colour paperColour(0xFFE8E4DD);

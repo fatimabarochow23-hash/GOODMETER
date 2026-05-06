@@ -18,7 +18,7 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 # === CONFIGURATION ===
-PROJECT_DIR="/Users/MediaStorm/Desktop/GOODMETER"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/Builds/MacOSX/build/Release"
 APP_IDENTITY="Developer ID Application: Yiyang Cai (33NJKA4738)"
 PKG_IDENTITY="Developer ID Installer: Yiyang Cai (33NJKA4738)"
@@ -43,6 +43,11 @@ FINAL_PKG="$PROJECT_DIR/GOODMETER_Installer_v${VERSION}.pkg"
 # STEP 1: BUILD RELEASE
 # =========================================================================
 echo -e "${YELLOW}[1/7]${NC} Building Release (all targets)..."
+if [ -x "$PROJECT_DIR/build.sh" ]; then
+    echo "  -> Preparing standalone JuceLibraryCode cache..."
+    "$PROJECT_DIR/build.sh" resave standalone >/dev/null
+fi
+
 cd "$PROJECT_DIR/Builds/MacOSX"
 
 if [ -d "build" ]; then

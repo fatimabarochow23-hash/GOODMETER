@@ -17,6 +17,7 @@
 */
 
 #include <JuceHeader.h>
+#include <iostream>
 
 #if JucePlugin_Build_Standalone
 
@@ -25,6 +26,7 @@
 #include "GoodMeterLookAndFeel.h"
 #include "AudioLabComponent.h"
 #include "StandaloneNonoEditor.h"
+#include "AudioDoctorJobRunner.h"
 
 #if JUCE_MAC
  #include <objc/message.h>
@@ -300,11 +302,18 @@ public:
 
     const juce::String getApplicationName() override    { return juce::CharPointer_UTF8(JucePlugin_Name); }
     const juce::String getApplicationVersion() override { return JucePlugin_VersionString; }
-    bool moreThanOneInstanceAllowed() override          { return false; }
+    bool moreThanOneInstanceAllowed() override
+    {
+        const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+        return args.indexOf("--audio-doctor-job") >= 0 || args.indexOf("--doctor-job") >= 0;
+    }
 
     //==========================================================================
-    void initialise(const juce::String&) override
+    void initialise(const juce::String& commandLine) override
     {
+        if (runAudioDoctorJobIfRequested(commandLine, true))
+            return;
+
         if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
             return;
 
@@ -348,6 +357,57 @@ public:
         mainWindow = nullptr;
         appProperties.saveIfNeeded();
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    }
+
+    void anotherInstanceStarted(const juce::String& commandLine) override
+    {
+        runAudioDoctorJobIfRequested(commandLine, false);
+    }
+
+    bool runAudioDoctorJobIfRequested(const juce::String& commandLine, bool shouldQuitAfter)
+    {
+        juce::StringArray args;
+        args.addTokens(commandLine, true);
+        args.trim();
+        args.removeEmptyStrings();
+
+        const int jobIndex = args.indexOf("--audio-doctor-job");
+        const int shortJobIndex = args.indexOf("--doctor-job");
+        const int index = jobIndex >= 0 ? jobIndex : shortJobIndex;
+        if (index < 0 || index + 1 >= args.size())
+            return false;
+
+        auto stripPathQuotes = [](juce::String text)
+        {
+            text = text.trim();
+            if (text.startsWithChar('"') || text.startsWithChar('\''))
+                text = text.substring(1);
+            if (text.endsWithChar('"') || text.endsWithChar('\''))
+                text = text.dropLastCharacters(1);
+            return text.trim();
+        };
+
+        auto jobPath = stripPathQuotes(args[index + 1]);
+        if (!juce::File(jobPath).existsAsFile())
+        {
+            for (int i = index + 2; i < args.size(); ++i)
+            {
+                if (args[i].startsWith("--"))
+                    break;
+
+                jobPath << " " << stripPathQuotes(args[i]);
+                jobPath = stripPathQuotes(jobPath);
+                if (juce::File(jobPath).existsAsFile())
+                    break;
+            }
+        }
+
+        juce::String response;
+        goodmeter::audio_doctor::runAudioDoctorJobFile(juce::File(jobPath), response);
+        std::cout << response << std::endl;
+        if (shouldQuitAfter)
+            quit();
+        return true;
     }
 
     void systemRequestedQuit() override
@@ -462,6 +522,9 @@ public:
         }
         else if (menuIndex == 2)
         {
+            menu.addItem(803, "Open Audio Doctor");
+            menu.addSeparator();
+
             // ── Audio Lab export mode: radio group ──
             int mode = AudioLabContent::exportMode;
             menu.addItem(800, "Export Both",          true, mode == 1);
@@ -615,6 +678,12 @@ public:
             // Audio Lab export mode: 800=Both(1), 801=Clean(2), 802=RoomTone(3)
             AudioLabContent::exportMode = menuItemID - 800 + 1;
             menuItemsChanged();
+        }
+        else if (menuItemID == 803)
+        {
+            if (mainWindow != nullptr)
+                if (auto* editor = dynamic_cast<StandaloneNonoEditor*>(mainWindow->getEditor()))
+                    editor->openAudioDoctorDialog();
         }
         else if (menuItemID == 900)
         {

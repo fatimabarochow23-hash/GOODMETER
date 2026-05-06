@@ -33,8 +33,9 @@ enum class SkillID
     Rewind       = 3,   // Retrospective 60s export
     VideoExtract = 4,   // Extract audio from video
     AudioLab     = 5,   // De-noise Lab (future)
+    AudioDoctor  = 6,   // A/B plugin analysis and thesis figure export
 
-    COUNT        = 6
+    COUNT        = 7
 };
 
 //==============================================================================
@@ -71,6 +72,9 @@ inline SkillInfo getSkillInfo(SkillID id)
         case SkillID::AudioLab:
             return { id, "Audio Lab", "LAB",
                      juce::Colour(0xFF7B68EE), false };
+        case SkillID::AudioDoctor:
+            return { id, "Audio Doctor", "DOC",
+                     juce::Colour(0xFF1F8F8A), false };
         default:
             return { SkillID::Gear, "Unknown", "???",
                      juce::Colours::grey, false };
@@ -80,7 +84,7 @@ inline SkillInfo getSkillInfo(SkillID id)
 inline std::array<SkillID, 5> getDefaultLoadout()
 {
     return { SkillID::Gear, SkillID::Record, SkillID::Stow,
-             SkillID::Rewind, SkillID::VideoExtract };
+             SkillID::AudioDoctor, SkillID::VideoExtract };
 }
 
 static constexpr int kNumSkillSlots = 5;
@@ -536,6 +540,10 @@ private:
             case SkillID::AudioLab:
                 data = BinaryData::anfang_PNG;
                 dataSize = BinaryData::anfang_PNGSize;
+                break;
+            case SkillID::AudioDoctor:
+                data = BinaryData::AAADOCTOR_PNG;
+                dataSize = BinaryData::AAADOCTOR_PNGSize;
                 break;
             default:
                 break;

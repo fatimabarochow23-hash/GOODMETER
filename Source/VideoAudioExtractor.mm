@@ -19,6 +19,8 @@
 #import <CoreVideo/CoreVideo.h>
 #if JUCE_IOS
  #import <UIKit/UIKit.h>
+#elif JUCE_MAC
+ #import <AppKit/AppKit.h>
 #endif
 
 //==============================================================================
@@ -263,6 +265,7 @@ static bool performFrameExtraction(const juce::String& inputPathStr,
             return false;
         }
 
+#if JUCE_IOS
         UIImage* rawImage = [UIImage imageWithCGImage:cgImage];
         const CGSize imageSize = CGSizeMake(CGImageGetWidth(cgImage), CGImageGetHeight(cgImage));
         UIGraphicsBeginImageContextWithOptions(imageSize, YES, 1.0);
@@ -271,6 +274,11 @@ static bool performFrameExtraction(const juce::String& inputPathStr,
         UIGraphicsEndImageContext();
 
         NSData* pngData = UIImagePNGRepresentation(flattenedImage != nil ? flattenedImage : rawImage);
+#else
+        NSBitmapImageRep* bitmapRep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+        NSData* pngData = [bitmapRep representationUsingType:NSBitmapImageFileTypePNG
+                                                  properties:@{}];
+#endif
         CGImageRelease(cgImage);
 
         if (pngData == nil)
@@ -908,6 +916,7 @@ VideoAudioExtractor::AudioTimingInfo VideoAudioExtractor::getAudioTimingInfo(con
 
 void GoodMeterIOSShareHelpers::shareFile(const juce::File& file)
 {
+#if JUCE_IOS
     if (!file.exists())
         return;
 
@@ -977,6 +986,9 @@ void GoodMeterIOSShareHelpers::shareFile(const juce::File& file)
             [presenter presentViewController:activity animated:YES completion:nil];
         });
     }
+#else
+    juce::ignoreUnused(file);
+#endif
 }
 
 #else
