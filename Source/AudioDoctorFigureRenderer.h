@@ -28,7 +28,8 @@ enum class FigureView
     harmonicFusion,
     groupDelayCombo,
     reverbSpaceCombo,
-    dynamicsApparentDucking
+    dynamicsApparentDucking,
+    spatialHeatmap
 };
 
 struct FigurePluginParam
@@ -61,6 +62,7 @@ struct FigureData
     juce::String label1 = "Dry";
     juce::String label2 = "Wet A";
     juce::String label3 = "Wet B";
+    juce::String processingNote;
 };
 
 class AudioDoctorFigureRenderer
@@ -120,6 +122,9 @@ public:
                 break;
             case FigureView::dynamicsApparentDucking:
                 drawDynamicsApparentDuckingFigure(g, content, data, dark);
+                break;
+            case FigureView::spatialHeatmap:
+                drawSpatialHeatmapFigure(g, content, data, dark);
                 break;
             case FigureView::spectrum:
             default:
@@ -504,6 +509,205 @@ private:
         drawSpectrogramTracksOnly(g, inner, data, dark, false);
 
         drawFigureMetrics(g, metricsArea, data, dark, MetricsKind::basic);
+    }
+
+    struct SpatialHeatmapTrack
+    {
+        const Asset* asset = nullptr;
+        juce::String label;
+        juce::Colour colour;
+    };
+
+    static std::vector<SpatialHeatmapTrack> makeSpatialHeatmapTracks(const FigureData& data, bool dark)
+    {
+        std::vector<SpatialHeatmapTrack> tracks;
+        auto push = [&](const Asset* asset, const juce::String& label, juce::Colour colour)
+        {
+            if (asset != nullptr && asset->spatialHeatmap.metrics.valid && asset->spatialHeatmap.image.isValid()
+                && static_cast<int>(tracks.size()) < 2)
+                tracks.push_back({ asset, label, colour });
+        };
+
+        push(data.dry, data.label1, dryColour(dark));
+        push(data.wetA, data.label2, wetAColour(dark));
+        push(data.wetB, data.label3, wetBColour(dark));
+        return tracks;
+    }
+
+    static void drawSpatialHeatmapFigure(juce::Graphics& g, juce::Rectangle<float> area,
+                                         const FigureData& data, bool dark)
+    {
+        g.setColour(plateColour(dark));
+        g.fillRoundedRectangle(area, 12.0f);
+        g.setColour(dark ? juce::Colour(0x33F6F8FB)
+                         : (academicLight() ? juce::Colour(0xFFD7DEE8) : juce::Colour(0x22000000)));
+        g.drawRoundedRectangle(area, 12.0f, 1.2f);
+
+        auto inner = area.reduced(44.0f, 34.0f);
+        auto titleArea = inner.removeFromTop(42.0f);
+        drawSpatialWidthLegend(g, titleArea.removeFromRight(420.0f), dark);
+
+        g.setColour(primaryText(dark));
+        g.setFont(juce::Font(32.0f, juce::Font::bold));
+        g.drawText("Spatial Energy Heatmap", titleArea, juce::Justification::centredLeft);
+
+        if (data.processingNote.isNotEmpty())
+        {
+            auto noteArea = inner.removeFromTop(30.0f);
+            g.setColour(secondaryText(dark));
+            g.setFont(juce::Font(18.0f));
+            g.drawText(data.processingNote, noteArea, juce::Justification::centredLeft, true);
+        }
+
+        auto metricsArea = inner.removeFromBottom(150.0f);
+        inner.removeFromBottom(18.0f);
+
+        const auto tracks = makeSpatialHeatmapTracks(data, dark);
+        if (tracks.empty())
+        {
+            g.setColour(primaryText(dark));
+            g.setFont(juce::Font(22.0f));
+            g.drawText("No spatial heatmap data.", inner, juce::Justification::centred);
+            return;
+        }
+
+        float maxDurationSeconds = 0.001f;
+        for (const auto& track : tracks)
+            maxDurationSeconds = juce::jmax(maxDurationSeconds, static_cast<float>(track.asset->spatialHeatmap.metrics.durationSeconds));
+
+        if (tracks.size() == 1)
+        {
+            drawSpatialHeatmapPanel(g, inner, tracks.front(), maxDurationSeconds, dark);
+        }
+        else
+        {
+            constexpr float gap = 28.0f;
+            auto left = inner.removeFromLeft((inner.getWidth() - gap) * 0.5f);
+            inner.removeFromLeft(gap);
+            drawSpatialHeatmapPanel(g, left, tracks[0], maxDurationSeconds, dark);
+            drawSpatialHeatmapPanel(g, inner, tracks[1], maxDurationSeconds, dark);
+        }
+
+        drawSpatialHeatmapMetrics(g, metricsArea, tracks, dark);
+    }
+
+    static void drawSpatialWidthLegend(juce::Graphics& g, juce::Rectangle<float> area, bool dark)
+    {
+        if (area.getWidth() < 220.0f || area.getHeight() < 20.0f)
+            return;
+
+        auto bar = area.withTrimmedTop(8.0f).withTrimmedBottom(16.0f).removeFromTop(12.0f);
+        const int steps = 96;
+        for (int i = 0; i < steps; ++i)
+        {
+            const float t0 = static_cast<float>(i) / static_cast<float>(steps);
+            const float x = bar.getX() + bar.getWidth() * t0;
+            const float w = bar.getWidth() / static_cast<float>(steps) + 1.0f;
+            g.setColour(spatialHeatmapColour(t0, 0.95f));
+            g.fillRect(x, bar.getY(), w, bar.getHeight());
+        }
+
+        g.setColour(secondaryText(dark));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText("narrow / correlated", area.withTrimmedTop(bar.getBottom() - area.getY() + 2.0f).removeFromLeft(area.getWidth() * 0.5f),
+                   juce::Justification::centredLeft, true);
+        g.drawText("wide / side / split", area.withTrimmedTop(bar.getBottom() - area.getY() + 2.0f),
+                   juce::Justification::centredRight, true);
+    }
+
+    static void drawSpatialHeatmapPanel(juce::Graphics& g, juce::Rectangle<float> area,
+                                        const SpatialHeatmapTrack& track, float maxDurationSeconds, bool dark)
+    {
+        auto labelArea = area.removeFromTop(30.0f);
+        g.setColour(track.colour);
+        g.setFont(juce::Font(21.0f, juce::Font::bold));
+        g.drawText(track.label, labelArea, juce::Justification::centredLeft, true);
+
+        auto plot = area.withTrimmedBottom(34.0f);
+        g.setColour(plotColour(dark));
+        g.fillRect(plot);
+
+        const auto& analysis = track.asset->spatialHeatmap;
+        const float duration = static_cast<float>(analysis.metrics.durationSeconds);
+        const float durationRatio = juce::jlimit(0.0f, 1.0f, duration / juce::jmax(0.001f, maxDurationSeconds));
+        auto imageArea = plot.withWidth(juce::jmax(1.0f, plot.getWidth() * durationRatio));
+        g.drawImage(analysis.image, imageArea, juce::RectanglePlacement::stretchToFit);
+
+        drawSpatialHeatmapTicks(g, plot, analysis.metrics, maxDurationSeconds, dark);
+    }
+
+    static void drawSpatialHeatmapTicks(juce::Graphics& g, juce::Rectangle<float> plot,
+                                        const SpatialHeatmapMetrics& metrics, float maxDurationSeconds, bool dark)
+    {
+        const auto grid = dark ? juce::Colours::white.withAlpha(0.18f)
+                               : (academicLight() ? juce::Colour(0xFFD7DEE8) : juce::Colour(0xFF334155).withAlpha(0.22f));
+        const auto text = dark ? juce::Colours::white.withAlpha(0.76f)
+                               : (academicLight() ? juce::Colour(0xFF374151).withAlpha(0.88f) : juce::Colour(0xFF334155).withAlpha(0.88f));
+        const float nyquist = metrics.maxFrequencyHz > 0.0f ? juce::jmax(metrics.maxFrequencyHz, 1000.0f) : 24000.0f;
+        const float freqs[] = { 100.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
+        g.setFont(juce::Font(13.0f));
+        for (float freq : freqs)
+        {
+            if (freq > nyquist)
+                continue;
+            const float y = plot.getBottom() - plot.getHeight() * juce::jlimit(0.0f, 1.0f, freq / nyquist);
+            g.setColour(grid);
+            g.drawHorizontalLine(static_cast<int>(y), plot.getX(), plot.getRight());
+            g.setColour(text);
+            g.drawText(formatFrequencyTick(freq), plot.getRight() - 46.0f, y - 8.0f, 40.0f, 16.0f,
+                       juce::Justification::centredRight);
+        }
+
+        for (int i = 0; i <= 4; ++i)
+        {
+            const float x = plot.getX() + plot.getWidth() * static_cast<float>(i) / 4.0f;
+            const float seconds = maxDurationSeconds * static_cast<float>(i) / 4.0f;
+            g.setColour(grid.withAlpha(grid.getFloatAlpha() * 0.75f));
+            g.drawVerticalLine(static_cast<int>(x), plot.getY(), plot.getBottom());
+            g.setColour(text);
+            g.drawText(juce::String(seconds, maxDurationSeconds >= 10.0f ? 1 : 2) + "s",
+                       x - 28.0f, plot.getBottom() + 8.0f, 56.0f, 20.0f,
+                       juce::Justification::centred);
+        }
+    }
+
+    static void drawSpatialHeatmapMetrics(juce::Graphics& g, juce::Rectangle<float> area,
+                                          const std::vector<SpatialHeatmapTrack>& tracks, bool dark)
+    {
+        if (tracks.empty())
+            return;
+
+        constexpr float gap = 28.0f;
+        const float columnWidth = tracks.size() == 1 ? area.getWidth()
+                                                     : (area.getWidth() - gap) * 0.5f;
+        auto remaining = area;
+        for (const auto& track : tracks)
+        {
+            auto block = remaining.removeFromLeft(columnWidth);
+            remaining.removeFromLeft(gap);
+
+            const auto& m = track.asset->spatialHeatmap.metrics;
+            g.setColour(track.colour);
+            g.fillRect(block.removeFromLeft(14.0f).reduced(0.0f, 10.0f));
+            block.removeFromLeft(12.0f);
+
+            g.setColour(primaryText(dark));
+            g.setFont(juce::Font(21.0f, juce::Font::bold));
+            g.drawText(track.label + " | Corr mean " + juce::String(m.stereoCorrelationMean, 2)
+                         + " / low5 " + juce::String(m.stereoCorrelationMin, 2),
+                       block.removeFromTop(34.0f), juce::Justification::centredLeft, true);
+
+            g.setColour(secondaryText(dark));
+            g.setFont(juce::Font(18.0f));
+            g.drawText("S/M mean " + juce::String(m.sideToMidDbMean, 1) + " dB"
+                         + " | tail " + juce::String(m.sideToMidDbTail, 1) + " dB"
+                         + " | L/R diff " + juce::String(m.lrRmsDiffDb, 1) + " dB",
+                       block.removeFromTop(28.0f), juce::Justification::centredLeft, true);
+            g.drawText("Tail " + juce::String(m.tailStartSeconds, 2) + "-" + juce::String(m.tailEndSeconds, 2) + " s"
+                         + " | bins " + juce::String(m.timeBins) + " x " + juce::String(m.frequencyBins)
+                         + " | scale " + juce::String(m.floorDb, 1) + " to " + juce::String(m.ceilingDb, 1) + " dB",
+                       block.removeFromTop(28.0f), juce::Justification::centredLeft, true);
+        }
     }
 
     struct SpectrogramTrack

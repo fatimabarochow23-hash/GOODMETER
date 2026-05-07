@@ -150,6 +150,49 @@ struct SpectrumPeak
     bool nearHarmonic = false;
 };
 
+struct SpatialHeatmapMetrics
+{
+    bool valid = false;
+    double durationSeconds = 0.0;
+    double tailStartSeconds = 0.0;
+    double tailEndSeconds = 0.0;
+    int timeBins = 0;
+    int frequencyBins = 0;
+    int fftSize = 0;
+    int hopSize = 0;
+    float minFrequencyHz = 20.0f;
+    float maxFrequencyHz = 20000.0f;
+    float floorDb = -90.0f;
+    float ceilingDb = 0.0f;
+    float stereoCorrelationMean = 0.0f;
+    float stereoCorrelationMin = 0.0f;
+    float sideToMidDbMean = 0.0f;
+    float sideToMidDbTail = 0.0f;
+    float leftRmsDb = -120.0f;
+    float rightRmsDb = -120.0f;
+    float lrRmsDiffDb = 0.0f;
+};
+
+struct SpatialHeatmapCell
+{
+    float timeStartSeconds = 0.0f;
+    float timeEndSeconds = 0.0f;
+    float frequencyLowHz = 0.0f;
+    float frequencyHighHz = 0.0f;
+    float energyDb = -120.0f;
+    float widthIndex = 0.0f;
+    float sideToMidDb = -120.0f;
+    float lrBalanceDb = 0.0f;
+    float correlation = 0.0f;
+};
+
+struct SpatialHeatmapAnalysis
+{
+    SpatialHeatmapMetrics metrics;
+    juce::Image image;
+    std::vector<SpatialHeatmapCell> sampledCells;
+};
+
 struct Asset
 {
     juce::String name;
@@ -173,6 +216,7 @@ struct Asset
     juce::Image spectrogramBlue;
     juce::Image spectrogramYellow;
     juce::Image spectrogramPink;
+    SpatialHeatmapAnalysis spatialHeatmap;
 };
 
 inline float safeGainToDb(float gain)
@@ -1370,6 +1414,227 @@ inline juce::Image computeSpectrogramImage(const juce::AudioBuffer<float>& buffe
                                    fftOrder);
 }
 
+inline float computeSpatialWidthIndex(float sideToMidDb, float correlation, float lrBalanceDb)
+{
+    const float sideWidth = juce::jlimit(0.0f, 1.0f, (sideToMidDb + 30.0f) / 36.0f);
+    const float corrWidth = juce::jlimit(0.0f, 1.0f, (1.0f - correlation) * 0.5f);
+    const float balanceWidth = juce::jlimit(0.0f, 1.0f, std::abs(lrBalanceDb) / 18.0f);
+    return juce::jlimit(0.0f, 1.0f, sideWidth * 0.72f + corrWidth * 0.20f + balanceWidth * 0.08f);
+}
+
+inline juce::Colour spatialHeatmapColour(float widthIndex, float alpha)
+{
+    const auto narrow = juce::Colour(0xFF22D3EE);
+    const auto transition = juce::Colour(0xFFFFD166);
+    const auto wide = juce::Colour(0xFFE6335F);
+    auto colour = widthIndex < 0.5f
+        ? narrow.interpolatedWith(transition, widthIndex * 2.0f)
+        : transition.interpolatedWith(wide, (widthIndex - 0.5f) * 2.0f);
+    return colour.withAlpha(juce::jlimit(0.0f, 1.0f, alpha));
+}
+
+inline SpatialHeatmapAnalysis computeSpatialHeatmapAnalysis(const juce::AudioBuffer<float>& buffer,
+                                                            double sampleRate,
+                                                            int imageWidth = 1536,
+                                                            int fftOrder = 10)
+{
+    SpatialHeatmapAnalysis result;
+
+    const int fftSize = 1 << fftOrder;
+    const int halfFFT = fftSize / 2;
+    const int samples = buffer.getNumSamples();
+    if (sampleRate <= 0.0 || samples < fftSize || imageWidth <= 0 || buffer.getNumChannels() <= 0)
+        return result;
+
+    const auto* left = buffer.getReadPointer(0);
+    const auto* right = buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : left;
+    const double eps = 1.0e-18;
+
+    double leftEnergy = 0.0;
+    double rightEnergy = 0.0;
+    for (int i = 0; i < samples; ++i)
+    {
+        const double l = left[i];
+        const double r = right[i];
+        leftEnergy += l * l;
+        rightEnergy += r * r;
+    }
+
+    juce::dsp::FFT fft(fftOrder);
+    std::vector<juce::dsp::Complex<float>> leftIn(static_cast<size_t>(fftSize));
+    std::vector<juce::dsp::Complex<float>> rightIn(static_cast<size_t>(fftSize));
+    std::vector<juce::dsp::Complex<float>> leftOut(static_cast<size_t>(fftSize));
+    std::vector<juce::dsp::Complex<float>> rightOut(static_cast<size_t>(fftSize));
+
+    const int hopSize = fftSize / 4;
+    const int numFrames = (samples - fftSize) / hopSize + 1;
+    const int renderWidth = juce::jmin(imageWidth, numFrames);
+    if (renderWidth <= 0)
+        return result;
+
+    auto prepareFrame = [&](int col)
+    {
+        const int frameIndex = col * numFrames / renderWidth;
+        const int pos = frameIndex * hopSize;
+        for (int i = 0; i < fftSize; ++i)
+        {
+            const double phase = juce::MathConstants<double>::twoPi * static_cast<double>(i)
+                               / static_cast<double>(fftSize - 1);
+            const float win = static_cast<float>(0.5 - 0.5 * std::cos(phase));
+            leftIn[static_cast<size_t>(i)] = { left[pos + i] * win, 0.0f };
+            rightIn[static_cast<size_t>(i)] = { right[pos + i] * win, 0.0f };
+        }
+        fft.perform(leftIn.data(), leftOut.data(), false);
+        fft.perform(rightIn.data(), rightOut.data(), false);
+        return pos;
+    };
+
+    double maxEnergy = eps;
+    for (int col = 0; col < renderWidth; ++col)
+    {
+        prepareFrame(col);
+        for (int bin = 1; bin < halfFFT; ++bin)
+        {
+            const auto l = leftOut[static_cast<size_t>(bin)];
+            const auto r = rightOut[static_cast<size_t>(bin)];
+            const double lPower = static_cast<double>(l.real()) * static_cast<double>(l.real())
+                                + static_cast<double>(l.imag()) * static_cast<double>(l.imag());
+            const double rPower = static_cast<double>(r.real()) * static_cast<double>(r.real())
+                                + static_cast<double>(r.imag()) * static_cast<double>(r.imag());
+            maxEnergy = juce::jmax(maxEnergy, (lPower + rPower) * 0.5);
+        }
+    }
+
+    const float ceilingDb = static_cast<float>(10.0 * std::log10(maxEnergy + eps));
+    const float floorDb = ceilingDb - 72.0f;
+    const float nyquist = static_cast<float>(sampleRate * 0.5);
+    const float maxFrequency = juce::jmin(20000.0f, nyquist);
+    const int onset = findOnsetSample(buffer);
+    const double duration = static_cast<double>(samples) / sampleRate;
+    double tailStart = static_cast<double>(onset) / sampleRate + 0.080;
+    if (tailStart >= duration)
+        tailStart = duration * 0.5;
+
+    result.image = juce::Image(juce::Image::ARGB, renderWidth, halfFFT, true);
+    result.sampledCells.reserve(12000);
+
+    double corrWeighted = 0.0;
+    double corrWeight = 0.0;
+    std::vector<float> gatedCorrelations;
+    double midSum = 0.0;
+    double sideSum = 0.0;
+    double tailMidSum = 0.0;
+    double tailSideSum = 0.0;
+    int gatedPoints = 0;
+    const int xStride = juce::jmax(1, renderWidth / 150);
+    const int yStride = juce::jmax(1, halfFFT / 80);
+
+    for (int col = 0; col < renderWidth; ++col)
+    {
+        const int pos = prepareFrame(col);
+        const float timeStart = static_cast<float>(static_cast<double>(pos) / sampleRate);
+        const float timeEnd = static_cast<float>(static_cast<double>(pos + hopSize) / sampleRate);
+
+        for (int bin = 1; bin < halfFFT; ++bin)
+        {
+            const auto l = leftOut[static_cast<size_t>(bin)];
+            const auto r = rightOut[static_cast<size_t>(bin)];
+            const double lr = static_cast<double>(l.real()) * static_cast<double>(r.real())
+                            + static_cast<double>(l.imag()) * static_cast<double>(r.imag());
+            const double lPower = static_cast<double>(l.real()) * static_cast<double>(l.real())
+                                + static_cast<double>(l.imag()) * static_cast<double>(l.imag());
+            const double rPower = static_cast<double>(r.real()) * static_cast<double>(r.real())
+                                + static_cast<double>(r.imag()) * static_cast<double>(r.imag());
+            const double energy = (lPower + rPower) * 0.5;
+            const float energyDb = static_cast<float>(10.0 * std::log10(energy + eps));
+            const float norm = juce::jlimit(0.0f, 1.0f, (energyDb - floorDb) / juce::jmax(1.0f, ceilingDb - floorDb));
+
+            const std::complex<double> lc(l.real(), l.imag());
+            const std::complex<double> rc(r.real(), r.imag());
+            const auto mid = (lc + rc) * 0.5;
+            const auto side = (lc - rc) * 0.5;
+            const double midPower = std::norm(mid);
+            const double sidePower = std::norm(side);
+            const float correlation = juce::jlimit(-1.0f, 1.0f,
+                static_cast<float>(lr / std::sqrt((lPower + eps) * (rPower + eps))));
+            const float sideToMidDb = static_cast<float>(10.0 * std::log10((sidePower + eps) / (midPower + eps)));
+            const float lrBalanceDb = static_cast<float>(10.0 * std::log10((rPower + eps) / (lPower + eps)));
+            const float widthIndex = computeSpatialWidthIndex(sideToMidDb, correlation, lrBalanceDb);
+
+            if (norm > 0.010f)
+            {
+                const float alpha = std::pow(norm, 0.64f) * 0.96f;
+                result.image.setPixelAt(col, halfFFT - 1 - bin, spatialHeatmapColour(widthIndex, alpha));
+            }
+
+            const float freq = static_cast<float>(static_cast<double>(bin) * sampleRate / static_cast<double>(fftSize));
+            const bool inBand = freq >= 20.0f && freq <= maxFrequency;
+            const bool aboveGate = energyDb >= ceilingDb - 42.0f;
+            if (inBand && aboveGate)
+            {
+                corrWeighted += static_cast<double>(correlation) * energy;
+                corrWeight += energy;
+                gatedCorrelations.push_back(correlation);
+                midSum += midPower;
+                sideSum += sidePower;
+                if (static_cast<double>(timeStart) >= tailStart)
+                {
+                    tailMidSum += midPower;
+                    tailSideSum += sidePower;
+                }
+                ++gatedPoints;
+            }
+
+            if ((col % xStride) == 0 && (bin % yStride) == 0 && norm > 0.025f)
+            {
+                SpatialHeatmapCell cell;
+                cell.timeStartSeconds = timeStart;
+                cell.timeEndSeconds = timeEnd;
+                const float binWidth = static_cast<float>(sampleRate / static_cast<double>(fftSize));
+                cell.frequencyLowHz = juce::jmax(0.0f, freq - binWidth * 0.5f);
+                cell.frequencyHighHz = freq + binWidth * 0.5f;
+                cell.energyDb = energyDb;
+                cell.widthIndex = widthIndex;
+                cell.sideToMidDb = sideToMidDb;
+                cell.lrBalanceDb = lrBalanceDb;
+                cell.correlation = correlation;
+                result.sampledCells.push_back(cell);
+            }
+        }
+    }
+
+    auto& m = result.metrics;
+    m.valid = true;
+    m.durationSeconds = duration;
+    m.tailStartSeconds = tailStart;
+    m.tailEndSeconds = duration;
+    m.timeBins = renderWidth;
+    m.frequencyBins = halfFFT;
+    m.fftSize = fftSize;
+    m.hopSize = hopSize;
+    m.maxFrequencyHz = maxFrequency;
+    m.floorDb = floorDb;
+    m.ceilingDb = ceilingDb;
+    m.leftRmsDb = safeGainToDb(static_cast<float>(std::sqrt(leftEnergy / juce::jmax(1.0, static_cast<double>(samples)))));
+    m.rightRmsDb = safeGainToDb(static_cast<float>(std::sqrt(rightEnergy / juce::jmax(1.0, static_cast<double>(samples)))));
+    m.lrRmsDiffDb = m.rightRmsDb - m.leftRmsDb;
+    m.stereoCorrelationMean = corrWeight > eps ? static_cast<float>(corrWeighted / corrWeight) : 0.0f;
+    if (!gatedCorrelations.empty())
+    {
+        std::sort(gatedCorrelations.begin(), gatedCorrelations.end());
+        const int p05 = juce::jlimit(0, static_cast<int>(gatedCorrelations.size()) - 1,
+                                    static_cast<int>(std::round(static_cast<float>(gatedCorrelations.size() - 1) * 0.05f)));
+        m.stereoCorrelationMin = gatedCorrelations[static_cast<size_t>(p05)];
+    }
+    else
+    {
+        m.stereoCorrelationMin = 0.0f;
+    }
+    m.sideToMidDbMean = static_cast<float>(10.0 * std::log10((sideSum + eps) / (midSum + eps)));
+    m.sideToMidDbTail = static_cast<float>(10.0 * std::log10((tailSideSum + eps) / (tailMidSum + eps)));
+    return result;
+}
+
 inline void refreshAnalysis(Asset& asset)
 {
     asset.metrics = computeMetrics(asset.buffer, asset.sampleRate);
@@ -1384,6 +1649,7 @@ inline void refreshAnalysis(Asset& asset)
     asset.spectrogramBlue = computeSpectrogramImage(asset.buffer, asset.sampleRate, SpectrogramPalette::Blue);
     asset.spectrogramYellow = computeSpectrogramImage(asset.buffer, asset.sampleRate, SpectrogramPalette::Yellow);
     asset.spectrogramPink = computeSpectrogramImage(asset.buffer, asset.sampleRate, SpectrogramPalette::Pink);
+    asset.spatialHeatmap = computeSpatialHeatmapAnalysis(asset.buffer, asset.sampleRate);
 }
 
 inline bool readAudioFile(const juce::File& file, Asset& out, juce::String& error)
@@ -2247,6 +2513,35 @@ inline juce::var writeSpectrumPeaksJson(const std::vector<SpectrumPeak>& peaks)
     return juce::var(array);
 }
 
+inline juce::var writeSpatialHeatmapMetricsJson(const SpatialHeatmapMetrics& m)
+{
+    auto obj = std::make_unique<juce::DynamicObject>();
+    obj->setProperty("valid", m.valid);
+    obj->setProperty("durationSeconds", m.durationSeconds);
+    obj->setProperty("tailStartSeconds", m.tailStartSeconds);
+    obj->setProperty("tailEndSeconds", m.tailEndSeconds);
+    obj->setProperty("timeBins", m.timeBins);
+    obj->setProperty("frequencyBins", m.frequencyBins);
+    obj->setProperty("fftSize", m.fftSize);
+    obj->setProperty("hopSize", m.hopSize);
+    obj->setProperty("window", "hann");
+    obj->setProperty("frequencyScale", "linear FFT bin");
+    obj->setProperty("minFrequencyHz", m.minFrequencyHz);
+    obj->setProperty("maxFrequencyHz", m.maxFrequencyHz);
+    obj->setProperty("floorDb", m.floorDb);
+    obj->setProperty("ceilingDb", m.ceilingDb);
+    obj->setProperty("widthMapping", "widthIndex combines Side/Mid ratio, local L/R correlation, and L/R balance; 0=narrow/correlated, 1=wide/decorrelated or strongly split");
+    obj->setProperty("stereoCorrelationMean", m.stereoCorrelationMean);
+    obj->setProperty("stereoCorrelationMin", m.stereoCorrelationMin);
+    obj->setProperty("stereoCorrelationMinDefinition", "5th percentile of reliable STFT cells, not raw single-cell minimum");
+    obj->setProperty("sideToMidDbMean", m.sideToMidDbMean);
+    obj->setProperty("sideToMidDbTail", m.sideToMidDbTail);
+    obj->setProperty("leftRmsDb", m.leftRmsDb);
+    obj->setProperty("rightRmsDb", m.rightRmsDb);
+    obj->setProperty("lrRmsDiffDb", m.lrRmsDiffDb);
+    return juce::var(obj.release());
+}
+
 inline float averageSpectrumBandDb(const std::vector<PlotPoint>& spectrum, float minHz, float maxHz)
 {
     double energy = 0.0;
@@ -2297,6 +2592,59 @@ inline void writeSpectrogramSummaryCsv(const juce::File& dataDir, const juce::St
     dataFiles.add(file.getFullPathName());
 }
 
+inline void writeSpatialHeatmapCsv(const juce::File& dataDir, const juce::String& role,
+                                   const Asset* asset, juce::Array<juce::var>& dataFiles)
+{
+    if (asset == nullptr || ! asset->spatialHeatmap.metrics.valid)
+        return;
+
+    const auto summaryFile = dataDir.getChildFile(role + "_spatial_heatmap_summary").withFileExtension(".csv");
+    const auto& m = asset->spatialHeatmap.metrics;
+    juce::String summary = "role,durationSeconds,tailStartSeconds,tailEndSeconds,timeBins,frequencyBins,fftSize,hopSize,minFrequencyHz,maxFrequencyHz,floorDb,ceilingDb,stereoCorrelationMean,stereoCorrelationMin,sideToMidDbMean,sideToMidDbTail,leftRmsDb,rightRmsDb,lrRmsDiffDb\n";
+    summary += role + ","
+             + juce::String(m.durationSeconds, 6) + ","
+             + juce::String(m.tailStartSeconds, 6) + ","
+             + juce::String(m.tailEndSeconds, 6) + ","
+             + juce::String(m.timeBins) + ","
+             + juce::String(m.frequencyBins) + ","
+             + juce::String(m.fftSize) + ","
+             + juce::String(m.hopSize) + ","
+             + juce::String(m.minFrequencyHz, 6) + ","
+             + juce::String(m.maxFrequencyHz, 6) + ","
+             + juce::String(m.floorDb, 6) + ","
+             + juce::String(m.ceilingDb, 6) + ","
+             + juce::String(m.stereoCorrelationMean, 6) + ","
+             + juce::String(m.stereoCorrelationMin, 6) + ","
+             + juce::String(m.sideToMidDbMean, 6) + ","
+             + juce::String(m.sideToMidDbTail, 6) + ","
+             + juce::String(m.leftRmsDb, 6) + ","
+             + juce::String(m.rightRmsDb, 6) + ","
+             + juce::String(m.lrRmsDiffDb, 6) + "\n";
+    summaryFile.replaceWithText(summary);
+    dataFiles.add(summaryFile.getFullPathName());
+
+    if (asset->spatialHeatmap.sampledCells.empty())
+        return;
+
+    const auto cellsFile = dataDir.getChildFile(role + "_spatial_heatmap_cells").withFileExtension(".csv");
+    juce::String cells = "timeStartSeconds,timeEndSeconds,frequencyLowHz,frequencyHighHz,energyDb,widthIndex,sideToMidDb,lrBalanceDb,correlation\n";
+    for (const auto& cell : asset->spatialHeatmap.sampledCells)
+    {
+        cells += juce::String(cell.timeStartSeconds, 6) + ","
+              + juce::String(cell.timeEndSeconds, 6) + ","
+              + juce::String(cell.frequencyLowHz, 6) + ","
+              + juce::String(cell.frequencyHighHz, 6) + ","
+              + juce::String(cell.energyDb, 6) + ","
+              + juce::String(cell.widthIndex, 6) + ","
+              + juce::String(cell.sideToMidDb, 6) + ","
+              + juce::String(cell.lrBalanceDb, 6) + ","
+              + juce::String(cell.correlation, 6) + "\n";
+    }
+
+    cellsFile.replaceWithText(cells);
+    dataFiles.add(cellsFile.getFullPathName());
+}
+
 inline void writeStageMarkersCsv(const juce::File& dataDir, const juce::String& role,
                                  const Asset* asset, juce::Array<juce::var>& dataFiles)
 {
@@ -2342,6 +2690,7 @@ inline void writeAssetCurves(const juce::File& dataDir, const juce::String& role
     writeCurveCsv(dataDir, role, "energy_decay_seconds_db",   "seconds,dB",   asset->energyDecay,  dataFiles);
     writeCurveCsv(dataDir, role, "dynamics_rms_seconds_dbfs", "seconds,dBFS", asset->dynamicsRms,  dataFiles);
     writeSpectrogramSummaryCsv(dataDir, role, asset, dataFiles);
+    writeSpatialHeatmapCsv(dataDir, role, asset, dataFiles);
     writeStageMarkersCsv(dataDir, role, asset, dataFiles);
 }
 

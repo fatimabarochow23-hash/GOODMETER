@@ -69,6 +69,7 @@ public:
         viewMode.addItem("Spectrogram A/B/C", 4);
         viewMode.addItem("Reverb / Space", 5);
         viewMode.addItem("Dynamics", 6);
+        viewMode.addItem("Spatial Heatmap", 7);
         viewMode.setSelectedId(1, juce::dontSendNotification);
         viewMode.onChange = [this] { repaint(); };
         GoodMeterLookAndFeel::markAsIOSEnglishMono(viewMode);
@@ -2761,6 +2762,7 @@ private:
             case 4:  return "SpectrogramABC";
             case 5:  return "ReverbSpace";
             case 6:  return "DynamicsResponse";
+            case 7:  return "SpatialHeatmap";
             default: return "SpectrumOverlay";
         }
     }
@@ -2799,6 +2801,7 @@ private:
             case 4:  return goodmeter::audio_doctor::FigureView::spectrogramABC;
             case 5:  return goodmeter::audio_doctor::FigureView::reverbSpace;
             case 6:  return goodmeter::audio_doctor::FigureView::dynamics;
+            case 7:  return goodmeter::audio_doctor::FigureView::spatialHeatmap;
             default: return goodmeter::audio_doctor::FigureView::spectrum;
         }
     }
@@ -2892,6 +2895,16 @@ private:
             g.fillRect(area);
         }
 
+        if (viewMode.getSelectedId() == 7 && hasAnySourceAsset())
+        {
+            const int imageW = juce::jmax(900, juce::roundToInt(area.getWidth() * 2.0f));
+            const int imageH = juce::jmax(520, juce::roundToInt(area.getHeight() * 2.0f));
+            auto image = goodmeter::audio_doctor::AudioDoctorFigureRenderer::renderImage(
+                makeFigureDataForExport(), !isLightFigure(exportMode), imageW, imageH);
+            g.drawImage(image, area, juce::RectanglePlacement::stretchToFit);
+            return;
+        }
+
         auto header = area.removeFromTop(exportMode ? 82.0f : 56.0f);
         drawHeader(g, header, exportMode);
 
@@ -2949,6 +2962,7 @@ private:
             case 4:  title = juce::String::fromUTF8("时频谱 A/B/C / Spectrogram A/B/C"); break;
             case 5:  title = juce::String::fromUTF8("混响空间 / Reverb Space"); break;
             case 6:  title = juce::String::fromUTF8("动态响应 / Dynamics Response"); break;
+            case 7:  title = juce::String::fromUTF8("空间能量热力图 / Spatial Heatmap"); break;
             default: title = juce::String::fromUTF8("频谱对比 / Spectrum Overlay"); break;
         }
 
@@ -4136,6 +4150,7 @@ private:
         if (viewMode.getSelectedId() == 4) viewName = "spectrogramABC";
         if (viewMode.getSelectedId() == 5) viewName = "reverbSpace";
         if (viewMode.getSelectedId() == 6) viewName = "dynamicsResponse";
+        if (viewMode.getSelectedId() == 7) viewName = "spatialHeatmap";
         root->setProperty("view", viewName);
         const auto freqRange = getFrequencyRange();
         auto range = std::make_unique<juce::DynamicObject>();
@@ -4234,6 +4249,8 @@ private:
                 obj->setProperty("groupDelayMetrics",
                                  goodmeter::audio_doctor::AudioDoctorFigureRenderer::writeGroupDelayMetrics(asset->groupDelay,
                                                                                                             &asset->spectrum));
+                obj->setProperty("spatialHeatmap",
+                                 goodmeter::audio_doctor::writeSpatialHeatmapMetricsJson(asset->spatialHeatmap.metrics));
 
                 auto curves = std::make_unique<juce::DynamicObject>();
                 curves->setProperty("spectrum", writePoints(asset->spectrum, 800));

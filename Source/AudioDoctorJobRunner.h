@@ -806,6 +806,8 @@ private:
             obj->setProperty("width", juce::jmax(1800, getExportWidth()));
             obj->setProperty("height", juce::jmax(1050, getExportHeight()));
             obj->setProperty("sources", writeThesisFigureSources(figureData));
+            if (figureData.processingNote.isNotEmpty())
+                obj->setProperty("processingNote", figureData.processingNote);
             obj->setProperty("notes", thesisTemplateBoundaryNote(token));
             thesisFigures.add(juce::var(obj.release()));
         }
@@ -843,6 +845,7 @@ private:
         data.pluginC = makeFigurePluginInfo(hostC, renderInfoC);
         data.view = figureViewForString(view);
         data.viewToken = view;
+        data.processingNote = getString(job, "processingNote", getString(getObject(job, "export"), "processingNote"));
         return data;
     }
 
@@ -857,7 +860,8 @@ private:
         data.label2 = labelForSourceId(sources[1]);
         data.label3 = labelForSourceId(sources[2]);
         data.view = thesisFigureViewForToken(templateToken);
-        data.viewToken = thesisFigureTitle(templateToken);
+        data.viewToken = getString(spec, "title", thesisFigureTitle(templateToken));
+        data.processingNote = getString(spec, "processingNote", getString(job, "processingNote"));
         return data;
     }
 
@@ -865,6 +869,8 @@ private:
     {
         std::array<juce::String, 3> sources = displaySlotSources;
         auto sourceSpec = getObject(spec, "sources");
+        if (sourceSpec.isVoid() || sourceSpec.isUndefined())
+            sourceSpec = getObject(spec, "slots");
         if (auto* arr = sourceSpec.getArray())
         {
             for (int i = 0; i < juce::jmin(3, arr->size()); ++i)
@@ -940,6 +946,8 @@ private:
             return "group_delay_combo";
         if (token.contains("dynamic") || token.contains("duck") || token.contains("attenuation"))
             return "dynamics_apparent_ducking";
+        if (token.contains("spatial") || token.contains("heatmap") || token.contains("width"))
+            return "spatial_heatmap";
         if (token.contains("reverb") || token.contains("space"))
             return "reverb_space_combo";
         if (token.contains("harmonic") || token.contains("fusion"))
@@ -957,6 +965,8 @@ private:
             return FigureView::groupDelayCombo;
         if (token == "dynamics_apparent_ducking")
             return FigureView::dynamicsApparentDucking;
+        if (token == "spatial_heatmap")
+            return FigureView::spatialHeatmap;
         if (token == "reverb_space_combo")
             return FigureView::reverbSpaceCombo;
         if (token == "harmonic_fusion")
@@ -974,6 +984,8 @@ private:
             return "Thesis Figure - Group Delay Combo";
         if (token == "dynamics_apparent_ducking")
             return "Thesis Figure - Dynamics Apparent Ducking";
+        if (token == "spatial_heatmap")
+            return "Thesis Figure - Spatial Energy Heatmap";
         if (token == "reverb_space_combo")
             return "Thesis Figure - Reverb Space Combo";
         if (token == "harmonic_fusion")
@@ -991,6 +1003,8 @@ private:
             return "Group-delay summary ignores bins more than 45 dB below the selected spectrum peak.";
         if (token == "reverb_space_combo")
             return "Direct and early windows are onset-aware; estimated RT60 is derived from RT30 or RT20.";
+        if (token == "spatial_heatmap")
+            return "Spatial width is derived from local Side/Mid ratio, L/R correlation, and L/R balance; it is an offline analysis map, not a plugin-internal meter.";
         if (token == "cst_spectrogram")
             return "Stage markers come from the generated signal spec or imported metadata when available.";
         return "Template is rendered from Audio Doctor analysis curves and linked CSV data.";
@@ -1001,17 +1015,20 @@ private:
         const auto lower = view.toLowerCase().replace("-", "_").replace(" ", "_");
         if (lower == "cst_spectrogram" || lower == "group_delay_combo"
             || lower == "dynamics_apparent_ducking" || lower == "reverb_space_combo"
-            || lower == "harmonic_fusion" || lower == "layering_spectrum")
+            || lower == "harmonic_fusion" || lower == "layering_spectrum"
+            || lower == "spatial_heatmap")
             return thesisFigureViewForToken(lower);
-        if (view.contains("spectro") || view.contains("waterfall"))
+        if (lower.contains("spatial") || lower.contains("heatmap") || lower.contains("width"))
+            return FigureView::spatialHeatmap;
+        if (lower.contains("spectro") || lower.contains("waterfall"))
             return FigureView::spectrogramABC;
-        if (view.contains("reverb") || view.contains("space"))
+        if (lower.contains("reverb") || lower.contains("space"))
             return FigureView::reverbSpace;
-        if (view.contains("dynamic") || view.contains("sidechain"))
+        if (lower.contains("dynamic") || lower.contains("sidechain"))
             return FigureView::dynamics;
-        if (view.contains("group"))
+        if (lower.contains("group"))
             return FigureView::groupDelay;
-        if (view.contains("envelope"))
+        if (lower.contains("envelope"))
             return FigureView::envelope;
         return FigureView::spectrum;
     }
@@ -1791,6 +1808,7 @@ private:
                                                                                                 &asset->spectrum));
         obj->setProperty("spectrumPeaks", writeSpectrumPeaksJson(asset->spectrumPeaks));
         obj->setProperty("harmonicPeaks", writeSpectrumPeaksJson(asset->harmonicPeaks));
+        obj->setProperty("spatialHeatmap", writeSpatialHeatmapMetricsJson(asset->spatialHeatmap.metrics));
         obj->setProperty("stageMarkers", writeStageMarkersJson(asset->stageMarkers));
         obj->setProperty("analysisSummary", writeAnalysisSummaryJson(asset->metrics));
         obj->setProperty("editMetadata", writeEditMetadata(asset->editMetadata));
@@ -1847,6 +1865,7 @@ private:
         obj->setProperty("dynamicsRms", "50ms RMS envelope, units=seconds/dBFS");
         obj->setProperty("apparentAttenuation", "target RMS envelope minus render-reference RMS envelope; negative delta means apparent attenuation, not plugin-internal gain reduction");
         obj->setProperty("spectrogram", "STFT, fftSize=1024, hopSize=256, window=hann, linear FFT-bin image, maxWidth=2048, units=time/frequency/magnitude");
+        obj->setProperty("spatialHeatmap", "STFT, fftSize=1024, hopSize=256, window=hann, linear FFT-bin image, hue/widthIndex from Side/Mid ratio plus L/R correlation and balance, units=seconds/Hz/dB/width");
         return juce::var(obj.release());
     }
 
