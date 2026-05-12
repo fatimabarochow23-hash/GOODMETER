@@ -9,11 +9,13 @@
 
 #include <JuceHeader.h>
 #include <array>
+#include <cmath>
 #include "GoodMeterLookAndFeel.h"
 #include "AudioDoctorPluginHost.h"
 #include "AudioDoctorFigureRenderer.h"
 
-class AudioDoctorContent : public juce::Component
+class AudioDoctorContent : public juce::Component,
+                           private juce::Timer
 {
 public:
     enum class PluginSlot
@@ -36,6 +38,8 @@ public:
     explicit AudioDoctorContent(const juce::File& exportDir = {})
         : exportDirectory(exportDir.exists() ? exportDir : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory))
     {
+        setOpaque(false);
+
         importDryBtn.onClick = [this] { showLoadDryMenu(); };
         generateBtn.onClick = [this] { showGenerateMenu(); };
         editAudioBtn.onClick = [this] { showEditAudioMenu(); };
@@ -49,7 +53,7 @@ public:
         pluginCBtn.onClick = [this] { choosePlugin(PluginSlot::C); };
         editPluginCBtn.onClick = [this] { showPluginEditor(PluginSlot::C); };
         renderCBtn.onClick = [this] { renderWetWithPlugin(PluginSlot::C); };
-        exportBtn.onClick = [this] { exportFigure(); };
+        exportBtn.onClick = [this] { showExportMenu(); };
         resetBtn.onClick = [this] { resetAll(); };
 
         for (auto* button : { &importDryBtn, &generateBtn, &editAudioBtn, &busBtn, &pluginBtn, &editPluginBtn,
@@ -63,38 +67,105 @@ public:
             button->setColour(juce::TextButton::textColourOnId, juce::Colour(0xFF080A0F));
         }
 
+        for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
+                              &pluginBBtn, &editPluginBBtn, &renderBBtn,
+                              &pluginCBtn, &editPluginCBtn, &renderCBtn })
+            button->setVisible(false);
+
+        auto setupPluginInsert = [this] (PluginInsertSlotComponent& insert, PluginSlot slot)
+        {
+            insert.onMain = [this, slot] { handlePluginInsertMainClick(slot); };
+            addAndMakeVisible(insert);
+        };
+        setupPluginInsert(pluginInsertA, PluginSlot::A);
+        setupPluginInsert(pluginInsertB, PluginSlot::B);
+        setupPluginInsert(pluginInsertC, PluginSlot::C);
+
         viewMode.addItem("Spectrum", 1);
         viewMode.addItem("Envelope", 2);
         viewMode.addItem("Group Delay", 3);
         viewMode.addItem("Spectrogram A/B/C", 4);
         viewMode.addItem("Reverb / Space", 5);
         viewMode.addItem("Dynamics", 6);
-        viewMode.addItem("Spatial Heatmap", 7);
+        viewMode.addItem("Spatial Image", 7);
+        viewMode.addItem("Layer Fit / Fusion", 8);
         viewMode.setSelectedId(1, juce::dontSendNotification);
-        viewMode.onChange = [this] { repaint(); };
+        viewMode.onChange = [this] { updateTerrainCameraControls(); resized(); repaint(); };
         GoodMeterLookAndFeel::markAsIOSEnglishMono(viewMode);
         viewMode.setLookAndFeel(&audioDoctorPopupLookAndFeel);
         addAndMakeVisible(viewMode);
 
-        freqZoom.addItem("20-20k", 1);
-        freqZoom.addItem("20-200", 2);
-        freqZoom.addItem("100-1k", 3);
-        freqZoom.addItem("250-4k", 4);
-        freqZoom.addItem("1k-8k", 5);
-        freqZoom.addItem("5k-20k", 6);
-        freqZoom.setSelectedId(1, juce::dontSendNotification);
-        freqZoom.onChange = [this] { applyFrequencyPreset(freqZoom.getSelectedId()); };
-        GoodMeterLookAndFeel::markAsIOSEnglishMono(freqZoom);
-        freqZoom.setLookAndFeel(&audioDoctorPopupLookAndFeel);
-        addAndMakeVisible(freqZoom);
-
         themeMode.addItem("Dark", 1);
         themeMode.addItem("Light", 2);
         themeMode.setSelectedId(1, juce::dontSendNotification);
-        themeMode.onChange = [this] { refreshThemeColours(); repaint(); };
+        themeMode.onChange = [this] { refreshThemeColours(); updateTerrainCameraControls(); repaint(); };
         GoodMeterLookAndFeel::markAsIOSEnglishMono(themeMode);
         themeMode.setLookAndFeel(&audioDoctorPopupLookAndFeel);
         addAndMakeVisible(themeMode);
+
+        bandMode.addItem("Bands Off", 1);
+        bandMode.addItem("Low", 2);
+        bandMode.addItem("Mid", 3);
+        bandMode.addItem("High", 4);
+        bandMode.addItem("All Bands", 5);
+        bandMode.setSelectedId(1, juce::dontSendNotification);
+        bandMode.onChange = [this] { updateTerrainCameraControls(); repaint(); };
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(bandMode);
+        bandMode.setLookAndFeel(&audioDoctorPopupLookAndFeel);
+        addAndMakeVisible(bandMode);
+
+        auto setupLayerCombo = [this] (juce::ComboBox& combo)
+        {
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(combo);
+            combo.setLookAndFeel(&audioDoctorPopupLookAndFeel);
+            combo.onChange = [this] { updateTerrainCameraControls(); resized(); repaint(); };
+            addAndMakeVisible(combo);
+        };
+
+        for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource })
+        {
+            setupLayerCombo(*combo);
+            combo->addItem("Auto", 1);
+            combo->addItem("Off", 2);
+            combo->addSeparator();
+            combo->addItem("DRY A", 101);
+            combo->addItem("DRY B", 102);
+            combo->addItem("DRY C", 103);
+            combo->addItem("WET A", 104);
+            combo->addItem("WET B", 105);
+            combo->addItem("WET C", 106);
+        }
+        fitStem1Source.setTextWhenNothingSelected("Stem 1");
+        fitStem2Source.setTextWhenNothingSelected("Stem 2");
+        fitStem3Source.setTextWhenNothingSelected("Stem 3");
+        fitBounceSource.setTextWhenNothingSelected("Bounce");
+        fitStem1Source.setSelectedId(1, juce::dontSendNotification);
+        fitStem2Source.setSelectedId(1, juce::dontSendNotification);
+        fitStem3Source.setSelectedId(2, juce::dontSendNotification);
+        fitBounceSource.setSelectedId(1, juce::dontSendNotification);
+
+        setupLayerCombo(fitFigureType);
+        fitFigureType.addItem("Critical Band Terrain", 1);
+        fitFigureType.addItem("Time-Frequency Terrain", 2);
+        fitFigureType.addItem("Spatial Image", 3);
+        fitFigureType.addItem("Critical Band Crystal", 4);
+        fitFigureType.addItem("Dodecahedron Crystal", 5);
+        fitFigureType.setSelectedId(1, juce::dontSendNotification);
+
+        auto setupLayerLabel = [this] (juce::Label& label, const juce::String& text)
+        {
+            label.setText(text, juce::dontSendNotification);
+            label.setJustificationType(juce::Justification::centredRight);
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(label);
+            addAndMakeVisible(label);
+        };
+        setupLayerLabel(fitStem1Label, "Stem 1");
+        setupLayerLabel(fitStem2Label, "Stem 2");
+        setupLayerLabel(fitStem3Label, "Stem 3");
+        setupLayerLabel(fitBounceLabel, "Bounce");
+        setupLayerLabel(fitViewLabel, "Figure");
+        setupLayerLabel(fitBandLabel, "Band");
+        setupLayerLabel(fitAngleLabel, "Angle");
 
         statusLabel.setJustificationType(juce::Justification::centredLeft);
         statusLabel.setText("Load Dry audio, generate a signal, or choose an AU/VST3 plugin.", juce::dontSendNotification);
@@ -115,6 +186,62 @@ public:
         resetBtn.setEnabled(false);
         busBtn.setEnabled(false);
 
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(terrainCameraMode);
+        terrainCameraMode.setLookAndFeel(&audioDoctorPopupLookAndFeel);
+        for (int i = 0; i < 5; ++i)
+            terrainCameraMode.addItem(terrainCameraLabel(i), i + 1);
+        terrainCameraMode.setSelectedId(terrainCameraIndex(terrainCamera) + 1, juce::dontSendNotification);
+        terrainCameraMode.onChange = [this]
+        {
+            terrainCamera = terrainCameraForIndex(terrainCameraMode.getSelectedId() - 1);
+            resetDodecahedronCrystalCameraToPreset();
+            updateTerrainCameraControls();
+            repaint();
+        };
+        addAndMakeVisible(terrainCameraMode);
+
+        terrainProjectionBtn.onClick = [this]
+        {
+            terrainProjectionEnabled = !terrainProjectionEnabled;
+            updateTerrainCameraControls();
+            resized();
+            repaint();
+        };
+        terrainTimeFlipBtn.onClick = [this]
+        {
+            terrainTimeReversed = !terrainTimeReversed;
+            updateTerrainCameraControls();
+            repaint();
+        };
+        for (auto* button : { &terrainProjectionBtn, &terrainTimeFlipBtn })
+        {
+            addAndMakeVisible(button);
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(*button);
+        }
+
+        spatialTimeLabel.setJustificationType(juce::Justification::centredLeft);
+        spatialTimeLabel.setText("Time 0.00 s", juce::dontSendNotification);
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(spatialTimeLabel);
+        addAndMakeVisible(spatialTimeLabel);
+
+        spatialTimeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+        spatialTimeSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        spatialTimeSlider.setRange(0.0, 1.0, 0.001);
+        spatialTimeSlider.setValue(0.0, juce::dontSendNotification);
+        spatialTimeSlider.onValueChange = [this]
+        {
+            spatialTimePositionSeconds = static_cast<float>(spatialTimeSlider.getValue());
+            updateTerrainCameraControls();
+            repaint();
+        };
+        addAndMakeVisible(spatialTimeSlider);
+
+        spatialTimePlayBtn.onTrigger = [this] (bool reverse)
+        {
+            startSpatialTimelinePlayback(reverse);
+        };
+        addAndMakeVisible(spatialTimePlayBtn);
+
         setWantsKeyboardFocus(true);
         lastAudioDirectory = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
         lastPluginDirectory = juce::File("/Library/Audio/Plug-Ins/VST3");
@@ -122,18 +249,27 @@ public:
             lastPluginDirectory = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
 
         refreshThemeColours();
+        updateTerrainCameraControls();
         setSize(1080, 820);
     }
 
     ~AudioDoctorContent() override
     {
+        stopSpatialTimelinePlayback();
+        terrainCameraMode.setLookAndFeel(nullptr);
+        fitFigureType.setLookAndFeel(nullptr);
+        fitBounceSource.setLookAndFeel(nullptr);
+        fitStem3Source.setLookAndFeel(nullptr);
+        fitStem2Source.setLookAndFeel(nullptr);
+        fitStem1Source.setLookAndFeel(nullptr);
+        bandMode.setLookAndFeel(nullptr);
         themeMode.setLookAndFeel(nullptr);
-        freqZoom.setLookAndFeel(nullptr);
         viewMode.setLookAndFeel(nullptr);
         closePluginEditorWindow();
         audioEditWindow.reset();
         busRoutingWindow.reset();
         generateSignalWindow.reset();
+        pluginLoadConfirmWindow.reset();
         aliveFlag->store(false);
         if (renderThread.joinable())
             renderThread.join();
@@ -157,7 +293,10 @@ public:
         if (!figureBounds.isEmpty())
         {
             drawGlassPlate(g, figureBounds, GoodMeterLookAndFeel::accentBlue.interpolatedWith(GoodMeterLookAndFeel::accentPink, 0.16f), 0.30f);
-            drawFigure(g, figureBounds.reduced(14.0f), false);
+            auto figureContent = figureBounds.reduced(14.0f);
+            if (hasFigureBottomControls())
+                figureContent.removeFromBottom(isLayerFitFusionView() ? static_cast<float>(layerFitBottomControlsHeight) : 48.0f);
+            drawFigure(g, figureContent, false);
         }
     }
 
@@ -165,20 +304,23 @@ public:
     {
         auto bounds = getLocalBounds().reduced(contentPadding);
         auto toolbar = bounds.removeFromTop(toolbarHeight);
-        auto row1 = toolbar.removeFromTop(34);
+        auto row1 = toolbar.removeFromTop(40);
         auto row2 = toolbar.removeFromTop(34);
 
         importDryBtn.setBounds(row1.removeFromLeft(82).reduced(2));
         generateBtn.setBounds(row1.removeFromLeft(88).reduced(2));
-        pluginBtn.setBounds(row1.removeFromLeft(86).reduced(2));
-        editPluginBtn.setBounds(row1.removeFromLeft(68).reduced(2));
-        renderBtn.setBounds(row1.removeFromLeft(82).reduced(2));
-        pluginBBtn.setBounds(row1.removeFromLeft(86).reduced(2));
-        editPluginBBtn.setBounds(row1.removeFromLeft(68).reduced(2));
-        renderBBtn.setBounds(row1.removeFromLeft(82).reduced(2));
-        pluginCBtn.setBounds(row1.removeFromLeft(86).reduced(2));
-        editPluginCBtn.setBounds(row1.removeFromLeft(68).reduced(2));
-        renderCBtn.setBounds(row1.removeFromLeft(82).reduced(2));
+        row1.removeFromLeft(8);
+        const auto insertWidth = juce::jlimit(124, 164, (row1.getWidth() - 12) / 3);
+        pluginInsertA.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+        row1.removeFromLeft(6);
+        pluginInsertB.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+        row1.removeFromLeft(6);
+        pluginInsertC.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+
+        for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
+                              &pluginBBtn, &editPluginBBtn, &renderBBtn,
+                              &pluginCBtn, &editPluginCBtn, &renderCBtn })
+            button->setBounds({});
 
         editAudioBtn.setBounds(row2.removeFromLeft(68).reduced(2));
         busBtn.setBounds(row2.removeFromLeft(64).reduced(2));
@@ -186,8 +328,12 @@ public:
         resetBtn.setBounds(row2.removeFromLeft(74).reduced(2));
         row2.removeFromLeft(8);
         viewMode.setBounds(row2.removeFromLeft(150).reduced(2));
-        freqZoom.setBounds(row2.removeFromLeft(120).reduced(2));
         themeMode.setBounds(row2.removeFromLeft(112).reduced(2));
+        bandMode.setBounds(row2.removeFromLeft(128).reduced(2));
+        row2.removeFromLeft(8);
+        fitAngleLabel.setBounds(row2.removeFromLeft(62).reduced(1));
+        terrainCameraMode.setBounds(row2.removeFromLeft(168).reduced(2));
+        layoutTerrainCameraControls();
 
         bounds.removeFromTop(toolbarStatusGap);
         auto statusRow = bounds.removeFromTop(statusHeight);
@@ -196,26 +342,120 @@ public:
 
     }
 
-    void mouseDown(const juce::MouseEvent&) override
+    void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
+
+        draggingDodecahedronCrystal = false;
+        draggingTerrainCamera = false;
+        if (isDraggable3DFigure() && getFigureBounds().contains(event.getPosition()))
+        {
+            draggingTerrainCamera = true;
+            terrainDragStart = event.position;
+            terrainDragStartCamera = terrainCamera;
+        }
+
+        if (isLayerFitDodecahedronCrystalMode() && getFigureBounds().contains(event.getPosition()))
+        {
+            draggingDodecahedronCrystal = true;
+            crystalDragStart = event.position;
+            crystalDragStartYawRadians = dodecahedronCrystalYawRadians;
+            crystalDragStartPitchRadians = dodecahedronCrystalPitchRadians;
+        }
+    }
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        if (draggingDodecahedronCrystal && isLayerFitDodecahedronCrystalMode())
+        {
+            const auto delta = event.position - crystalDragStart;
+            dodecahedronCrystalYawRadians = wrapRadians(crystalDragStartYawRadians + delta.x * 0.008f);
+            dodecahedronCrystalPitchRadians = wrapRadians(crystalDragStartPitchRadians - delta.y * 0.006f);
+            repaint();
+            return;
+        }
+
+        if (draggingTerrainCamera && isDraggable3DFigure())
+            updateTerrainCameraFromDrag(event.position - terrainDragStart);
+    }
+
+    void mouseMove(const juce::MouseEvent& event) override
+    {
+        juce::ignoreUnused(event);
+    }
+
+    void mouseExit(const juce::MouseEvent&) override
+    {
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        draggingDodecahedronCrystal = false;
+        draggingTerrainCamera = false;
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent& event) override
+    {
+        if (!getFigureBounds().contains(event.getPosition()))
+            return;
+
+        if (isDraggable3DFigure())
+        {
+            resetDodecahedronCrystalCameraToPreset();
+        }
+        else
+        {
+            setFrequencyRange(20.0f, 20000.0f, false);
+            timeMinSeconds = 0.0f;
+            timeMaxSeconds = 0.0f;
+        }
+        repaint();
     }
 
     void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override
     {
-        if (!event.mods.isShiftDown())
-            return;
-
         const float delta = std::abs(wheel.deltaY) > 0.0001f ? wheel.deltaY : -wheel.deltaX;
         if (std::abs(delta) <= 0.0001f)
             return;
 
-        panFrequencyRange(delta > 0.0f ? -0.18f : 0.18f);
+        if (event.mods.isShiftDown())
+        {
+            panFrequencyRange(delta > 0.0f ? -0.18f : 0.18f);
+            return;
+        }
+
+        const float spanMultiplier = delta > 0.0f ? 0.82f : 1.22f;
+        if (usesTimeAxisForWheelZoom())
+        {
+            const float maxTime = getCurrentTimeZoomMax();
+            zoomTimeRangeAt(maxTime, timeAtMousePosition(event.position, maxTime), spanMultiplier);
+        }
+        else
+        {
+            zoomFrequencyRangeAt(spanMultiplier, frequencyAtMousePosition(event.position));
+        }
     }
 
     bool keyPressed(const juce::KeyPress& key) override
     {
         const auto c = static_cast<juce::juce_wchar>(key.getTextCharacter());
+        if (key.getKeyCode() == juce::KeyPress::spaceKey || c == ' ')
+        {
+            if (spatialTimelinePlaying)
+            {
+                stopSpatialTimelinePlayback();
+                return true;
+            }
+
+            if (isSpatialImpressionView() || isLayerFitTimeIndexedMode())
+            {
+                startSpatialTimelinePlayback(spatialTimelineReverse);
+                return true;
+            }
+
+            return false;
+        }
+
         if (c == 'r' || c == 'R')
         {
             zoomFrequencyRange(1.32f);
@@ -231,8 +471,635 @@ public:
         return false;
     }
 
+    bool loadProjectPackageFromFile(const juce::File& projectPath, juce::String& error)
+    {
+        return loadProjectPackage(projectPath, error);
+    }
+
 private:
     using Asset = goodmeter::audio_doctor::Asset;
+    using TerrainCamera = goodmeter::audio_doctor::TerrainCamera;
+    using SpatialWindow = goodmeter::audio_doctor::SpatialWindow;
+
+    void timerCallback() override
+    {
+        if (!spatialTimelinePlaying)
+            return;
+
+        const bool timeVisible = isSpatialImpressionView() || isLayerFitTimeIndexedMode();
+        if (!timeVisible)
+        {
+            stopSpatialTimelinePlayback();
+            return;
+        }
+
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const double deltaSeconds = juce::jmax(0.0, (nowMs - spatialTimelineLastTickMs) * 0.001);
+        spatialTimelineLastTickMs = nowMs;
+
+        const float maxSeconds = getSpatialImpressionDurationSeconds();
+        const float direction = spatialTimelineReverse ? -1.0f : 1.0f;
+        spatialTimePositionSeconds += static_cast<float>(deltaSeconds) * direction;
+
+        bool finished = false;
+        if (spatialTimelineReverse && spatialTimePositionSeconds <= 0.0f)
+        {
+            spatialTimePositionSeconds = 0.0f;
+            finished = true;
+        }
+        else if (!spatialTimelineReverse && spatialTimePositionSeconds >= maxSeconds)
+        {
+            spatialTimePositionSeconds = maxSeconds;
+            finished = true;
+        }
+
+        spatialTimeSlider.setValue(spatialTimePositionSeconds, juce::dontSendNotification);
+        updateTerrainCameraControls();
+        repaint();
+
+        if (finished)
+            stopSpatialTimelinePlayback();
+    }
+
+    void startSpatialTimelinePlayback(bool reverse)
+    {
+        if (!(isSpatialImpressionView() || isLayerFitTimeIndexedMode()))
+            return;
+
+        const float maxSeconds = getSpatialImpressionDurationSeconds();
+        if (reverse)
+        {
+            if (spatialTimePositionSeconds <= 0.001f)
+                spatialTimePositionSeconds = maxSeconds;
+        }
+        else if (spatialTimePositionSeconds >= maxSeconds - 0.001f)
+        {
+            spatialTimePositionSeconds = 0.0f;
+        }
+
+        spatialTimelineReverse = reverse;
+        spatialTimelinePlaying = true;
+        spatialTimelineLastTickMs = juce::Time::getMillisecondCounterHiRes();
+        grabKeyboardFocus();
+        spatialTimePlayBtn.setPlaying(true, reverse);
+        spatialTimeSlider.setValue(spatialTimePositionSeconds, juce::dontSendNotification);
+        updateTerrainCameraControls();
+        startTimerHz(30);
+        repaint();
+    }
+
+    void stopSpatialTimelinePlayback()
+    {
+        if (!spatialTimelinePlaying)
+        {
+            spatialTimePlayBtn.setPlaying(false, spatialTimelineReverse);
+            stopTimer();
+            return;
+        }
+
+        spatialTimelinePlaying = false;
+        spatialTimePlayBtn.setPlaying(false, spatialTimelineReverse);
+        stopTimer();
+    }
+
+    static const char* terrainCameraLabel(int index)
+    {
+        switch (index)
+        {
+            case 0:  return "Front High";
+            case 1:  return "Front Low";
+            case 2:  return "Diagonal";
+            case 3:  return "Side Low";
+            case 4:  return "Side High";
+            default: return "Diagonal";
+        }
+    }
+
+    static TerrainCamera terrainCameraForIndex(int index)
+    {
+        switch (index)
+        {
+            case 0:  return TerrainCamera::frontHigh;
+            case 1:  return TerrainCamera::frontLow;
+            case 3:  return TerrainCamera::sideLow;
+            case 4:  return TerrainCamera::sideHigh;
+            case 2:
+            default: return TerrainCamera::diagonal;
+        }
+    }
+
+    static int terrainCameraIndex(TerrainCamera camera)
+    {
+        switch (camera)
+        {
+            case TerrainCamera::frontHigh: return 0;
+            case TerrainCamera::frontLow:  return 1;
+            case TerrainCamera::sideLow:   return 3;
+            case TerrainCamera::sideHigh:  return 4;
+            case TerrainCamera::diagonal:
+            default:                       return 2;
+        }
+    }
+
+    static juce::String terrainCameraToken(TerrainCamera camera)
+    {
+        switch (camera)
+        {
+            case TerrainCamera::frontHigh: return "front_high";
+            case TerrainCamera::frontLow:  return "front_low";
+            case TerrainCamera::sideLow:   return "side_low";
+            case TerrainCamera::sideHigh:  return "side_high";
+            case TerrainCamera::diagonal:
+            default:                       return "diagonal";
+        }
+    }
+
+    static TerrainCamera terrainCameraFromToken(juce::String token)
+    {
+        token = token.trim().toLowerCase().replace(" ", "_").replace("-", "_");
+        if (token == "front_high") return TerrainCamera::frontHigh;
+        if (token == "front_low")  return TerrainCamera::frontLow;
+        if (token == "side_low")   return TerrainCamera::sideLow;
+        if (token == "side_high")  return TerrainCamera::sideHigh;
+        return TerrainCamera::diagonal;
+    }
+
+    void resetDodecahedronCrystalCameraToPreset()
+    {
+        switch (terrainCamera)
+        {
+            case TerrainCamera::frontHigh:
+                dodecahedronCrystalYawRadians = 0.0f;
+                dodecahedronCrystalPitchRadians = 0.70f;
+                break;
+            case TerrainCamera::frontLow:
+                dodecahedronCrystalYawRadians = 0.0f;
+                dodecahedronCrystalPitchRadians = 0.42f;
+                break;
+            case TerrainCamera::sideLow:
+                dodecahedronCrystalYawRadians = juce::MathConstants<float>::halfPi;
+                dodecahedronCrystalPitchRadians = 0.42f;
+                break;
+            case TerrainCamera::sideHigh:
+                dodecahedronCrystalYawRadians = juce::MathConstants<float>::halfPi;
+                dodecahedronCrystalPitchRadians = 0.72f;
+                break;
+            case TerrainCamera::diagonal:
+            default:
+                dodecahedronCrystalYawRadians = -0.68f;
+                dodecahedronCrystalPitchRadians = 0.54f;
+                break;
+        }
+    }
+
+    static juce::String spatialWindowToken(SpatialWindow window)
+    {
+        switch (window)
+        {
+            case SpatialWindow::attack: return "attack";
+            case SpatialWindow::body:   return "body";
+            case SpatialWindow::tail:   return "tail";
+            case SpatialWindow::full:
+            default:                    return "full";
+        }
+    }
+
+    static float wrapRadians(float angle)
+    {
+        constexpr float twoPi = juce::MathConstants<float>::twoPi;
+        while (angle > juce::MathConstants<float>::pi)
+            angle -= twoPi;
+        while (angle < -juce::MathConstants<float>::pi)
+            angle += twoPi;
+        return angle;
+    }
+
+    static double uiFallbackTailSecondsFor(const juce::PluginDescription& description)
+    {
+        const auto text = (description.name + " " + description.descriptiveName + " "
+                         + description.manufacturerName + " " + description.fileOrIdentifier).toLowerCase();
+
+        static const char* longTailNeedles[] =
+        {
+            "beam", "reverb", "space", "delay", "echo", "haze", "taps",
+            "grains", "timeless", "shimmer", "diffusion", "granular"
+        };
+
+        for (auto* needle : longTailNeedles)
+            if (text.contains(needle))
+                return 8.0;
+
+        return 2.0;
+    }
+
+    bool isSpatialImpressionView() const
+    {
+        return viewMode.getSelectedId() == 7;
+    }
+
+    bool isLayerFitFusionView() const
+    {
+        return viewMode.getSelectedId() == 8;
+    }
+
+    bool isLayerFitSpatialImageMode() const
+    {
+        return isLayerFitFusionView() && layerFitFigureTypeToken() == "spatial_image";
+    }
+
+    bool isLayerFitCriticalBandCrystalMode() const
+    {
+        return isLayerFitFusionView() && layerFitFigureTypeToken() == "critical_band_crystal";
+    }
+
+    bool isLayerFitDodecahedronCrystalMode() const
+    {
+        return isLayerFitFusionView() && layerFitFigureTypeToken() == "dodecahedron_crystal";
+    }
+
+    bool isLayerFitTimeIndexedMode() const
+    {
+        return isLayerFitSpatialImageMode()
+            || isLayerFitCriticalBandCrystalMode()
+            || isLayerFitDodecahedronCrystalMode();
+    }
+
+    bool isDraggable3DFigure() const
+    {
+        return (isTerrainProjectionActive() || isSpatialImpressionView() || isLayerFitFusionView())
+            && hasAnySourceAsset();
+    }
+
+    void updateTerrainCameraFromDrag(juce::Point<float> delta)
+    {
+        if (delta.getDistanceFromOrigin() < 22.0f)
+            return;
+
+        TerrainCamera next = terrainDragStartCamera;
+        const bool high = terrainDragStartCamera == TerrainCamera::frontHigh
+                       || terrainDragStartCamera == TerrainCamera::sideHigh
+                       || terrainDragStartCamera == TerrainCamera::diagonal;
+
+        if (std::abs(delta.x) > std::abs(delta.y) * 1.25f)
+            next = high ? TerrainCamera::sideHigh : TerrainCamera::sideLow;
+        else if (std::abs(delta.y) > std::abs(delta.x) * 1.25f)
+            next = delta.y < 0.0f ? TerrainCamera::frontHigh : TerrainCamera::frontLow;
+        else
+            next = TerrainCamera::diagonal;
+
+        if (next != terrainCamera)
+        {
+            terrainCamera = next;
+            resetDodecahedronCrystalCameraToPreset();
+            updateTerrainCameraControls();
+            repaint();
+        }
+    }
+
+    bool isTerrainProjectionCompatibleView() const
+    {
+        const int id = viewMode.getSelectedId();
+        return id == 4 || id == 5;
+    }
+
+    bool hasFigureBottomControls() const
+    {
+        return isTerrainProjectionCompatibleView() || isSpatialImpressionView() || isLayerFitFusionView();
+    }
+
+    bool isTerrainProjectionToggleView() const
+    {
+        const int id = viewMode.getSelectedId();
+        return id == 4 || id == 5;
+    }
+
+    bool isTerrainProjectionActive() const
+    {
+        const int id = viewMode.getSelectedId();
+        return (id == 4 || id == 5) && terrainProjectionEnabled;
+    }
+
+    float getSpatialImpressionDurationSeconds() const
+    {
+        float seconds = 0.0f;
+        if (isLayerFitFusionView())
+        {
+            const auto sources = makeLayerFitSources();
+            for (auto* asset : sources)
+                if (asset != nullptr && asset->spatialHeatmap.metrics.valid)
+                    seconds = juce::jmax(seconds, static_cast<float>(asset->spatialHeatmap.metrics.durationSeconds));
+            if (auto* bounce = layerFitBounceAsset(); bounce != nullptr && bounce->spatialHeatmap.metrics.valid)
+                seconds = juce::jmax(seconds, static_cast<float>(bounce->spatialHeatmap.metrics.durationSeconds));
+        }
+        else
+        {
+            for (int i = 0; i < 3; ++i)
+                if (auto* asset = displayAsset(i); asset != nullptr && asset->spatialHeatmap.metrics.valid)
+                    seconds = juce::jmax(seconds, static_cast<float>(asset->spatialHeatmap.metrics.durationSeconds));
+        }
+        return juce::jmax(1.0f, seconds);
+    }
+
+    void updateTerrainCameraControls()
+    {
+        const bool active = isTerrainProjectionActive();
+        const bool toggleVisible = isTerrainProjectionToggleView();
+        const bool layerFitVisible = isLayerFitFusionView();
+        const bool spatialTimeVisible = isSpatialImpressionView() || isLayerFitTimeIndexedMode();
+        const bool cameraVisible = active || spatialTimeVisible || layerFitVisible;
+        const bool light = isLightThemeSelected();
+        const auto selectedFill = light ? juce::Colour(0xFFE7ECF2) : juce::Colour(0xFFF3F7FB).withAlpha(0.18f);
+        const auto idleFill = light ? juce::Colour(0xFFFFFFFF).withAlpha(0.70f) : juce::Colour(0xFF121820).withAlpha(0.88f);
+        const auto selectedText = light ? juce::Colour(0xFF111827) : juce::Colour(0xFFFFFFFF);
+        const auto idleText = light ? juce::Colour(0xFF2E3744) : juce::Colour(0xFFEAF0F8).withAlpha(0.80f);
+
+        auto styleToggle = [&] (juce::TextButton& button, bool visible, bool on)
+        {
+            button.setVisible(visible);
+            button.setEnabled(visible);
+            button.setToggleState(on, juce::dontSendNotification);
+            button.setColour(juce::TextButton::buttonColourId, on ? selectedFill : idleFill);
+            button.setColour(juce::TextButton::buttonOnColourId, selectedFill);
+            button.setColour(juce::TextButton::textColourOffId, on ? selectedText : idleText);
+            button.setColour(juce::TextButton::textColourOnId, selectedText);
+        };
+
+        styleToggle(terrainProjectionBtn, toggleVisible, terrainProjectionEnabled);
+        styleToggle(terrainTimeFlipBtn, active || layerFitVisible, terrainTimeReversed);
+
+        const double maxSeconds = static_cast<double>(getSpatialImpressionDurationSeconds());
+        spatialTimeSlider.setRange(0.0, maxSeconds, 0.001);
+        const double clampedSeconds = juce::jlimit(0.0, maxSeconds, static_cast<double>(spatialTimePositionSeconds));
+        if (std::abs(spatialTimeSlider.getValue() - clampedSeconds) > 0.0005)
+            spatialTimeSlider.setValue(clampedSeconds, juce::dontSendNotification);
+        spatialTimePositionSeconds = static_cast<float>(clampedSeconds);
+        spatialTimeLabel.setText("Time " + juce::String(clampedSeconds, 2) + " s", juce::dontSendNotification);
+        spatialTimeLabel.setVisible(spatialTimeVisible);
+        spatialTimeSlider.setVisible(spatialTimeVisible);
+        spatialTimePlayBtn.setVisible(spatialTimeVisible);
+        spatialTimeLabel.setEnabled(spatialTimeVisible);
+        spatialTimeSlider.setEnabled(spatialTimeVisible);
+        spatialTimePlayBtn.setEnabled(spatialTimeVisible);
+        if (!spatialTimeVisible)
+            stopSpatialTimelinePlayback();
+        spatialTimeLabel.setColour(juce::Label::textColourId, idleText.withAlpha(light ? 0.92f : 0.86f));
+        spatialTimeSlider.setColour(juce::Slider::thumbColourId, GoodMeterLookAndFeel::accentCyan);
+        spatialTimeSlider.setColour(juce::Slider::trackColourId, GoodMeterLookAndFeel::accentCyan.withAlpha(light ? 0.62f : 0.42f));
+        spatialTimeSlider.setColour(juce::Slider::backgroundColourId, idleText.withAlpha(light ? 0.16f : 0.12f));
+        spatialTimePlayBtn.setPalette(GoodMeterLookAndFeel::accentCyan, idleText, light);
+
+        for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource, &fitFigureType })
+        {
+            combo->setVisible(layerFitVisible);
+            combo->setEnabled(layerFitVisible);
+        }
+        terrainCameraMode.setVisible(cameraVisible);
+        terrainCameraMode.setEnabled(cameraVisible);
+        const int cameraId = terrainCameraIndex(terrainCamera) + 1;
+        if (terrainCameraMode.getSelectedId() != cameraId)
+            terrainCameraMode.setSelectedId(cameraId, juce::dontSendNotification);
+        const auto labelColour = idleText.withAlpha(light ? 0.94f : 0.86f);
+        for (auto* label : { &fitStem1Label, &fitStem2Label, &fitStem3Label, &fitBounceLabel, &fitViewLabel })
+        {
+            label->setVisible(layerFitVisible);
+            label->setEnabled(layerFitVisible);
+            label->setColour(juce::Label::textColourId, labelColour);
+        }
+        fitBandLabel.setVisible(false);
+        fitBandLabel.setEnabled(false);
+        fitAngleLabel.setVisible(cameraVisible);
+        fitAngleLabel.setEnabled(cameraVisible);
+        fitAngleLabel.setColour(juce::Label::textColourId, labelColour);
+    }
+
+    void layoutTerrainCameraControls()
+    {
+        terrainProjectionBtn.setBounds(juce::Rectangle<int>());
+        terrainTimeFlipBtn.setBounds(juce::Rectangle<int>());
+        spatialTimeLabel.setBounds(juce::Rectangle<int>());
+        spatialTimeSlider.setBounds(juce::Rectangle<int>());
+        spatialTimePlayBtn.setBounds(juce::Rectangle<int>());
+        for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource, &fitFigureType })
+            combo->setBounds(juce::Rectangle<int>());
+        for (auto* label : { &fitStem1Label, &fitStem2Label, &fitStem3Label, &fitBounceLabel, &fitViewLabel, &fitBandLabel })
+            label->setBounds(juce::Rectangle<int>());
+        fitBandLabel.setVisible(false);
+        fitBandLabel.setEnabled(false);
+
+        if (!hasFigureBottomControls())
+            return;
+
+        auto row = getFigureBounds().reduced(44, 0).removeFromBottom(isLayerFitFusionView() ? layerFitBottomControlsHeight : 46);
+        row = row.withSizeKeepingCentre(juce::jmin(row.getWidth(), isLayerFitFusionView() ? 1580 : (isSpatialImpressionView() ? 980 : 860)),
+                                        isLayerFitFusionView() ? layerFitBottomControlsHeight - 8 : 36).reduced(0, 2);
+
+        if (isLayerFitFusionView())
+        {
+            auto place = [] (juce::Rectangle<int>& target, juce::Label& label, juce::Component& control, int labelWidth, int controlWidth)
+            {
+                label.setBounds(target.removeFromLeft(labelWidth).reduced(1));
+                control.setBounds(target.removeFromLeft(controlWidth).reduced(1));
+            };
+
+            constexpr int gap = 14;
+            constexpr int rowHeight = 34;
+            auto controlArea = row.withSizeKeepingCentre(juce::jmin(row.getWidth(), 1640), row.getHeight());
+            auto controlRow = controlArea.removeFromTop(rowHeight);
+            controlArea.removeFromTop(8);
+            auto utilityRow = controlArea.removeFromTop(rowHeight);
+
+            place(controlRow, fitStem1Label, fitStem1Source, 64, 112);
+            controlRow.removeFromLeft(gap);
+            place(controlRow, fitStem2Label, fitStem2Source, 64, 112);
+            controlRow.removeFromLeft(gap);
+            place(controlRow, fitStem3Label, fitStem3Source, 64, 112);
+            controlRow.removeFromLeft(gap);
+            place(controlRow, fitBounceLabel, fitBounceSource, 72, 128);
+            controlRow.removeFromLeft(gap);
+
+            const int figureWidth = juce::jlimit(230, 340, controlRow.getWidth() - 78);
+            place(controlRow, fitViewLabel, fitFigureType, 72, figureWidth);
+
+            terrainTimeFlipBtn.setBounds(utilityRow.removeFromLeft(128).reduced(1));
+            utilityRow.removeFromLeft(gap);
+            if (isLayerFitTimeIndexedMode())
+            {
+                auto playArea = utilityRow.removeFromRight(38);
+                spatialTimePlayBtn.setBounds(playArea.withSizeKeepingCentre(34, 34));
+                utilityRow.removeFromRight(gap);
+                spatialTimeLabel.setBounds(utilityRow.removeFromLeft(104).reduced(1));
+                spatialTimeSlider.setBounds(utilityRow.reduced(2));
+            }
+            return;
+        }
+
+        if (isSpatialImpressionView())
+        {
+            auto sliderArea = row.removeFromLeft(juce::jmin(340, row.getWidth() / 3));
+            auto playArea = sliderArea.removeFromRight(38);
+            spatialTimePlayBtn.setBounds(playArea.withSizeKeepingCentre(34, 34));
+            sliderArea.removeFromRight(8);
+            spatialTimeLabel.setBounds(sliderArea.removeFromLeft(88).reduced(2));
+            spatialTimeSlider.setBounds(sliderArea.reduced(4, 2));
+            return;
+        }
+
+        if (isTerrainProjectionToggleView())
+        {
+            terrainProjectionBtn.setBounds(row.removeFromLeft(76).reduced(2));
+            row.removeFromLeft(8);
+        }
+
+        if (!isTerrainProjectionActive())
+            return;
+
+        terrainTimeFlipBtn.setBounds(row.removeFromRight(104).reduced(2));
+    }
+
+    class TimePyramidPlayButton final : public juce::Component,
+                                        private juce::Timer
+    {
+    public:
+        explicit TimePyramidPlayButton(juce::Colour accentToUse)
+            : accent(accentToUse)
+        {
+            setInterceptsMouseClicks(true, false);
+        }
+
+        std::function<void(bool)> onTrigger;
+
+        void setPalette(juce::Colour accentToUse, juce::Colour textToUse, bool lightToUse)
+        {
+            accent = accentToUse;
+            text = textToUse;
+            light = lightToUse;
+            repaint();
+        }
+
+        void setPlaying(bool shouldPlay, bool reverse)
+        {
+            playing = shouldPlay;
+            clockwise = reverse;
+            if (playing)
+                startTimerHz(60);
+            else
+                stopTimer();
+            repaint();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto area = getLocalBounds().toFloat().reduced(2.0f);
+            const auto drawColour = (playing ? accent : text).withAlpha(isHovering ? 0.96f : (playing ? 0.82f : 0.64f));
+            drawPyramid(g, area, rotationAngle, drawColour, isHovering || playing);
+        }
+
+        void mouseMove(const juce::MouseEvent&) override
+        {
+            if (!isHovering)
+            {
+                isHovering = true;
+                repaint();
+            }
+        }
+
+        void mouseExit(const juce::MouseEvent&) override
+        {
+            if (isHovering)
+            {
+                isHovering = false;
+                repaint();
+            }
+        }
+
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            const bool reverse = event.mods.isPopupMenu()
+                              || event.mods.isRightButtonDown()
+                              || event.mods.isCtrlDown();
+            clockwise = reverse;
+            rotationAngle += reverse ? 18.0f : -18.0f;
+            if (onTrigger != nullptr)
+                onTrigger(reverse);
+            repaint();
+        }
+
+    private:
+        void timerCallback() override
+        {
+            rotationAngle += clockwise ? 5.0f : -5.0f;
+            if (std::abs(rotationAngle) >= 360.0f)
+                rotationAngle = std::fmod(rotationAngle, 360.0f);
+            repaint();
+        }
+
+        static void drawPyramid(juce::Graphics& g,
+                                juce::Rectangle<float> bounds,
+                                float rotation,
+                                juce::Colour colour,
+                                bool emphasized)
+        {
+            const float cx = bounds.getCentreX();
+            const float cy = bounds.getCentreY();
+            const float size = juce::jmin(bounds.getWidth(), bounds.getHeight()) * 0.82f;
+            const float totalRotation = 45.0f + rotation;
+            const float rotRad = juce::degreesToRadians(totalRotation);
+            const float cosR = std::cos(rotRad);
+            const float sinR = std::sin(rotRad);
+
+            struct Vertex3D { float x, y, z; };
+            const Vertex3D vertices[4] =
+            {
+                { 0.0f,   -0.52f,  0.0f  },
+                { -0.46f,  0.28f, -0.28f },
+                { 0.46f,   0.28f, -0.28f },
+                { 0.0f,    0.28f,  0.52f }
+            };
+
+            juce::Point<float> projected[4];
+            for (int i = 0; i < 4; ++i)
+            {
+                const float x = vertices[i].x * cosR + vertices[i].z * sinR;
+                const float z = -vertices[i].x * sinR + vertices[i].z * cosR;
+                const float scale = 1.0f / (1.35f + z * 0.18f);
+                projected[i].x = cx + x * size * scale;
+                projected[i].y = cy + vertices[i].y * size * scale;
+            }
+
+            const float spinRad = juce::degreesToRadians(rotation);
+            const float spinCos = std::cos(spinRad);
+            const float spinSin = std::sin(spinRad);
+            for (auto& point : projected)
+            {
+                const float dx = point.x - cx;
+                const float dy = point.y - cy;
+                point.x = cx + dx * spinCos - dy * spinSin;
+                point.y = cy + dx * spinSin + dy * spinCos;
+            }
+
+            const float lineThickness = emphasized ? 2.0f : 1.45f;
+            g.setColour(colour.withAlpha(emphasized ? 0.18f : 0.10f));
+            juce::Path glow;
+            glow.addEllipse(bounds.reduced(size * 0.22f));
+            g.strokePath(glow, juce::PathStrokeType(emphasized ? 4.0f : 2.0f));
+
+            g.setColour(colour);
+            g.drawLine(projected[1].x, projected[1].y, projected[2].x, projected[2].y, lineThickness);
+            g.drawLine(projected[2].x, projected[2].y, projected[3].x, projected[3].y, lineThickness);
+            g.drawLine(projected[3].x, projected[3].y, projected[1].x, projected[1].y, lineThickness);
+            g.drawLine(projected[0].x, projected[0].y, projected[1].x, projected[1].y, lineThickness);
+            g.drawLine(projected[0].x, projected[0].y, projected[2].x, projected[2].y, lineThickness);
+            g.drawLine(projected[0].x, projected[0].y, projected[3].x, projected[3].y, lineThickness);
+        }
+
+        juce::Colour accent;
+        juce::Colour text { juce::Colours::white };
+        bool light = false;
+        bool isHovering = false;
+        bool playing = false;
+        bool clockwise = false;
+        float rotationAngle = 0.0f;
+    };
 
     class AudioDoctorPopupLookAndFeel final : public GoodMeterLookAndFeel
     {
@@ -327,14 +1194,281 @@ private:
         }
     };
 
+    class PluginInsertSlotComponent final : public juce::Component
+    {
+    public:
+        explicit PluginInsertSlotComponent(juce::String slotText)
+            : slotLabel(std::move(slotText))
+        {
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        }
+
+        void setState(juce::String newPluginName, bool newHasPlugin, bool newCanRender, bool newLightTheme)
+        {
+            pluginName = std::move(newPluginName);
+            hasPlugin = newHasPlugin;
+            canRender = newCanRender;
+            lightTheme = newLightTheme;
+            repaint();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+            const auto accent = slotAccent();
+            const auto fill = lightTheme ? juce::Colours::white.withAlpha(0.92f)
+                                         : juce::Colour(0xFF0B1017).withAlpha(0.86f);
+            const auto outline = lightTheme ? juce::Colour(0xFF17202D).withAlpha(0.22f)
+                                            : juce::Colours::white.withAlpha(0.13f);
+            const auto text = lightTheme ? juce::Colour(0xFF17202D)
+                                         : juce::Colour(0xFFF3EEE4);
+            const auto muted = lightTheme ? juce::Colour(0xFF596272)
+                                          : juce::Colour(0xFFEAF0F8).withAlpha(0.68f);
+
+            g.setColour(lightTheme ? juce::Colour(0xFF9AA5B4).withAlpha(0.15f)
+                                   : juce::Colours::black.withAlpha(0.24f));
+            g.fillRoundedRectangle(bounds.translated(0.0f, 1.5f), 10.0f);
+
+            g.setColour(fill);
+            g.fillRoundedRectangle(bounds, 10.0f);
+
+            if (hasPlugin)
+            {
+                g.setColour(accent.withAlpha(lightTheme ? 0.17f : 0.18f));
+                g.fillRoundedRectangle(bounds.reduced(3.0f), 8.0f);
+                g.setColour(accent.withAlpha(lightTheme ? 0.72f : 0.92f));
+                g.fillRoundedRectangle(bounds.withWidth(5.0f), 2.5f);
+            }
+
+            g.setColour(outline);
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 10.0f, 1.0f);
+
+            auto area = getLocalBounds().reduced(10, 5);
+            auto nameArea = area.removeFromTop(18);
+            auto labelArea = area.removeFromBottom(13);
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+            g.setColour(hasPlugin ? text : muted);
+            const auto label = hasPlugin ? fittedText(g, pluginName, nameArea.getWidth())
+                                         : "Load";
+            g.drawText(label, nameArea, juce::Justification::centredLeft, true);
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::bold));
+            g.setColour(hasPlugin ? accent.withAlpha(0.94f) : muted);
+            g.drawText("INSERT " + slotLabel, labelArea, juce::Justification::centredLeft, true);
+        }
+
+        void mouseUp(const juce::MouseEvent& event) override
+        {
+            juce::ignoreUnused(event);
+            if (onMain != nullptr)
+                onMain();
+        }
+
+        std::function<void()> onMain;
+
+    private:
+        juce::Colour slotAccent() const
+        {
+            if (slotLabel == "B")
+                return GoodMeterLookAndFeel::accentPink;
+            if (slotLabel == "C")
+                return GoodMeterLookAndFeel::accentBlue;
+            return GoodMeterLookAndFeel::accentYellow;
+        }
+
+        static juce::String fittedText(juce::Graphics& g, const juce::String& text, int maxWidth)
+        {
+            if (text.isEmpty())
+                return "Loaded";
+
+            auto fitted = text;
+            while (fitted.length() > 4 && g.getCurrentFont().getStringWidth(fitted + "...") > maxWidth)
+                fitted = fitted.dropLastCharacters(1);
+
+            return fitted == text ? fitted : fitted + "...";
+        }
+
+        juce::String slotLabel;
+        juce::String pluginName;
+        bool hasPlugin = false;
+        bool canRender = false;
+        bool lightTheme = false;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginInsertSlotComponent)
+    };
+
+    class PluginEditorChromeComponent final : public juce::Component
+    {
+    public:
+        PluginEditorChromeComponent(std::unique_ptr<juce::AudioProcessorEditor> editorToOwn,
+                                    bool useLightTheme,
+                                    double initialOutputGainDb,
+                                    std::function<void(double)> outputGainChangedCallback,
+                                    std::function<void()> renderCallback)
+            : editor(std::move(editorToOwn)),
+              lightTheme(useLightTheme),
+              outputGainDb(clampOutputGainDb(initialOutputGainDb)),
+              onOutputGainChanged(std::move(outputGainChangedCallback)),
+              onRender(std::move(renderCallback))
+        {
+            jassert(editor != nullptr);
+            addAndMakeVisible(*editor);
+
+            gainValue.setEditable(true, true, false);
+            gainValue.setJustificationType(juce::Justification::centred);
+            gainValue.setText(formatOutputGainText(outputGainDb), juce::dontSendNotification);
+            gainValue.onTextChange = [this] { commitGainText(); };
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(gainValue);
+            addAndMakeVisible(gainValue);
+
+            renderButton.setButtonText("Render");
+            renderButton.onClick = [this]
+            {
+                if (onRender != nullptr)
+                    onRender();
+            };
+            GoodMeterLookAndFeel::markAsIOSEnglishMono(renderButton);
+            addAndMakeVisible(renderButton);
+
+            const auto editorW = juce::jmax(620, editor->getWidth());
+            const auto editorH = juce::jmax(320, editor->getHeight());
+            setSize(editorW, editorH + bottomBarHeight);
+            refreshColours();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds();
+            auto bar = area.removeFromBottom(bottomBarHeight);
+            editor->setBounds(area);
+
+            auto left = bar.removeFromLeft(210).reduced(10, 7);
+            gainLabelBounds = left.removeFromLeft(48).toFloat();
+            gainValue.setBounds(left.removeFromLeft(118));
+            renderButton.setBounds(bar.removeFromRight(118).reduced(10, 7));
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            auto bar = getLocalBounds().removeFromBottom(bottomBarHeight).toFloat();
+            g.setColour(lightTheme ? juce::Colour(0xFFF5F7FA)
+                                   : juce::Colour(0xFF080D14));
+            g.fillRect(bar);
+            g.setColour(lightTheme ? juce::Colour(0xFF17202D).withAlpha(0.14f)
+                                   : juce::Colours::white.withAlpha(0.10f));
+            g.drawHorizontalLine(static_cast<int>(bar.getY()), bar.getX(), bar.getRight());
+
+            const auto text = lightTheme ? juce::Colour(0xFF17202D)
+                                         : juce::Colour(0xFFF3EEE4);
+            const auto muted = lightTheme ? juce::Colour(0xFF596272)
+                                          : juce::Colour(0xFFEAF0F8).withAlpha(0.72f);
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+            g.setColour(muted);
+            g.drawText("Gain", gainLabelBounds.toNearestInt(), juce::Justification::centredRight, true);
+
+            const auto gainBox = gainValue.getBounds().toFloat();
+            g.setColour(lightTheme ? juce::Colours::white : juce::Colour(0xFF111A24));
+            g.fillRoundedRectangle(gainBox, 6.0f);
+            g.setColour(lightTheme ? juce::Colour(0xFF17202D).withAlpha(0.18f)
+                                   : juce::Colours::white.withAlpha(0.14f));
+            g.drawRoundedRectangle(gainBox.reduced(0.5f), 6.0f, 1.0f);
+        }
+
+    private:
+        static constexpr double minOutputGainDb = -24.0;
+        static constexpr double maxOutputGainDb = 24.0;
+
+        static double clampOutputGainDb(double db)
+        {
+            if (!std::isfinite(db))
+                return 0.0;
+            return juce::jlimit(minOutputGainDb, maxOutputGainDb, db);
+        }
+
+        static double parseOutputGainText(juce::String text, double fallback)
+        {
+            auto cleaned = text.trim().toLowerCase()
+                .replace("db", "")
+                .retainCharacters("0123456789+-.");
+
+            if (cleaned.isEmpty() || cleaned == "-" || cleaned == "+")
+                return fallback;
+
+            return clampOutputGainDb(cleaned.getDoubleValue());
+        }
+
+        static juce::String formatOutputGainText(double db)
+        {
+            const auto clamped = clampOutputGainDb(db);
+            return (clamped > 0.0 ? "+" : "") + juce::String(clamped, 1) + " dB";
+        }
+
+        void commitGainText()
+        {
+            if (updatingGainText)
+                return;
+
+            const auto parsed = parseOutputGainText(gainValue.getText(), outputGainDb);
+            outputGainDb = parsed;
+
+            juce::ScopedValueSetter<bool> guard(updatingGainText, true);
+            gainValue.setText(formatOutputGainText(outputGainDb), juce::dontSendNotification);
+
+            if (onOutputGainChanged != nullptr)
+                onOutputGainChanged(outputGainDb);
+        }
+
+        void refreshColours()
+        {
+            const auto text = lightTheme ? juce::Colour(0xFF17202D)
+                                         : juce::Colour(0xFFF3EEE4);
+            const auto boxBackground = lightTheme ? juce::Colours::white
+                                                  : juce::Colour(0xFF111A24);
+
+            gainValue.setColour(juce::Label::textColourId, text);
+            gainValue.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+            gainValue.setColour(juce::Label::outlineColourId, juce::Colours::transparentBlack);
+            gainValue.setColour(juce::Label::textWhenEditingColourId, text);
+            gainValue.setColour(juce::Label::backgroundWhenEditingColourId, boxBackground);
+            gainValue.setColour(juce::Label::outlineWhenEditingColourId, GoodMeterLookAndFeel::accentBlue.withAlpha(0.55f));
+
+            renderButton.setColour(juce::TextButton::textColourOffId, text);
+            renderButton.setColour(juce::TextButton::textColourOnId, text);
+            renderButton.setColour(juce::TextButton::buttonColourId,
+                                   lightTheme ? juce::Colour(0xFFE9EDF3)
+                                              : juce::Colour(0xFF101720));
+            renderButton.setColour(juce::TextButton::buttonOnColourId,
+                                   GoodMeterLookAndFeel::accentBlue.withAlpha(lightTheme ? 0.22f : 0.35f));
+        }
+
+        static constexpr int bottomBarHeight = 46;
+        std::unique_ptr<juce::AudioProcessorEditor> editor;
+        juce::Label gainValue;
+        juce::TextButton renderButton;
+        juce::Rectangle<float> gainLabelBounds;
+        bool lightTheme = false;
+        bool updatingGainText = false;
+        double outputGainDb = 0.0;
+        std::function<void(double)> onOutputGainChanged;
+        std::function<void()> onRender;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorChromeComponent)
+    };
+
     class PluginEditorWindow final : public juce::DocumentWindow
     {
     public:
         PluginEditorWindow(const juce::String& pluginName,
                            std::unique_ptr<juce::AudioProcessorEditor> editorToOwn,
+                           bool lightTheme,
+                           double initialOutputGainDb,
+                           std::function<void(double)> outputGainChangedCallback,
+                           std::function<void()> renderCallback,
                            std::function<void()> closeCallback)
             : juce::DocumentWindow(pluginName,
-                                   juce::Colour(0xFF20242B),
+                                   lightTheme ? juce::Colour(0xFFF5F7FA) : juce::Colour(0xFF20242B),
                                    juce::DocumentWindow::closeButton),
               onClose(std::move(closeCallback))
         {
@@ -346,8 +1480,14 @@ private:
 
             const auto editorW = editorToOwn->getWidth();
             const auto editorH = editorToOwn->getHeight();
-            setContentOwned(editorToOwn.release(), true);
-            centreWithSize(editorW, editorH);
+            auto chrome = std::make_unique<PluginEditorChromeComponent>(
+                std::move(editorToOwn),
+                lightTheme,
+                initialOutputGainDb,
+                std::move(outputGainChangedCallback),
+                std::move(renderCallback));
+            setContentOwned(chrome.release(), true);
+            centreWithSize(editorW, editorH + 46);
             setVisible(true);
             toFront(true);
         }
@@ -362,6 +1502,187 @@ private:
         std::function<void()> onClose;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorWindow)
+    };
+
+    class PluginLoadConfirmComponent final : public juce::Component
+    {
+    public:
+        using DecisionCallback = std::function<void(bool)>;
+
+        PluginLoadConfirmComponent(juce::String slotText,
+                                   juce::File pluginFile,
+                                   juce::Image background,
+                                   bool useLightTheme,
+                                   DecisionCallback callback)
+            : slotLabel(std::move(slotText)),
+              file(std::move(pluginFile)),
+              backgroundImage(std::move(background)),
+              lightTheme(useLightTheme),
+              onDecision(std::move(callback))
+        {
+            loadButton.setButtonText("Load");
+            cancelButton.setButtonText("Cancel");
+            loadButton.onClick = [this] { decide(true); };
+            cancelButton.onClick = [this] { decide(false); };
+
+            for (auto* button : { &loadButton, &cancelButton })
+            {
+                GoodMeterLookAndFeel::markAsIOSEnglishMono(*button);
+                addAndMakeVisible(button);
+            }
+
+            refreshButtonColours();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced(34);
+            auto buttons = area.removeFromBottom(48);
+            loadButton.setBounds(buttons.removeFromRight(116).reduced(0, 4));
+            buttons.removeFromRight(10);
+            cancelButton.setBounds(buttons.removeFromRight(116).reduced(0, 4));
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto bounds = getLocalBounds().toFloat();
+            const auto panel = bounds.reduced(1.5f);
+
+            {
+                juce::Graphics::ScopedSaveState save(g);
+                g.reduceClipRegion(panel.toNearestInt());
+                if (backgroundImage.isValid())
+                    g.drawImageWithin(backgroundImage, 0, 0, getWidth(), getHeight(),
+                                      juce::RectanglePlacement::fillDestination);
+                else
+                {
+                    juce::ColourGradient fallback(juce::Colour(0xFF061014), 0.0f, 0.0f,
+                                                  juce::Colour(0xFF0D111B), bounds.getRight(), bounds.getBottom(), false);
+                    g.setGradientFill(fallback);
+                    g.fillRect(bounds);
+                }
+
+                g.setColour(juce::Colours::black.withAlpha(lightTheme ? 0.56f : 0.68f));
+                g.fillRect(bounds);
+            }
+
+            juce::ColourGradient sheen(juce::Colours::white.withAlpha(0.12f), panel.getX(), panel.getY(),
+                                       GoodMeterLookAndFeel::accentBlue.withAlpha(0.12f), panel.getRight(), panel.getBottom(), false);
+            g.setGradientFill(sheen);
+            g.fillRoundedRectangle(panel, 22.0f);
+
+            g.setColour(juce::Colour(0xFF071017).withAlpha(0.72f));
+            g.fillRoundedRectangle(panel.reduced(1.5f), 20.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.16f));
+            g.drawRoundedRectangle(panel.reduced(0.5f), 22.0f, 1.1f);
+            g.setColour(GoodMeterLookAndFeel::accentBlue.withAlpha(0.42f));
+            g.drawRoundedRectangle(panel.reduced(5.0f), 17.0f, 1.0f);
+
+            auto content = panel.reduced(32.0f, 28.0f);
+            g.setColour(GoodMeterLookAndFeel::accentBlue);
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 15.0f, juce::Font::bold));
+            g.drawText("PLUGIN " + slotLabel, content.removeFromTop(22.0f),
+                       juce::Justification::centredLeft, true);
+
+            content.removeFromTop(8.0f);
+            g.setColour(juce::Colour(0xFFF4F8FB));
+            g.setFont(juce::Font(30.0f, juce::Font::bold));
+            g.drawText(juce::String::fromUTF8("确认载入插件 / Confirm Plugin Load"),
+                       content.removeFromTop(42.0f),
+                       juce::Justification::centredLeft, true);
+
+            content.removeFromTop(8.0f);
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 23.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xFFFDFBF3));
+            g.drawText(file.getFileName(), content.removeFromTop(34.0f),
+                       juce::Justification::centredLeft, true);
+
+            g.setFont(juce::Font(13.5f));
+            g.setColour(juce::Colour(0xFFD3DDE8).withAlpha(0.82f));
+            g.drawFittedText(file.getFullPathName(),
+                             content.removeFromTop(44.0f).toNearestInt(),
+                             juce::Justification::centredLeft, 2);
+
+            content.removeFromTop(10.0f);
+            auto note = content.removeFromTop(78.0f);
+            g.setColour(juce::Colour(0xFF0C1720).withAlpha(0.72f));
+            g.fillRoundedRectangle(note, 12.0f);
+            g.setColour(GoodMeterLookAndFeel::accentYellow.withAlpha(0.82f));
+            g.fillRoundedRectangle(note.withWidth(4.0f), 2.0f);
+            g.setColour(juce::Colour(0xFFE8EEF6));
+            g.setFont(juce::Font(15.5f, juce::Font::bold));
+            g.drawFittedText(juce::String::fromUTF8("Audio Doctor 将把这个插件载入当前槽位；已有插件会被替换，已渲染的音频素材不会自动删除。"),
+                             note.reduced(18.0f, 10.0f).toNearestInt(),
+                             juce::Justification::centredLeft, 2);
+        }
+
+    private:
+        void decide(bool shouldLoad)
+        {
+            if (onDecision == nullptr)
+                return;
+
+            auto callback = onDecision;
+            onDecision = nullptr;
+            juce::MessageManager::callAsync([callback, shouldLoad]
+            {
+                callback(shouldLoad);
+            });
+        }
+
+        void refreshButtonColours()
+        {
+            loadButton.setColour(juce::TextButton::buttonColourId, GoodMeterLookAndFeel::accentBlue.withAlpha(0.42f));
+            loadButton.setColour(juce::TextButton::buttonOnColourId, GoodMeterLookAndFeel::accentBlue);
+            loadButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xFFF4F8FB));
+            loadButton.setColour(juce::TextButton::textColourOnId, juce::Colour(0xFFFFFFFF));
+
+            cancelButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xFF111A24).withAlpha(0.92f));
+            cancelButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xFF182332));
+            cancelButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xFFE8EEF6));
+            cancelButton.setColour(juce::TextButton::textColourOnId, juce::Colour(0xFFFFFFFF));
+        }
+
+        juce::String slotLabel;
+        juce::File file;
+        juce::Image backgroundImage;
+        bool lightTheme = false;
+        DecisionCallback onDecision;
+        juce::TextButton loadButton;
+        juce::TextButton cancelButton;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginLoadConfirmComponent)
+    };
+
+    class PluginLoadConfirmWindow final : public juce::DocumentWindow
+    {
+    public:
+        PluginLoadConfirmWindow(std::unique_ptr<PluginLoadConfirmComponent> content,
+                                std::function<void()> closeCallback)
+            : juce::DocumentWindow("AUDIO DOCTOR PLUGIN LOAD",
+                                   juce::Colour(0xFF080D14),
+                                   juce::DocumentWindow::closeButton),
+              onClose(std::move(closeCallback))
+        {
+            setUsingNativeTitleBar(false);
+            setTitleBarHeight(0);
+            setResizable(false, false);
+            setContentOwned(content.release(), true);
+            centreWithSize(640, 360);
+            setVisible(true);
+            toFront(true);
+        }
+
+        void closeButtonPressed() override
+        {
+            if (onClose != nullptr)
+                juce::MessageManager::callAsync(onClose);
+        }
+
+    private:
+        std::function<void()> onClose;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginLoadConfirmWindow)
     };
 
     class AudioEditComponent final : public juce::Component,
@@ -1047,9 +2368,10 @@ private:
             titleLabel.setText("Generate Test Signal", juce::dontSendNotification);
             titleLabel.setJustificationType(juce::Justification::centredLeft);
             titleLabel.setFont(juce::Font(juce::FontOptions(28.0f)).boldened());
+            titleLabel.setColour(juce::Label::textColourId, textColour());
 
             configureLabel(typeLabel, "Signal");
-            configureLabel(targetLabel, "Render to");
+            configureLabel(targetLabel, "Generate Bus");
             configureLabel(levelLabel, "Level");
             configureLabel(durationLabel, "Duration");
             configureLabel(frequencyLabel, "Frequency");
@@ -1080,6 +2402,7 @@ private:
             targetBox.addItem("DRY A", 1);
             targetBox.addItem("DRY B", 2);
             targetBox.addItem("DRY C", 3);
+            targetBox.setTextWhenNothingSelected("DRY A");
             targetBox.setSelectedId(1, juce::dontSendNotification);
 
             configureCombo(typeBox);
@@ -1122,7 +2445,7 @@ private:
             };
 
             updateParameterVisibility();
-            setSize(700, 640);
+            setSize(760, 720);
         }
 
         ~GenerateSignalComponent() override
@@ -1218,7 +2541,7 @@ private:
 
         void layoutCombo(juce::Label& label, juce::ComboBox& combo, juce::Rectangle<int> row)
         {
-            label.setBounds(row.removeFromLeft(90));
+            label.setBounds(row.removeFromLeft(124));
             combo.setBounds(row.reduced(2));
         }
 
@@ -1369,7 +2692,7 @@ private:
             setUsingNativeTitleBar(true);
             setResizable(false, false);
             setContentOwned(content.release(), true);
-            centreWithSize(620, 520);
+            centreWithSize(760, 760);
             setVisible(true);
             toFront(true);
         }
@@ -1386,16 +2709,23 @@ private:
     };
 
     static constexpr int contentPadding = 14;
-    static constexpr int toolbarHeight = 68;
+    static constexpr int toolbarHeight = 76;
     static constexpr int toolbarStatusGap = 8;
     static constexpr int statusHeight = 28;
     static constexpr int statusFigureGap = 10;
+    static constexpr int layerFitBottomControlsHeight = 90;
 
     struct FrequencyRange
     {
         float minHz = 20.0f;
         float maxHz = 20000.0f;
-        juce::String label = "20-20k";
+        juce::String label = "Full range";
+    };
+
+    struct TimeRange
+    {
+        float minSeconds = 0.0f;
+        float maxSeconds = 1.0f;
     };
 
     FrequencyRange getFrequencyRange() const
@@ -1450,23 +2780,21 @@ private:
         frequencyMinHz = std::pow(10.0f, juce::jlimit(minBound, maxBound, lo));
         frequencyMaxHz = std::pow(10.0f, juce::jlimit(minBound, maxBound, hi));
 
-        if (updateComboText)
-            freqZoom.setText(formatFrequencyRange(frequencyMinHz, frequencyMaxHz), juce::dontSendNotification);
+        juce::ignoreUnused(updateComboText);
 
         repaint();
     }
 
-    void applyFrequencyPreset(int presetId)
+    void zoomFrequencyRangeAt(float spanMultiplier, float anchorHz)
     {
-        switch (presetId)
-        {
-            case 2:  setFrequencyRange(20.0f, 200.0f, false); break;
-            case 3:  setFrequencyRange(100.0f, 1000.0f, false); break;
-            case 4:  setFrequencyRange(250.0f, 4000.0f, false); break;
-            case 5:  setFrequencyRange(1000.0f, 8000.0f, false); break;
-            case 6:  setFrequencyRange(5000.0f, 20000.0f, false); break;
-            default: setFrequencyRange(20.0f, 20000.0f, false); break;
-        }
+        const float lo = std::log10(frequencyMinHz);
+        const float hi = std::log10(frequencyMaxHz);
+        const float anchor = juce::jlimit(lo, hi, std::log10(juce::jlimit(20.0f, 20000.0f, anchorHz)));
+        const float ratio = (hi > lo) ? ((anchor - lo) / (hi - lo)) : 0.5f;
+        const float span = (hi - lo) * spanMultiplier;
+        const float newLo = anchor - span * ratio;
+        const float newHi = anchor + span * (1.0f - ratio);
+        setFrequencyRange(std::pow(10.0f, newLo), std::pow(10.0f, newHi));
     }
 
     void panFrequencyRange(float spanFraction)
@@ -1489,6 +2817,132 @@ private:
         const float centre = (lo + hi) * 0.5f;
         const float halfSpan = (hi - lo) * spanMultiplier * 0.5f;
         setFrequencyRange(std::pow(10.0f, centre - halfSpan), std::pow(10.0f, centre + halfSpan));
+    }
+
+    TimeRange getVisibleTimeRange(float fullMaxTime) const
+    {
+        fullMaxTime = juce::jmax(0.001f, fullMaxTime);
+        if (timeMaxSeconds <= timeMinSeconds + 0.001f)
+            return { 0.0f, fullMaxTime };
+
+        float lo = juce::jlimit(0.0f, fullMaxTime, timeMinSeconds);
+        float hi = juce::jlimit(0.0f, fullMaxTime, timeMaxSeconds);
+        if (hi <= lo + 0.001f)
+            return { 0.0f, fullMaxTime };
+
+        const float minSpan = juce::jmax(0.04f, fullMaxTime * 0.015f);
+        if (hi - lo < minSpan)
+        {
+            const float centre = (lo + hi) * 0.5f;
+            lo = centre - minSpan * 0.5f;
+            hi = centre + minSpan * 0.5f;
+        }
+
+        if (lo < 0.0f)
+        {
+            hi -= lo;
+            lo = 0.0f;
+        }
+        if (hi > fullMaxTime)
+        {
+            lo -= hi - fullMaxTime;
+            hi = fullMaxTime;
+        }
+
+        return { juce::jlimit(0.0f, fullMaxTime, lo),
+                 juce::jlimit(0.0f, fullMaxTime, hi) };
+    }
+
+    void setTimeRange(float minSeconds, float maxSeconds, float fullMaxTime)
+    {
+        fullMaxTime = juce::jmax(0.001f, fullMaxTime);
+        const float minSpan = juce::jmax(0.04f, fullMaxTime * 0.015f);
+        if (maxSeconds < minSeconds)
+            std::swap(minSeconds, maxSeconds);
+
+        if (maxSeconds - minSeconds < minSpan)
+        {
+            const float centre = (minSeconds + maxSeconds) * 0.5f;
+            minSeconds = centre - minSpan * 0.5f;
+            maxSeconds = centre + minSpan * 0.5f;
+        }
+
+        if (minSeconds < 0.0f)
+        {
+            maxSeconds -= minSeconds;
+            minSeconds = 0.0f;
+        }
+        if (maxSeconds > fullMaxTime)
+        {
+            minSeconds -= maxSeconds - fullMaxTime;
+            maxSeconds = fullMaxTime;
+        }
+
+        timeMinSeconds = juce::jlimit(0.0f, fullMaxTime, minSeconds);
+        timeMaxSeconds = juce::jlimit(0.0f, fullMaxTime, maxSeconds);
+        repaint();
+    }
+
+    void zoomTimeRangeAt(float fullMaxTime, float anchorSeconds, float spanMultiplier)
+    {
+        const auto range = getVisibleTimeRange(fullMaxTime);
+        const float anchor = juce::jlimit(range.minSeconds, range.maxSeconds, anchorSeconds);
+        const float span = (range.maxSeconds - range.minSeconds) * spanMultiplier;
+        const float ratio = (range.maxSeconds > range.minSeconds)
+            ? ((anchor - range.minSeconds) / (range.maxSeconds - range.minSeconds)) : 0.5f;
+        setTimeRange(anchor - span * ratio, anchor + span * (1.0f - ratio), fullMaxTime);
+    }
+
+    bool usesTimeAxisForWheelZoom() const
+    {
+        const int id = viewMode.getSelectedId();
+        return id == 2 || id == 5 || id == 6;
+    }
+
+    float getCurrentTimeZoomMax() const
+    {
+        if (viewMode.getSelectedId() == 5)
+            return getMaxDecayTime();
+
+        return getMaxEnvelopeTime();
+    }
+
+    juce::Rectangle<float> getWheelZoomReferenceArea() const
+    {
+        auto area = getFigureBounds().toFloat().reduced(48.0f, 44.0f);
+        if (hasFigureBottomControls())
+            area.removeFromBottom(isLayerFitFusionView() ? static_cast<float>(layerFitBottomControlsHeight) : 48.0f);
+        return area;
+    }
+
+    float timeAtMousePosition(juce::Point<float> position, float fullMaxTime) const
+    {
+        const auto area = getWheelZoomReferenceArea();
+        if (area.getWidth() <= 1.0f)
+            return fullMaxTime * 0.5f;
+
+        const auto range = getVisibleTimeRange(fullMaxTime);
+        const float xNorm = juce::jlimit(0.0f, 1.0f, (position.x - area.getX()) / area.getWidth());
+        return range.minSeconds + (range.maxSeconds - range.minSeconds) * xNorm;
+    }
+
+    float frequencyAtMousePosition(juce::Point<float> position) const
+    {
+        const auto area = getWheelZoomReferenceArea();
+        const auto range = getFrequencyRange();
+        const float lo = std::log10(range.minHz);
+        const float hi = std::log10(range.maxHz);
+        float norm = 0.5f;
+
+        const int id = viewMode.getSelectedId();
+        const bool verticalFrequency = id == 4 || id == 5 || isTerrainProjectionActive()
+                                    || isSpatialImpressionView() || isLayerFitFusionView();
+        if (verticalFrequency && area.getHeight() > 1.0f)
+            norm = 1.0f - juce::jlimit(0.0f, 1.0f, (position.y - area.getY()) / area.getHeight());
+        else if (area.getWidth() > 1.0f)
+            norm = juce::jlimit(0.0f, 1.0f, (position.x - area.getX()) / area.getWidth());
+
+        return std::pow(10.0f, lo + (hi - lo) * norm);
     }
 
     static juce::Colour uiText()
@@ -1593,7 +3047,9 @@ private:
                                                                       : juce::Colour(0xFF080A0F));
         }
 
-        for (auto* combo : { &viewMode, &freqZoom, &themeMode })
+        for (auto* combo : { &viewMode, &themeMode, &bandMode,
+                             &fitStem1Source, &fitStem2Source, &fitStem3Source,
+                             &fitBounceSource, &fitFigureType, &terrainCameraMode })
         {
             combo->setColour(juce::ComboBox::backgroundColourId, comboBg);
             combo->setColour(juce::ComboBox::textColourId, text);
@@ -1603,6 +3059,7 @@ private:
 
         statusLabel.setColour(juce::Label::textColourId, text.withAlpha(light ? 0.86f : 0.88f));
         pluginSlotLabel.setColour(juce::Label::textColourId, muted);
+        refreshPluginInsertSlots();
     }
 
     void syncTitleBarTheme() const
@@ -1643,8 +3100,44 @@ private:
 
     void drawAppBackground(juce::Graphics& g) const
     {
-        g.fillAll(figureLightThemeFlag() ? juce::Colour(0xFFF1F3F6)
-                                          : juce::Colour(0xFF07080B));
+        const bool light = figureLightThemeFlag();
+        g.fillAll(juce::Colours::transparentBlack);
+
+        const auto full = getLocalBounds().toFloat().reduced(0.5f);
+        const float radius = 24.0f;
+
+        g.setColour(light ? juce::Colour(0xFFF1F3F6)
+                          : juce::Colour(0xFF07080B));
+        g.fillRoundedRectangle(full, radius);
+
+        drawResizeCornerGlyph(g, full.reduced(5.0f), light);
+
+        g.setColour(light ? juce::Colour(0xFF1B2430).withAlpha(0.12f)
+                          : juce::Colour(0xFFE7EEF7).withAlpha(0.10f));
+        g.drawRoundedRectangle(full.reduced(0.5f), radius, 1.1f);
+    }
+
+    void drawResizeCornerGlyph(juce::Graphics& g, juce::Rectangle<float> full, bool light) const
+    {
+        const auto colour = light ? juce::Colour(0xFF667085).withAlpha(0.50f)
+                                  : juce::Colour(0xFFE7EEF7).withAlpha(0.58f);
+        const auto centre = juce::Point<float>(full.getRight() - 2.0f, full.getBottom() - 2.0f);
+        const float radii[] { 30.0f, 21.0f, 12.0f };
+
+        g.setColour(colour);
+        for (int i = 0; i < 3; ++i)
+        {
+            const float r = radii[i];
+            const auto arc = juce::Rectangle<float>(centre.x - r, centre.y - r, r * 2.0f, r * 2.0f);
+            juce::Path p;
+            p.addArc(arc.getX(), arc.getY(), arc.getWidth(), arc.getHeight(),
+                     juce::MathConstants<float>::pi,
+                     juce::MathConstants<float>::pi * 1.5f,
+                     true);
+            g.strokePath(p, juce::PathStrokeType(2.2f - static_cast<float>(i) * 0.20f,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+        }
     }
 
     juce::Rectangle<int> getFigureBounds() const
@@ -1669,6 +3162,45 @@ private:
             case SourceSlot::wetC: return "WET C";
             default: return "DRY A";
         }
+    }
+
+    static juce::String sourceSlotId(SourceSlot slot)
+    {
+        switch (slot)
+        {
+            case SourceSlot::dryB: return "dryB";
+            case SourceSlot::dryC: return "dryC";
+            case SourceSlot::wetA: return "wetA";
+            case SourceSlot::wetB: return "wetB";
+            case SourceSlot::wetC: return "wetC";
+            default: return "dryA";
+        }
+    }
+
+    static bool sourceSlotFromId(juce::String text, SourceSlot& slot)
+    {
+        text = text.trim().removeCharacters(" _-").toLowerCase();
+        if (text == "drya") { slot = SourceSlot::dryA; return true; }
+        if (text == "dryb") { slot = SourceSlot::dryB; return true; }
+        if (text == "dryc") { slot = SourceSlot::dryC; return true; }
+        if (text == "weta") { slot = SourceSlot::wetA; return true; }
+        if (text == "wetb") { slot = SourceSlot::wetB; return true; }
+        if (text == "wetc") { slot = SourceSlot::wetC; return true; }
+        return false;
+    }
+
+    static int layerComboIdForSource(SourceSlot slot)
+    {
+        switch (slot)
+        {
+            case SourceSlot::dryA: return 101;
+            case SourceSlot::dryB: return 102;
+            case SourceSlot::dryC: return 103;
+            case SourceSlot::wetA: return 104;
+            case SourceSlot::wetB: return 105;
+            case SourceSlot::wetC: return 106;
+        }
+        return 101;
     }
 
     std::unique_ptr<Asset>& assetHolderFor(SourceSlot slot)
@@ -1727,6 +3259,25 @@ private:
         return slot == SourceSlot::dryA || slot == SourceSlot::dryB || slot == SourceSlot::dryC;
     }
 
+    void refreshDryDisplaySlots(SourceSlot preferredSlot)
+    {
+        const std::array<SourceSlot, 3> drySlots { SourceSlot::dryA, SourceSlot::dryB, SourceSlot::dryC };
+        int writeIndex = 0;
+
+        for (auto slot : drySlots)
+        {
+            if (assetFor(slot) != nullptr && writeIndex < static_cast<int>(displaySlots.size()))
+                displaySlots[static_cast<size_t>(writeIndex++)] = slot;
+        }
+
+        if (writeIndex == 0)
+            displaySlots[static_cast<size_t>(writeIndex++)] = isDrySlot(preferredSlot) ? preferredSlot : SourceSlot::dryA;
+        if (writeIndex < static_cast<int>(displaySlots.size()))
+            displaySlots[static_cast<size_t>(writeIndex++)] = SourceSlot::wetA;
+        if (writeIndex < static_cast<int>(displaySlots.size()))
+            displaySlots[static_cast<size_t>(writeIndex++)] = SourceSlot::wetB;
+    }
+
     void showLoadDryMenu()
     {
         juce::PopupMenu menu;
@@ -1782,26 +3333,13 @@ private:
         hasPluginRenderB = false;
         hasPluginRenderC = false;
 
-        if (slot == SourceSlot::dryA)
-        {
-            if (displaySlots[0] != SourceSlot::dryA)
-                displaySlots[0] = SourceSlot::dryA;
-        }
-        else
-        {
-            if (dryAsset == nullptr)
-            {
-                displaySlots[0] = slot;
-                setDefaultRenderRoutes(slot);
-            }
-            else if (displaySlots[1] == SourceSlot::wetA && wetAsset == nullptr)
-                displaySlots[1] = slot;
-            else if (displaySlots[2] == SourceSlot::wetB && wetBAsset == nullptr)
-                displaySlots[2] = slot;
-        }
+        if (slot == SourceSlot::dryA || dryAsset == nullptr)
+            setDefaultRenderRoutes(slot);
+        refreshDryDisplaySlots(slot);
 
         setStatus(sourceSlotLabel(slot) + " loaded: " + assetHolderFor(slot)->name);
         updateButtonStates();
+        updateTerrainCameraControls();
         repaint();
     }
 
@@ -1856,9 +3394,10 @@ private:
         lastTailSecondsB = 0.0;
         lastTailSecondsC = 0.0;
         setDefaultRenderRoutes(slot);
-        displaySlots = { slot, SourceSlot::wetA, SourceSlot::wetB };
+        refreshDryDisplaySlots(slot);
         setStatus("Generated " + sourceSlotLabel(slot) + ": " + assetHolderFor(slot)->name);
         updateButtonStates();
+        updateTerrainCameraControls();
         repaint();
     }
 
@@ -1944,6 +3483,7 @@ private:
         refreshTransferAnalysis();
         setStatus(sourceSlotLabel(slot) + " edited and sent back. Render Plugin A/B/C again for fresh WET analysis.");
         updateButtonStates();
+        updateTerrainCameraControls();
         repaint();
     }
 
@@ -1962,6 +3502,7 @@ private:
                 displaySlots[static_cast<size_t>(slotIndex)] = source;
                 setStatus("Display " + juce::String(slotIndex + 1) + " -> " + sourceSlotLabel(source));
                 updateButtonStates();
+                updateTerrainCameraControls();
                 repaint();
             },
             [this](PluginSlot slot, int dryIndex, bool enabled)
@@ -1969,6 +3510,7 @@ private:
                 setRenderRoute(slot, dryIndex, enabled);
                 setStatus("Render " + juce::String(slotName(slot)) + " route -> " + renderInputLabel(slot));
                 updateButtonStates();
+                updateTerrainCameraControls();
                 repaint();
             },
             [this](bool allowMixed)
@@ -1977,6 +3519,7 @@ private:
                 setStatus(allowMixed ? "Bus routing mode: Mix. Multiple DRY sources are summed before rendering."
                                      : "Bus routing mode: Controlled. Each WET renders one DRY source.");
                 updateButtonStates();
+                updateTerrainCameraControls();
                 repaint();
             },
             isLightThemeSelected(),
@@ -2024,6 +3567,154 @@ private:
             case 5: return SourceSlot::wetC;
             default: return SourceSlot::dryA;
         }
+    }
+
+    static SourceSlot sourceFromLayerComboId(int id)
+    {
+        switch (id)
+        {
+            case 102: return SourceSlot::dryB;
+            case 103: return SourceSlot::dryC;
+            case 104: return SourceSlot::wetA;
+            case 105: return SourceSlot::wetB;
+            case 106: return SourceSlot::wetC;
+            default:  return SourceSlot::dryA;
+        }
+    }
+
+    std::vector<SourceSlot> availableLayerFitSourceSlots() const
+    {
+        const SourceSlot ordered[] = {
+            SourceSlot::dryA, SourceSlot::dryB, SourceSlot::dryC,
+            SourceSlot::wetA, SourceSlot::wetB, SourceSlot::wetC
+        };
+
+        std::vector<SourceSlot> slots;
+        for (auto slot : ordered)
+            if (assetFor(slot) != nullptr)
+                slots.push_back(slot);
+
+        return slots;
+    }
+
+    SourceSlot layerFitSourceSlotForCombo(const juce::ComboBox& combo, int autoIndex, bool& enabled) const
+    {
+        const int id = combo.getSelectedId();
+        if (id == 2)
+        {
+            enabled = false;
+            return SourceSlot::dryA;
+        }
+
+        enabled = true;
+        if (id >= 101)
+            return sourceFromLayerComboId(id);
+
+        const auto available = availableLayerFitSourceSlots();
+        if (juce::isPositiveAndBelow(autoIndex, static_cast<int>(available.size())))
+            return available[static_cast<size_t>(autoIndex)];
+
+        enabled = false;
+        return SourceSlot::dryA;
+    }
+
+    const Asset* layerFitAssetForCombo(const juce::ComboBox& combo, int autoIndex) const
+    {
+        bool enabled = true;
+        const auto slot = layerFitSourceSlotForCombo(combo, autoIndex, enabled);
+        return enabled ? assetFor(slot) : nullptr;
+    }
+
+    juce::String layerFitLabelForCombo(const juce::ComboBox& combo, int autoIndex, const juce::String& fallback) const
+    {
+        bool enabled = true;
+        const auto slot = layerFitSourceSlotForCombo(combo, autoIndex, enabled);
+        if (!enabled)
+            return fallback;
+
+        const auto label = sourceSlotLabel(slot);
+        return label.isNotEmpty() ? label : fallback;
+    }
+
+    std::array<const Asset*, 3> makeLayerFitSources() const
+    {
+        return {
+            layerFitAssetForCombo(fitStem1Source, 0),
+            layerFitAssetForCombo(fitStem2Source, 1),
+            layerFitAssetForCombo(fitStem3Source, 2)
+        };
+    }
+
+    std::array<juce::String, 3> makeLayerFitLabels() const
+    {
+        return {
+            layerFitLabelForCombo(fitStem1Source, 0, "Stem 1"),
+            layerFitLabelForCombo(fitStem2Source, 1, "Stem 2"),
+            layerFitLabelForCombo(fitStem3Source, 2, "Stem 3")
+        };
+    }
+
+    bool isLayerFitBounceAuto() const
+    {
+        return fitBounceSource.getSelectedId() < 101;
+    }
+
+    const Asset* layerFitBounceAsset() const
+    {
+        return isLayerFitBounceAuto() ? nullptr : assetFor(sourceFromLayerComboId(fitBounceSource.getSelectedId()));
+    }
+
+    juce::String layerFitBounceLabel() const
+    {
+        return isLayerFitBounceAuto()
+            ? "Auto Bounce Selected Stems"
+            : sourceSlotLabel(sourceFromLayerComboId(fitBounceSource.getSelectedId()));
+    }
+
+    juce::String layerFitBounceWarning() const
+    {
+        if (!isLayerFitBounceAuto())
+            return {};
+
+        const auto sources = makeLayerFitSources();
+        double sampleRate = 0.0;
+        for (const auto* source : sources)
+        {
+            if (source == nullptr || source->buffer.getNumSamples() <= 0)
+                continue;
+
+            if (sampleRate <= 0.0)
+                sampleRate = source->sampleRate;
+            else if (std::abs(source->sampleRate - sampleRate) > 0.5)
+                return "Auto Bounce note: selected stems have different sample rates; analysis resamples to the first valid stem sample rate before summing.";
+        }
+
+        return {};
+    }
+
+    juce::String layerFitFigureTypeToken() const
+    {
+        switch (fitFigureType.getSelectedId())
+        {
+            case 2:  return "terrain";
+            case 3:  return "spatial_image";
+            case 4:  return "critical_band_crystal";
+            case 5:  return "dodecahedron_crystal";
+            default: return "critical_band_terrain";
+        }
+    }
+
+    goodmeter::audio_doctor::MaskingFusionSettings makeLayerFitFusionSettings() const
+    {
+        goodmeter::audio_doctor::MaskingFusionSettings settings;
+        settings.figureType = layerFitFigureTypeToken();
+        if (settings.figureType == "critical_band_crystal" || settings.figureType == "dodecahedron_crystal")
+        {
+            settings.preferredBandCount = 24;
+            settings.bandScale = "bark_24";
+            settings.criticalBandMode = "bark_24";
+        }
+        return settings;
     }
 
     static const char* slotName(PluginSlot slot)
@@ -2134,6 +3825,49 @@ private:
             case PluginSlot::C: return lastTailSecondsC;
             default: return lastTailSecondsA;
         }
+    }
+
+    double& getOutputGainDb(PluginSlot slot)
+    {
+        switch (slot)
+        {
+            case PluginSlot::B: return outputGainDbB;
+            case PluginSlot::C: return outputGainDbC;
+            default: return outputGainDbA;
+        }
+    }
+
+    static double clampOutputGainDb(double db)
+    {
+        if (!std::isfinite(db))
+            return 0.0;
+        return juce::jlimit(-24.0, 24.0, db);
+    }
+
+    static float outputGainLinear(double outputGainDb)
+    {
+        return juce::Decibels::decibelsToGain(static_cast<float>(clampOutputGainDb(outputGainDb)));
+    }
+
+    static juce::String formatOutputGainDb(double db)
+    {
+        const auto clamped = clampOutputGainDb(db);
+        return (clamped > 0.0 ? "+" : "") + juce::String(clamped, 1) + " dB";
+    }
+
+    static float normaliseOutputGainDb(double db)
+    {
+        return static_cast<float>((clampOutputGainDb(db) + 24.0) / 48.0);
+    }
+
+    static void applyOutputGainToAsset(Asset& asset, double outputGainDb)
+    {
+        const auto clamped = clampOutputGainDb(outputGainDb);
+        if (std::abs(clamped) < 0.001)
+            return;
+
+        asset.buffer.applyGain(outputGainLinear(clamped));
+        goodmeter::audio_doctor::refreshAnalysis(asset);
     }
 
     std::unique_ptr<Asset>& getRenderReference(PluginSlot slot)
@@ -2389,6 +4123,36 @@ private:
         }
 
         pluginSlotLabel.setText(text, juce::dontSendNotification);
+        refreshPluginInsertSlots();
+    }
+
+    void handlePluginInsertMainClick(PluginSlot slot)
+    {
+        if (getPluginHost(slot).getCurrentPlugin() != nullptr)
+            showPluginEditor(slot);
+        else
+            choosePlugin(slot);
+    }
+
+    void refreshPluginInsertSlots()
+    {
+        const bool busy = rendering.load();
+        const bool light = isLightThemeSelected();
+
+        auto refresh = [this, busy, light] (PluginInsertSlotComponent& insert, PluginSlot slot)
+        {
+            auto& host = getPluginHost(slot);
+            const bool hasPlugin = host.getCurrentPlugin() != nullptr;
+            const bool canRender = hasPlugin && hasRenderInputAsset(slot) && !busy;
+            insert.setState(hasPlugin ? host.getCurrentPluginName() : juce::String(),
+                            hasPlugin,
+                            canRender,
+                            light);
+        };
+
+        refresh(pluginInsertA, PluginSlot::A);
+        refresh(pluginInsertB, PluginSlot::B);
+        refresh(pluginInsertC, PluginSlot::C);
     }
 
     void choosePlugin(PluginSlot slot)
@@ -2415,20 +4179,37 @@ private:
                 }
 
                 lastPluginDirectory = file.getParentDirectory();
-                const auto message = "Load Plugin " + juce::String(slotName(slot)) + ": "
-                                   + file.getFileName() + "?";
-                juce::AlertWindow::showOkCancelBox(
-                    juce::AlertWindow::QuestionIcon,
-                    "Confirm plugin load",
-                    message,
-                    "Load",
-                    "Cancel",
-                    this,
-                    juce::ModalCallbackFunction::create([this, slot, file](int result)
-                    {
-                        if (result != 0)
-                            loadPluginFromFile(slot, file);
-                    }));
+                showPluginLoadConfirmation(slot, file);
+            });
+    }
+
+    static juce::Image loadPluginConfirmBackgroundImage()
+    {
+        return juce::ImageFileFormat::loadFrom(BinaryData::audio_doctor_plugin_confirm_bg_jpg,
+                                               BinaryData::audio_doctor_plugin_confirm_bg_jpgSize);
+    }
+
+    void showPluginLoadConfirmation(PluginSlot slot, const juce::File& file)
+    {
+        pluginLoadConfirmWindow.reset();
+
+        auto content = std::make_unique<PluginLoadConfirmComponent>(
+            juce::String(slotName(slot)),
+            file,
+            loadPluginConfirmBackgroundImage(),
+            isLightThemeSelected(),
+            [this, slot, file] (bool shouldLoad)
+            {
+                pluginLoadConfirmWindow.reset();
+                if (shouldLoad)
+                    loadPluginFromFile(slot, file);
+            });
+
+        pluginLoadConfirmWindow = std::make_unique<PluginLoadConfirmWindow>(
+            std::move(content),
+            [this]
+            {
+                pluginLoadConfirmWindow.reset();
             });
     }
 
@@ -2448,6 +4229,8 @@ private:
             return;
         }
 
+        getOutputGainDb(slot) = 0.0;
+        invalidateWetForPlugin(slot);
         setStatus("Plugin " + juce::String(slotName(slot)) + " loaded: " + host.getCurrentPluginName());
         refreshPluginSlotLabel();
         updateButtonStates();
@@ -2482,6 +4265,22 @@ private:
         editorWindow = std::make_unique<PluginEditorWindow>(
             "Plugin " + juce::String(slotName(slot)) + ": " + host.getCurrentPluginName(),
             std::move(editor),
+            isLightThemeSelected(),
+            getOutputGainDb(slot),
+            [this, slot](double outputGainDb)
+            {
+                const auto clamped = clampOutputGainDb(outputGainDb);
+                if (std::abs(getOutputGainDb(slot) - clamped) < 0.001)
+                    return;
+
+                getOutputGainDb(slot) = clamped;
+                invalidateWetForPlugin(slot);
+                setStatus("Plugin " + juce::String(slotName(slot)) + " output gain set to "
+                          + formatOutputGainDb(clamped) + ". Render " + juce::String(slotName(slot)) + " to apply.");
+                updateButtonStates();
+                repaint();
+            },
+            [this, slot] { renderWetWithPlugin(slot); },
             [this, slot] { closePluginEditorWindow(slot); });
 
         setStatus("Editing Plugin " + juce::String(slotName(slot)) + ": " + host.getCurrentPluginName());
@@ -2529,8 +4328,7 @@ private:
         if (renderThread.joinable())
             renderThread.join();
 
-        closePluginEditorWindow();
-
+        const auto pluginDescription = host.getCurrentPluginDescriptionCopy();
         juce::String stateError;
         juce::MemoryBlock pluginState;
         if (!host.captureCurrentState(pluginState, stateError))
@@ -2539,9 +4337,7 @@ private:
             return;
         }
 
-        suspendPluginSlot(PluginSlot::A);
-        suspendPluginSlot(PluginSlot::B);
-        suspendPluginSlot(PluginSlot::C);
+        suspendOtherPluginSlots(slot);
 
         rendering.store(true);
         updateButtonStates();
@@ -2551,20 +4347,25 @@ private:
         auto dryCopy = std::move(*inputAsset);
         auto reference = std::make_shared<Asset>(dryCopy);
         auto safeFlag = aliveFlag;
+        const double fallbackTailSeconds = uiFallbackTailSecondsFor(pluginDescription);
+        const double outputGainDb = getOutputGainDb(slot);
 
         renderThread = std::thread([this,
                                      slot,
                                      inputLabel,
                                      dryCopy = std::move(dryCopy),
                                      reference,
+                                     pluginDescription,
+                                     fallbackTailSeconds,
+                                     outputGainDb,
                                      pluginState = std::move(pluginState),
                                      safeFlag]() mutable
         {
             const auto* stateToApply = pluginState.getSize() > 0 ? &pluginState : nullptr;
             auto result = std::make_shared<goodmeter::audio_doctor::OfflineRenderResult>(
-                getPluginHost(slot).renderOffline(dryCopy, stateToApply));
+                goodmeter::audio_doctor::PluginHost::renderOfflineWithMessageThreadPreparedDescription(pluginDescription, dryCopy, stateToApply, 512, fallbackTailSeconds));
 
-            juce::MessageManager::callAsync([this, slot, inputLabel, reference, safeFlag, result]()
+            juce::MessageManager::callAsync([this, slot, inputLabel, reference, safeFlag, result, outputGainDb]()
             {
                 if (!safeFlag->load())
                     return;
@@ -2577,6 +4378,8 @@ private:
                 }
                 else
                 {
+                    applyOutputGainToAsset(result->wet, outputGainDb);
+
                     if (slot == PluginSlot::A)
                         wetAsset = std::make_unique<Asset>(std::move(result->wet));
                     else if (slot == PluginSlot::B)
@@ -2593,14 +4396,33 @@ private:
 
                     setStatus("Rendered Wet " + juce::String(slotName(slot)) + " from " + inputLabel + ": "
                               + getLastPluginDescription(slot).name
+                              + (std::abs(outputGainDb) >= 0.001 ? " | output gain " + formatOutputGainDb(outputGainDb) : "")
                               + " | latency compensated "
                               + juce::String(getLastLatencySamples(slot)) + " samples");
                 }
 
                 updateButtonStates();
+                updateTerrainCameraControls();
                 repaint();
             });
         });
+    }
+
+    void showExportMenu()
+    {
+        juce::PopupMenu menu;
+        menu.setLookAndFeel(&audioDoctorPopupLookAndFeel);
+        menu.addItem(1, "Export figure + data");
+        menu.addSeparator();
+        menu.addItem(2, "Save Audio Doctor project...");
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&exportBtn),
+            [this](int result)
+            {
+                if (result == 1)
+                    exportFigure();
+                else if (result == 2)
+                    saveProjectPackage();
+            });
     }
 
     void exportFigure()
@@ -2623,14 +4445,15 @@ private:
         auto darkPngFile = dir.getChildFile(baseName + "_Dark").withFileExtension(".png");
         auto lightPngFile = dir.getChildFile(baseName + "_Light").withFileExtension(".png");
         auto jsonFile = dir.getChildFile(baseName).withFileExtension(".json");
+        const auto figureData = makeFigureDataForExport();
 
         juce::PNGImageFormat png;
-        if (!writeExportImage(darkPngFile, false, png))
+        if (!writeExportImage(darkPngFile, false, png, figureData))
         {
             setStatus("Dark PNG export failed.");
             return;
         }
-        if (!writeExportImage(lightPngFile, true, png))
+        if (!writeExportImage(lightPngFile, true, png, figureData))
         {
             setStatus("Light PNG export failed.");
             return;
@@ -2663,13 +4486,24 @@ private:
         writeRouteApparentCsv(PluginSlot::A, "wetA_vs_render_reference", wetAsset.get());
         writeRouteApparentCsv(PluginSlot::B, "wetB_vs_render_reference", wetBAsset.get());
         writeRouteApparentCsv(PluginSlot::C, "wetC_vs_render_reference", wetCAsset.get());
+        if (isLayerFitFusionView())
+        {
+            goodmeter::audio_doctor::writeLayerFitFusionCsv(dataDir, "layer_fit_fusion",
+                                                            figureData.fitSources,
+                                                            figureData.fitBounceAuto ? nullptr : figureData.fitBounceSource,
+                                                            figureData.maskingFusionSettings,
+                                                            dataFiles);
+        }
 
         writeManifest(jsonFile, darkPngFile, lightPngFile, dataFiles);
         setStatus("Exported Dark/Light: " + baseName);
         darkPngFile.revealToUser();
     }
 
-    bool writeExportImage(const juce::File& pngFile, bool lightTheme, juce::PNGImageFormat& png)
+    bool writeExportImage(const juce::File& pngFile,
+                          bool lightTheme,
+                          juce::PNGImageFormat& png,
+                          const goodmeter::audio_doctor::FigureData& figureData)
     {
         juce::ignoreUnused(png);
 
@@ -2678,7 +4512,688 @@ private:
         const int imageW = juce::jmax(1800, sourceBounds.getWidth() * scale);
         const int imageH = juce::jmax(900, static_cast<int>(static_cast<float>(imageW) * 0.50f));
         return goodmeter::audio_doctor::AudioDoctorFigureRenderer::writePng(
-            pngFile, makeFigureDataForExport(), !lightTheme, imageW, imageH);
+            pngFile, figureData, !lightTheme, imageW, imageH);
+    }
+
+    static juce::String projectExtension()
+    {
+        return ".clz";
+    }
+
+    static bool hasProjectPackageExtension(const juce::File& file)
+    {
+        const auto ext = file.getFileExtension().toLowerCase();
+        return ext == ".clz" || ext == ".goodmeterdoctor";
+    }
+
+    static juce::File withProjectPackageExtension(juce::File file)
+    {
+        return file.hasFileExtension(projectExtension()) ? file
+                                                        : file.withFileExtension(projectExtension());
+    }
+
+    static juce::var projectProperty(const juce::var& object, const char* name)
+    {
+        if (auto* dyn = object.getDynamicObject())
+            return dyn->getProperty(juce::Identifier(name));
+        return {};
+    }
+
+    static juce::String projectString(const juce::var& object, const char* name, juce::String fallback = {})
+    {
+        const auto value = projectProperty(object, name);
+        return value.isVoid() ? fallback : value.toString();
+    }
+
+    static bool projectBool(const juce::var& object, const char* name, bool fallback = false)
+    {
+        const auto value = projectProperty(object, name);
+        return value.isVoid() ? fallback : static_cast<bool>(value);
+    }
+
+    static int projectInt(const juce::var& object, const char* name, int fallback = 0)
+    {
+        const auto value = projectProperty(object, name);
+        return value.isVoid() ? fallback : static_cast<int>(value);
+    }
+
+    static double projectDouble(const juce::var& object, const char* name, double fallback = 0.0)
+    {
+        const auto value = projectProperty(object, name);
+        return value.isVoid() ? fallback : static_cast<double>(value);
+    }
+
+    static bool selectComboByText(juce::ComboBox& combo, juce::String text, int fallbackId)
+    {
+        text = text.trim().toLowerCase();
+        for (int i = 0; i < combo.getNumItems(); ++i)
+        {
+            if (combo.getItemText(i).trim().toLowerCase() == text)
+            {
+                combo.setSelectedId(combo.getItemId(i), juce::dontSendNotification);
+                return true;
+            }
+        }
+
+        combo.setSelectedId(fallbackId, juce::dontSendNotification);
+        return false;
+    }
+
+    void saveProjectPackage()
+    {
+        if (!hasAnySourceAsset())
+        {
+            setStatus("Nothing to save yet.");
+            return;
+        }
+
+        auto projectsDir = exportDirectory.getChildFile("AudioDoctor_Projects");
+        if (!projectsDir.exists())
+            projectsDir.createDirectory();
+
+        const auto stamp = juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+        const auto defaultProject = projectsDir.getChildFile(makeExportBaseName(stamp)).withFileExtension(projectExtension());
+
+        projectChooser = std::make_unique<juce::FileChooser>(
+            "Save Audio Doctor Project", defaultProject, "*.clz");
+
+        projectChooser->launchAsync(juce::FileBrowserComponent::saveMode
+                                  | juce::FileBrowserComponent::canSelectDirectories
+                                  | juce::FileBrowserComponent::warnAboutOverwriting,
+            [this](const juce::FileChooser& fc)
+            {
+                auto projectDir = fc.getResult();
+                if (projectDir == juce::File{})
+                    return;
+
+                juce::String error;
+                if (!writeProjectPackage(projectDir, error))
+                {
+                    setStatus(error);
+                    return;
+                }
+
+                projectDir = withProjectPackageExtension(projectDir);
+
+                setStatus("Saved Audio Doctor project: " + projectDir.getFileName());
+                projectDir.revealToUser();
+            });
+    }
+
+    bool writeProjectPackage(juce::File projectDir, juce::String& error)
+    {
+        projectDir = withProjectPackageExtension(projectDir);
+
+        if (projectDir.exists())
+        {
+            if (!projectDir.isDirectory() || !projectDir.hasFileExtension(projectExtension()))
+            {
+                error = "Refusing to overwrite a non Audio Doctor project path: " + projectDir.getFullPathName();
+                return false;
+            }
+
+            if (!projectDir.deleteRecursively())
+            {
+                error = "Could not replace existing project folder: " + projectDir.getFullPathName();
+                return false;
+            }
+        }
+
+        if (!projectDir.createDirectory())
+        {
+            error = "Could not create project folder: " + projectDir.getFullPathName();
+            return false;
+        }
+
+        const auto audioDir = projectDir.getChildFile("audio files");
+        if (!audioDir.createDirectory())
+        {
+            error = "Could not create project audio folder: " + audioDir.getFullPathName();
+            return false;
+        }
+
+        juce::Array<juce::var> audioFiles;
+        for (auto slot : { SourceSlot::dryA, SourceSlot::dryB, SourceSlot::dryC,
+                           SourceSlot::wetA, SourceSlot::wetB, SourceSlot::wetC })
+        {
+            if (!writeProjectAssetAudioFile(projectDir, audioDir, slot, audioFiles, error))
+                return false;
+        }
+
+        auto root = std::make_unique<juce::DynamicObject>();
+        root->setProperty("schemaVersion", 1);
+        root->setProperty("projectType", "GOODMETER.AudioDoctor.Project");
+        root->setProperty("savedAt", juce::Time::getCurrentTime().toISO8601(true));
+        root->setProperty("projectFolder", projectDir.getFullPathName());
+        root->setProperty("view", getViewExportName());
+        root->setProperty("theme", themeMode.getText());
+        root->setProperty("bandMode", bandMode.getText());
+        root->setProperty("terrainCamera", terrainCameraToken(terrainCamera));
+        root->setProperty("terrainTimeReversed", terrainTimeReversed);
+        root->setProperty("terrainProjectionEnabled", terrainProjectionEnabled);
+        root->setProperty("spatialTimePositionSeconds", spatialTimePositionSeconds);
+        root->setProperty("dodecahedronCrystalYawRadians", dodecahedronCrystalYawRadians);
+        root->setProperty("dodecahedronCrystalPitchRadians", dodecahedronCrystalPitchRadians);
+        root->setProperty("audioFiles", juce::var(audioFiles));
+
+        juce::Array<juce::var> displayArray;
+        for (int i = 0; i < static_cast<int>(displaySlots.size()); ++i)
+        {
+            auto item = std::make_unique<juce::DynamicObject>();
+            item->setProperty("index", i + 1);
+            item->setProperty("slot", sourceSlotId(displaySlots[static_cast<size_t>(i)]));
+            item->setProperty("label", sourceSlotLabel(displaySlots[static_cast<size_t>(i)]));
+            displayArray.add(juce::var(item.release()));
+        }
+        root->setProperty("displaySlots", juce::var(displayArray));
+
+        root->setProperty("pluginA", makeProjectPluginSnapshot(PluginSlot::A));
+        root->setProperty("pluginB", makeProjectPluginSnapshot(PluginSlot::B));
+        root->setProperty("pluginC", makeProjectPluginSnapshot(PluginSlot::C));
+        root->setProperty("renderRouting", makeProjectRoutingSnapshot());
+        root->setProperty("layerFitFusion", makeProjectLayerFitSnapshot());
+
+        const auto projectFile = projectDir.getChildFile("project.json");
+        if (!projectFile.replaceWithText(juce::JSON::toString(juce::var(root.release()), true)))
+        {
+            error = "Could not write project manifest: " + projectFile.getFullPathName();
+            return false;
+        }
+
+        applyMacProjectPackageIcon(projectDir);
+        return true;
+    }
+
+    void applyMacProjectPackageIcon(const juce::File& projectDir)
+    {
+       #if JUCE_MAC
+        const auto executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        const auto resourcesDir = executable.getParentDirectory().getParentDirectory().getChildFile("Resources");
+        auto iconFile = resourcesDir.getChildFile("audio_doctor_project_pigeon.icns");
+
+        if (!iconFile.existsAsFile())
+            iconFile = juce::File::getCurrentWorkingDirectory().getChildFile("Assets/audio_doctor_project_pigeon.icns");
+
+        if (!iconFile.existsAsFile())
+            return;
+
+        juce::StringArray args;
+        args.add("/usr/bin/osascript");
+        args.add("-e"); args.add("use framework \"AppKit\"");
+        args.add("-e"); args.add("use scripting additions");
+        args.add("-e"); args.add("on run argv");
+        args.add("-e"); args.add("set imgPath to item 1 of argv");
+        args.add("-e"); args.add("set targetPath to item 2 of argv");
+        args.add("-e"); args.add("set iconImage to current application's NSImage's alloc()'s initWithContentsOfFile:imgPath");
+        args.add("-e"); args.add("current application's NSWorkspace's sharedWorkspace()'s setIcon:iconImage forFile:targetPath options:0");
+        args.add("-e"); args.add("end run");
+        args.add(iconFile.getFullPathName());
+        args.add(projectDir.getFullPathName());
+
+        juce::ChildProcess iconSetter;
+        if (iconSetter.start(args))
+            iconSetter.waitForProcessToFinish(2000);
+       #else
+        juce::ignoreUnused(projectDir);
+       #endif
+    }
+
+    bool loadProjectPackage(juce::File projectPath, juce::String& error)
+    {
+        juce::File manifestFile;
+        if (projectPath.isDirectory())
+            manifestFile = projectPath.getChildFile("project.json");
+        else if (projectPath.existsAsFile() && projectPath.getFileName().equalsIgnoreCase("project.json"))
+            manifestFile = projectPath;
+        else if (hasProjectPackageExtension(projectPath))
+            manifestFile = projectPath.getChildFile("project.json");
+        else
+            manifestFile = projectPath;
+
+        if (!manifestFile.existsAsFile())
+        {
+            error = "Audio Doctor project manifest not found: " + manifestFile.getFullPathName();
+            return false;
+        }
+
+        auto root = juce::JSON::parse(manifestFile);
+        if (!root.isObject())
+        {
+            error = "Audio Doctor project manifest is not valid JSON: " + manifestFile.getFullPathName();
+            return false;
+        }
+
+        const auto projectType = projectString(root, "projectType");
+        if (projectType.isNotEmpty() && projectType != "GOODMETER.AudioDoctor.Project")
+        {
+            error = "This is not an Audio Doctor project: " + manifestFile.getFullPathName();
+            return false;
+        }
+
+        resetAll();
+
+        const auto projectDir = manifestFile.getParentDirectory();
+        if (!loadProjectAudioFiles(projectDir, root, error))
+            return false;
+
+        loadProjectDisplaySlots(root);
+        loadProjectRouting(root);
+
+        juce::StringArray warnings;
+        loadProjectPlugin(root, PluginSlot::A, "pluginA", warnings);
+        loadProjectPlugin(root, PluginSlot::B, "pluginB", warnings);
+        loadProjectPlugin(root, PluginSlot::C, "pluginC", warnings);
+
+        loadProjectLayerFit(root);
+        loadProjectViewState(root);
+
+        lastAudioDirectory = projectDir.getChildFile("audio files");
+        refreshTransferAnalysis();
+        refreshPluginSlotLabel();
+        updateButtonStates();
+        updateTerrainCameraControls();
+        resized();
+        repaint();
+
+        auto status = "Opened Audio Doctor project: " + projectDir.getFileName();
+        if (!warnings.isEmpty())
+            status += " | " + warnings.joinIntoString(" ; ");
+        setStatus(status);
+        error.clear();
+        return true;
+    }
+
+    bool loadProjectAudioFiles(const juce::File& projectDir, const juce::var& root, juce::String& error)
+    {
+        const auto audioFiles = projectProperty(root, "audioFiles");
+        auto* array = audioFiles.getArray();
+        if (array == nullptr)
+        {
+            error = "Audio Doctor project has no audioFiles array.";
+            return false;
+        }
+
+        for (int i = 0; i < array->size(); ++i)
+        {
+            const auto item = array->getReference(i);
+            SourceSlot slot = SourceSlot::dryA;
+            if (!sourceSlotFromId(projectString(item, "slot", projectString(item, "label")), slot))
+                continue;
+
+            auto path = projectString(item, "relativePath");
+            juce::File audioFile;
+            if (path.isNotEmpty())
+                audioFile = juce::File::isAbsolutePath(path) ? juce::File(path) : projectDir.getChildFile(path);
+
+            if (!audioFile.existsAsFile())
+            {
+                path = projectString(item, "projectAudioPath");
+                if (path.isNotEmpty())
+                    audioFile = juce::File(path);
+            }
+
+            if (!audioFile.existsAsFile())
+            {
+                error = "Saved project audio file is missing for " + sourceSlotLabel(slot) + ".";
+                return false;
+            }
+
+            Asset loaded;
+            if (!goodmeter::audio_doctor::readAudioFile(audioFile, loaded, error))
+            {
+                error = "Could not load " + sourceSlotLabel(slot) + " from project: " + error;
+                return false;
+            }
+
+            const auto savedName = projectString(item, "name");
+            if (savedName.isNotEmpty())
+                loaded.name = savedName;
+            assetHolderFor(slot) = std::make_unique<Asset>(std::move(loaded));
+        }
+
+        if (!hasAnySourceAsset())
+        {
+            error = "Audio Doctor project did not contain any loadable audio files.";
+            return false;
+        }
+
+        return true;
+    }
+
+    void loadProjectDisplaySlots(const juce::var& root)
+    {
+        const auto slots = projectProperty(root, "displaySlots");
+        auto* array = slots.getArray();
+        if (array == nullptr)
+        {
+            refreshDryDisplaySlots(SourceSlot::dryA);
+            return;
+        }
+
+        for (int i = 0; i < juce::jmin(3, array->size()); ++i)
+        {
+            const auto item = array->getReference(i);
+            SourceSlot slot = SourceSlot::dryA;
+            if (sourceSlotFromId(projectString(item, "slot", projectString(item, "source")), slot))
+                displaySlots[static_cast<size_t>(i)] = slot;
+        }
+    }
+
+    void loadProjectRouting(const juce::var& root)
+    {
+        const auto routing = projectProperty(root, "renderRouting");
+        setMixedRoutingMode(projectString(routing, "mode") == "mix");
+        setDefaultRenderRoutes(SourceSlot::dryA);
+
+        const auto routes = projectProperty(routing, "routes");
+        if (auto* array = routes.getArray())
+        {
+            for (int i = 0; i < array->size(); ++i)
+            {
+                const auto route = array->getReference(i);
+                const auto pluginName = projectString(route, "pluginSlot").trim().toUpperCase();
+                const auto slot = pluginName == "B" ? PluginSlot::B : (pluginName == "C" ? PluginSlot::C : PluginSlot::A);
+                auto& row = renderRoutes[static_cast<size_t>(pluginIndex(slot))];
+                for (auto& enabled : row)
+                    enabled = false;
+
+                const auto inputs = projectProperty(route, "inputs");
+                if (auto* inputArray = inputs.getArray())
+                {
+                    for (int inputIndex = 0; inputIndex < inputArray->size(); ++inputIndex)
+                    {
+                        SourceSlot source = SourceSlot::dryA;
+                        if (sourceSlotFromId(inputArray->getReference(inputIndex).toString(), source) && isDrySlot(source))
+                            row[static_cast<size_t>(dryIndexForSource(source))] = true;
+                    }
+                }
+
+                if (!row[0] && !row[1] && !row[2])
+                    row[0] = true;
+            }
+        }
+    }
+
+    void loadProjectPlugin(const juce::var& root, PluginSlot slot, const char* key, juce::StringArray& warnings)
+    {
+        const auto pluginSpec = projectProperty(root, key);
+        if (!pluginSpec.isObject())
+            return;
+
+        const auto path = projectString(pluginSpec, "fileOrIdentifier");
+        if (path.isEmpty())
+            return;
+
+        const juce::File pluginFile(path);
+        if (!pluginFile.exists())
+        {
+            warnings.add("Plugin " + juce::String(slotName(slot)) + " not found: " + juce::File(path).getFileName());
+            return;
+        }
+
+        auto& host = getPluginHost(slot);
+        juce::String pluginError;
+        if (!host.loadPluginFromFile(pluginFile, pluginError))
+        {
+            warnings.add("Plugin " + juce::String(slotName(slot)) + " could not load: " + pluginError);
+            return;
+        }
+
+        getLastPluginDescription(slot) = host.getCurrentPluginDescriptionCopy();
+        getOutputGainDb(slot) = clampOutputGainDb(projectDouble(pluginSpec, "outputGainDb", 0.0));
+        getHasPluginRender(slot) = projectBool(pluginSpec, "rendered", false);
+        getLastLatencySamples(slot) = projectInt(pluginSpec, "latencySamples", 0);
+        getLastTailSeconds(slot) = projectDouble(pluginSpec, "tailSeconds", 0.0);
+
+        bool stateApplied = false;
+        const auto encoded = projectString(pluginSpec, "pluginStateBase64");
+        if (encoded.isNotEmpty())
+        {
+            juce::MemoryBlock state;
+            if (state.fromBase64Encoding(encoded))
+            {
+                juce::String stateError;
+                stateApplied = host.applyState(state, stateError);
+                if (!stateApplied)
+                    warnings.add("Plugin " + juce::String(slotName(slot)) + " state could not apply: " + stateError);
+            }
+            else
+            {
+                warnings.add("Plugin " + juce::String(slotName(slot)) + " state is not valid base64.");
+            }
+        }
+
+        const auto parameterArray = projectProperty(pluginSpec, stateApplied ? "changedParameters" : "parameters");
+        if (auto* array = parameterArray.getArray())
+        {
+            for (int i = 0; i < array->size(); ++i)
+                applyProjectParameter(host, array->getReference(i));
+        }
+
+        host.refreshChangedParameterSnapshot();
+    }
+
+    void applyProjectParameter(goodmeter::audio_doctor::PluginHost& host, const juce::var& param)
+    {
+        const auto valueVar = projectProperty(param, "normalizedValue").isVoid()
+            ? projectProperty(param, "normalisedValue")
+            : projectProperty(param, "normalizedValue");
+        if (valueVar.isVoid())
+            return;
+
+        const auto id = projectString(param, "id");
+        const auto name = projectString(param, "name");
+        const int index = projectInt(param, "index", -1);
+
+        juce::String key;
+        if (id.isNotEmpty() && !id.startsWithIgnoreCase("param_"))
+            key = id;
+        else if (name.isNotEmpty() && !projectBool(param, "nameUnavailable", false))
+            key = name;
+        else if (index >= 0)
+            key = juce::String(index);
+
+        if (key.isEmpty())
+            return;
+
+        juce::String ignoredError;
+        host.setParameterValue(key, static_cast<float>(static_cast<double>(valueVar)), ignoredError);
+    }
+
+    void loadProjectLayerFit(const juce::var& root)
+    {
+        const auto layer = projectProperty(root, "layerFitFusion");
+        if (!layer.isObject())
+            return;
+
+        selectComboByText(fitStem1Source,  projectString(layer, "stem1",  "Auto"), 1);
+        selectComboByText(fitStem2Source,  projectString(layer, "stem2",  "Auto"), 1);
+        selectComboByText(fitStem3Source,  projectString(layer, "stem3",  "Off"),  2);
+        selectComboByText(fitBounceSource, projectString(layer, "bounce", "Auto"), 1);
+        selectComboByText(fitFigureType,   projectString(layer, "figure", "Critical Band Terrain"), 1);
+    }
+
+    void loadProjectViewState(const juce::var& root)
+    {
+        const auto view = projectString(root, "view").trim();
+        const auto lowerView = view.toLowerCase();
+
+        int viewId = 1;
+        int layerFigureId = fitFigureType.getSelectedId();
+        bool projectionFromView = false;
+
+        if (lowerView == "transientenvelope") viewId = 2;
+        else if (lowerView == "groupdelay") viewId = 3;
+        else if (lowerView == "spectrogramabc") viewId = 4;
+        else if (lowerView == "spectrogramabc2_5d") { viewId = 4; projectionFromView = true; }
+        else if (lowerView == "reverbspace") viewId = 5;
+        else if (lowerView == "reverbspace2_5d") { viewId = 5; projectionFromView = true; }
+        else if (lowerView == "dynamicsresponse") viewId = 6;
+        else if (lowerView == "spatialimage") viewId = 7;
+        else if (lowerView == "layerfitspatialimage") { viewId = 8; layerFigureId = 3; }
+        else if (lowerView == "criticalbandcrystal") { viewId = 8; layerFigureId = 4; }
+        else if (lowerView == "dodecahedroncrystal") { viewId = 8; layerFigureId = 5; }
+        else if (lowerView == "layerfitfusion") viewId = 8;
+
+        viewMode.setSelectedId(viewId, juce::dontSendNotification);
+        fitFigureType.setSelectedId(layerFigureId, juce::dontSendNotification);
+        selectComboByText(themeMode, projectString(root, "theme", "Dark"), 1);
+        selectComboByText(bandMode, projectString(root, "bandMode", "Bands Off"), 1);
+
+        terrainCamera = terrainCameraFromToken(projectString(root, "terrainCamera", "diagonal"));
+        terrainCameraMode.setSelectedId(terrainCameraIndex(terrainCamera) + 1, juce::dontSendNotification);
+        terrainTimeReversed = projectBool(root, "terrainTimeReversed", false);
+        terrainProjectionEnabled = projectBool(root, "terrainProjectionEnabled", projectionFromView);
+        spatialTimePositionSeconds = static_cast<float>(projectDouble(root, "spatialTimePositionSeconds", 0.0));
+        dodecahedronCrystalYawRadians = static_cast<float>(projectDouble(root, "dodecahedronCrystalYawRadians", dodecahedronCrystalYawRadians));
+        dodecahedronCrystalPitchRadians = static_cast<float>(projectDouble(root, "dodecahedronCrystalPitchRadians", dodecahedronCrystalPitchRadians));
+    }
+
+    bool writeProjectAssetAudioFile(const juce::File& projectDir,
+                                    const juce::File& audioDir,
+                                    SourceSlot slot,
+                                    juce::Array<juce::var>& audioFiles,
+                                    juce::String& error)
+    {
+        const auto* asset = assetFor(slot);
+        if (asset == nullptr)
+            return true;
+
+        auto fileStem = sourceSlotId(slot).toUpperCase() + "_" + sanitizeFileToken(asset->name);
+        if (fileStem.length() > 96)
+            fileStem = fileStem.substring(0, 96);
+
+        const auto wavFile = audioDir.getChildFile(fileStem).withFileExtension(".wav");
+        if (!goodmeter::audio_doctor::writeAudioFile(wavFile, asset->buffer, asset->sampleRate, error))
+        {
+            error = "Could not save " + sourceSlotLabel(slot) + " audio: " + error;
+            return false;
+        }
+
+        auto item = std::make_unique<juce::DynamicObject>();
+        item->setProperty("slot", sourceSlotId(slot));
+        item->setProperty("label", sourceSlotLabel(slot));
+        item->setProperty("name", asset->name);
+        item->setProperty("projectAudioPath", wavFile.getFullPathName());
+        item->setProperty("relativePath", wavFile.getRelativePathFrom(projectDir));
+        item->setProperty("sourcePathAtSaveTime", asset->sourcePath);
+        item->setProperty("sourceType", asset->generatedSignal ? "generated" : "file_or_rendered");
+        item->setProperty("sourceHash", asset->generatedSignal ? goodmeter::audio_doctor::hashGeneratedSignalSpec(asset->generatedSignalSpec)
+                                                              : goodmeter::audio_doctor::hashSourceFnv1a64(asset->sourcePath));
+        item->setProperty("savedAudioHash", goodmeter::audio_doctor::hashSourceFnv1a64(wavFile.getFullPathName()));
+        item->setProperty("sampleRate", asset->sampleRate);
+        item->setProperty("channels", asset->buffer.getNumChannels());
+        item->setProperty("samples", asset->buffer.getNumSamples());
+        item->setProperty("durationSeconds", asset->metrics.durationSeconds);
+        item->setProperty("peakDb", asset->metrics.peakDb);
+        item->setProperty("rmsDb", asset->metrics.rmsDb);
+        item->setProperty("crestDb", asset->metrics.crestDb);
+        if (asset->generatedSignal)
+            item->setProperty("generatedSignalSpec", goodmeter::audio_doctor::writeGeneratedSignalSpecJson(asset->generatedSignalSpec));
+        audioFiles.add(juce::var(item.release()));
+        return true;
+    }
+
+    juce::var makeProjectPluginSnapshot(PluginSlot slot)
+    {
+        auto& host = getPluginHost(slot);
+        if (host.getCurrentPlugin() == nullptr)
+            return juce::var();
+
+        const auto description = host.getCurrentPluginDescriptionCopy();
+        auto plugin = std::make_unique<juce::DynamicObject>();
+        plugin->setProperty("slot", juce::String(slotName(slot)));
+        plugin->setProperty("name", description.name);
+        plugin->setProperty("manufacturer", description.manufacturerName);
+        plugin->setProperty("format", description.pluginFormatName);
+        plugin->setProperty("identifier", description.createIdentifierString());
+        plugin->setProperty("fileOrIdentifier", description.fileOrIdentifier);
+        plugin->setProperty("outputGainDb", getOutputGainDb(slot));
+        plugin->setProperty("outputGainDisplay", formatOutputGainDb(getOutputGainDb(slot)));
+        plugin->setProperty("rendered", getHasPluginRender(slot));
+        plugin->setProperty("latencySamples", getHasPluginRender(slot) ? getLastLatencySamples(slot) : 0);
+        plugin->setProperty("tailSeconds", getHasPluginRender(slot) ? getLastTailSeconds(slot) : 0.0);
+
+        juce::MemoryBlock state;
+        juce::String stateError;
+        if (host.captureCurrentState(state, stateError) && state.getSize() > 0)
+        {
+            plugin->setProperty("stateCaptured", true);
+            plugin->setProperty("stateHash", goodmeter::audio_doctor::hashMemoryBlockFnv1a64(state));
+            plugin->setProperty("stateBytes", static_cast<juce::int64>(state.getSize()));
+            plugin->setProperty("pluginStateBase64", state.toBase64Encoding());
+        }
+        else
+        {
+            plugin->setProperty("stateCaptured", false);
+            plugin->setProperty("stateCaptureError", stateError.isNotEmpty() ? stateError : "Plugin returned an empty state.");
+        }
+
+        juce::Array<juce::var> parameters;
+        for (const auto& p : host.listParameters())
+        {
+            auto param = std::make_unique<juce::DynamicObject>();
+            param->setProperty("index", p.index);
+            param->setProperty("id", p.id);
+            param->setProperty("name", p.name);
+            param->setProperty("label", p.label);
+            param->setProperty("normalizedValue", p.normalisedValue);
+            param->setProperty("displayValue", p.displayValue);
+            param->setProperty("nameUnavailable", p.nameUnavailable);
+            parameters.add(juce::var(param.release()));
+        }
+        plugin->setProperty("parameters", juce::var(parameters));
+
+        juce::Array<juce::var> changed;
+        for (const auto& p : host.getChangedParameters())
+        {
+            auto param = std::make_unique<juce::DynamicObject>();
+            param->setProperty("index", p.index);
+            param->setProperty("id", p.id);
+            param->setProperty("name", p.name);
+            param->setProperty("normalizedValue", p.normalisedValue);
+            param->setProperty("displayValue", p.valueText);
+            param->setProperty("nameUnavailable", p.nameUnavailable);
+            changed.add(juce::var(param.release()));
+        }
+        plugin->setProperty("changedParameters", juce::var(changed));
+        return juce::var(plugin.release());
+    }
+
+    juce::var makeProjectRoutingSnapshot() const
+    {
+        auto root = std::make_unique<juce::DynamicObject>();
+        root->setProperty("mode", allowMixedRenderInputs ? "mix" : "controlled");
+
+        juce::Array<juce::var> rows;
+        for (int plugin = 0; plugin < 3; ++plugin)
+        {
+            auto row = std::make_unique<juce::DynamicObject>();
+            const auto slot = pluginSlotFromIndex(plugin);
+            row->setProperty("pluginSlot", juce::String(slotName(slot)));
+            row->setProperty("wetSlot", sourceSlotId(plugin == 0 ? SourceSlot::wetA : (plugin == 1 ? SourceSlot::wetB : SourceSlot::wetC)));
+
+            juce::Array<juce::var> inputs;
+            for (int dry = 0; dry < 3; ++dry)
+                if (renderRoutes[static_cast<size_t>(plugin)][static_cast<size_t>(dry)])
+                    inputs.add(sourceSlotId(sourceForDryIndex(dry)));
+            row->setProperty("inputs", juce::var(inputs));
+            rows.add(juce::var(row.release()));
+        }
+
+        root->setProperty("routes", juce::var(rows));
+        return juce::var(root.release());
+    }
+
+    juce::var makeProjectLayerFitSnapshot() const
+    {
+        auto layer = std::make_unique<juce::DynamicObject>();
+        layer->setProperty("stem1", fitStem1Source.getText());
+        layer->setProperty("stem2", fitStem2Source.getText());
+        layer->setProperty("stem3", fitStem3Source.getText());
+        layer->setProperty("bounce", fitBounceSource.getText());
+        layer->setProperty("figure", fitFigureType.getText());
+        return juce::var(layer.release());
     }
 
     void resetAll()
@@ -2690,6 +5205,7 @@ private:
         wetBAsset.reset();
         wetCAsset.reset();
         generateSignalWindow.reset();
+        pluginLoadConfirmWindow.reset();
         audioEditWindow.reset();
         busRoutingWindow.reset();
         closePluginEditorWindow();
@@ -2706,14 +5222,28 @@ private:
         lastTailSecondsA = 0.0;
         lastTailSecondsB = 0.0;
         lastTailSecondsC = 0.0;
+        outputGainDbA = 0.0;
+        outputGainDbB = 0.0;
+        outputGainDbC = 0.0;
         renderReferenceA.reset();
         renderReferenceB.reset();
         renderReferenceC.reset();
         allowMixedRenderInputs = false;
+        spatialTimePositionSeconds = 0.0f;
+        frequencyMinHz = 20.0f;
+        frequencyMaxHz = 20000.0f;
+        timeMinSeconds = 0.0f;
+        timeMaxSeconds = 0.0f;
+        fitStem1Source.setSelectedId(1, juce::dontSendNotification);
+        fitStem2Source.setSelectedId(1, juce::dontSendNotification);
+        fitStem3Source.setSelectedId(2, juce::dontSendNotification);
+        fitBounceSource.setSelectedId(1, juce::dontSendNotification);
+        fitFigureType.setSelectedId(1, juce::dontSendNotification);
         setDefaultRenderRoutes(SourceSlot::dryA);
         displaySlots = { SourceSlot::dryA, SourceSlot::wetA, SourceSlot::wetB };
         setStatus("Reset. Load Dry audio, generate a signal, or choose Plugin A/B/C.");
         updateButtonStates();
+        updateTerrainCameraControls();
         repaint();
     }
 
@@ -2759,10 +5289,15 @@ private:
         {
             case 2:  return "TransientEnvelope";
             case 3:  return "GroupDelay";
-            case 4:  return "SpectrogramABC";
-            case 5:  return "ReverbSpace";
+            case 4:  return isTerrainProjectionActive() ? "SpectrogramABC2_5D" : "SpectrogramABC";
+            case 5:  return isTerrainProjectionActive() ? "ReverbSpace2_5D" : "ReverbSpace";
             case 6:  return "DynamicsResponse";
-            case 7:  return "SpatialHeatmap";
+            case 7:  return "SpatialImage";
+            case 8:
+                if (isLayerFitDodecahedronCrystalMode()) return "DodecahedronCrystal";
+                if (isLayerFitCriticalBandCrystalMode()) return "CriticalBandCrystal";
+                if (isLayerFitSpatialImageMode()) return "LayerFitSpatialImage";
+                return "LayerFitFusion";
             default: return "SpectrumOverlay";
         }
     }
@@ -2789,11 +5324,46 @@ private:
         data.pluginC = makeFigurePluginInfo(PluginSlot::C);
         data.view = getFigureExportView();
         data.viewToken = getViewExportName();
+        data.terrainCamera = terrainCamera;
+        data.terrainTimeReversed = terrainTimeReversed;
+        data.crystalYawRadians = dodecahedronCrystalYawRadians;
+        data.crystalPitchRadians = dodecahedronCrystalPitchRadians;
+        data.spatialWindow = spatialWindow;
+        data.spatialTimePositionSeconds = (isSpatialImpressionView() || isLayerFitTimeIndexedMode())
+            ? spatialTimePositionSeconds : -1.0f;
+        data.bandHighlight = makeBandHighlightConfig();
+        data.maskingFusionSettings = makeLayerFitFusionSettings();
+        data.fitSources = makeLayerFitSources();
+        data.fitLabels = makeLayerFitLabels();
+        data.fitBounceSource = layerFitBounceAsset();
+        data.fitBounceLabel = layerFitBounceLabel();
+        data.fitBounceAuto = isLayerFitBounceAuto();
+        data.fitFigureType = layerFitFigureTypeToken();
         return data;
+    }
+
+    goodmeter::audio_doctor::BandHighlightConfig makeBandHighlightConfig() const
+    {
+        auto config = goodmeter::audio_doctor::AudioDoctorFigureRenderer::makeDefaultBandHighlightConfig();
+        const int selected = bandMode.getSelectedId();
+        config.enabled = selected > 1;
+        if (!config.enabled)
+            return config;
+
+        const juce::String activeId = selected == 2 ? "low"
+                                    : selected == 3 ? "mid"
+                                    : selected == 4 ? "high"
+                                    : "all";
+        for (auto& band : config.bands)
+            band.active = activeId == "all" || band.id == activeId;
+        return config;
     }
 
     goodmeter::audio_doctor::FigureView getFigureExportView() const
     {
+        if (isTerrainProjectionActive())
+            return goodmeter::audio_doctor::FigureView::spatialHeatmap;
+
         switch (viewMode.getSelectedId())
         {
             case 2:  return goodmeter::audio_doctor::FigureView::envelope;
@@ -2801,7 +5371,8 @@ private:
             case 4:  return goodmeter::audio_doctor::FigureView::spectrogramABC;
             case 5:  return goodmeter::audio_doctor::FigureView::reverbSpace;
             case 6:  return goodmeter::audio_doctor::FigureView::dynamics;
-            case 7:  return goodmeter::audio_doctor::FigureView::spatialHeatmap;
+            case 7:  return goodmeter::audio_doctor::FigureView::spatialImpression;
+            case 8:  return goodmeter::audio_doctor::FigureView::maskingFusion;
             default: return goodmeter::audio_doctor::FigureView::spectrum;
         }
     }
@@ -2824,6 +5395,12 @@ private:
 
         for (const auto& p : host.getChangedParameters())
             info.changedParameters.push_back({ p.name, p.valueText, p.normalisedValue });
+
+        const auto outputGainDb = getOutputGainDb(slot);
+        if (std::abs(outputGainDb) >= 0.001)
+            info.changedParameters.push_back({ "OUTPUT GAIN",
+                                               formatOutputGainDb(outputGainDb),
+                                               normaliseOutputGainDb(outputGainDb) });
 
         return info;
     }
@@ -2855,6 +5432,7 @@ private:
         pluginCBtn.setEnabled(!busy);
         importDryBtn.setEnabled(!busy);
         generateBtn.setEnabled(!busy);
+        refreshPluginInsertSlots();
     }
 
     void setStatus(const juce::String& text)
@@ -2895,12 +5473,16 @@ private:
             g.fillRect(area);
         }
 
-        if (viewMode.getSelectedId() == 7 && hasAnySourceAsset())
+        if ((isTerrainProjectionActive() || isSpatialImpressionView() || isLayerFitFusionView()) && hasAnySourceAsset())
         {
             const int imageW = juce::jmax(900, juce::roundToInt(area.getWidth() * 2.0f));
             const int imageH = juce::jmax(520, juce::roundToInt(area.getHeight() * 2.0f));
+            const bool lightFigure = isLightFigure(exportMode);
+            const bool previewBoost = !exportMode && !lightFigure;
             auto image = goodmeter::audio_doctor::AudioDoctorFigureRenderer::renderImage(
-                makeFigureDataForExport(), !isLightFigure(exportMode), imageW, imageH);
+                makeFigureDataForExport(), !lightFigure, imageW, imageH, false, previewBoost);
+            juce::Graphics::ScopedSaveState saveState(g);
+            g.setOpacity(1.0f);
             g.drawImage(image, area, juce::RectanglePlacement::stretchToFit);
             return;
         }
@@ -2913,11 +5495,14 @@ private:
         const bool isDynamicsView = viewMode.getSelectedId() == 6;
         const bool isSpectrogramView = viewMode.getSelectedId() == 4;
         const bool isDenseMetrics = isGroupDelayView || isReverbSpaceView || isDynamicsView;
-        auto metricsArea = area.removeFromBottom(isDenseMetrics
-            ? (exportMode ? 205.0f : 126.0f)
-            : isSpectrogramView ? (exportMode ? 136.0f : 92.0f)
-                                : (exportMode ? 155.0f : 104.0f));
-        area.reduce(0.0f, exportMode ? 20.0f : 12.0f);
+        const float metricsHeight = isReverbSpaceView
+            ? (exportMode ? 196.0f : 108.0f)
+            : isSpectrogramView ? (exportMode ? 116.0f : 72.0f)
+            : isDenseMetrics ? (exportMode ? 205.0f : 126.0f)
+                             : (exportMode ? 155.0f : 104.0f);
+        auto metricsArea = area.removeFromBottom(metricsHeight);
+        area.reduce(0.0f, (isReverbSpaceView || isSpectrogramView) ? (exportMode ? 12.0f : 6.0f)
+                                                                   : (exportMode ? 20.0f : 12.0f));
 
         if (!hasAnySourceAsset())
         {
@@ -2962,7 +5547,7 @@ private:
             case 4:  title = juce::String::fromUTF8("时频谱 A/B/C / Spectrogram A/B/C"); break;
             case 5:  title = juce::String::fromUTF8("混响空间 / Reverb Space"); break;
             case 6:  title = juce::String::fromUTF8("动态响应 / Dynamics Response"); break;
-            case 7:  title = juce::String::fromUTF8("空间能量热力图 / Spatial Heatmap"); break;
+            case 7:  title = juce::String::fromUTF8("空间印象 / Spatial Image"); break;
             default: title = juce::String::fromUTF8("频谱对比 / Spectrum Overlay"); break;
         }
 
@@ -3037,15 +5622,16 @@ private:
     void drawEnvelopePlot(juce::Graphics& g, juce::Rectangle<float> plot, bool exportMode)
     {
         drawPlotFrame(g, plot, exportMode, juce::String::fromUTF8("时间 (s)"), juce::String::fromUTF8("峰值包络 (dB)"));
-        drawEnvelopeGrid(g, plot, exportMode);
 
         const float maxTime = getMaxEnvelopeTime();
+        const auto timeRange = getVisibleTimeRange(maxTime);
+        drawTimeDbGrid(g, plot, timeRange.minSeconds, timeRange.maxSeconds, exportMode);
         if (auto* a0 = displayAsset(0))
-            drawEnvelopePath(g, plot, a0->envelope, maxTime, dryColour(exportMode), exportMode);
+            drawEnvelopePath(g, plot, a0->envelope, timeRange, dryColour(exportMode), exportMode);
         if (auto* a1 = displayAsset(1))
-            drawEnvelopePath(g, plot, a1->envelope, maxTime, wetColour(exportMode), exportMode);
+            drawEnvelopePath(g, plot, a1->envelope, timeRange, wetColour(exportMode), exportMode);
         if (auto* a2 = displayAsset(2))
-            drawEnvelopePath(g, plot, a2->envelope, maxTime, wetBColour(exportMode), exportMode);
+            drawEnvelopePath(g, plot, a2->envelope, timeRange, wetBColour(exportMode), exportMode);
 
         drawLegend(g, plot, exportMode);
     }
@@ -3106,25 +5692,6 @@ private:
             return;
         }
 
-        auto edcPlot = plot.removeFromTop(plot.getHeight() * 0.56f);
-        plot.removeFromTop(exportMode ? 24.0f : 14.0f);
-        auto spectrogramArea = plot;
-
-        drawPlotFrame(g, edcPlot, exportMode, juce::String::fromUTF8("时间 (s)"), "EDC / decay (dB)");
-        drawTimeDbGrid(g, edcPlot, getMaxDecayTime(), exportMode);
-
-        const float maxTime = getMaxDecayTime();
-        if (auto* a0 = displayAsset(0))
-            drawTimeDbPath(g, edcPlot, a0->energyDecay, maxTime, dryColour(exportMode), exportMode, -80.0f, 0.0f);
-        if (auto* a1 = displayAsset(1))
-            drawTimeDbPath(g, edcPlot, a1->energyDecay, maxTime, wetColour(exportMode), exportMode, -80.0f, 0.0f);
-        if (auto* a2 = displayAsset(2))
-            drawTimeDbPath(g, edcPlot, a2->energyDecay, maxTime, wetBColour(exportMode), exportMode, -80.0f, 0.0f);
-        drawLegend(g, edcPlot, exportMode);
-
-        if (spectrogramArea.getHeight() < 40.0f)
-            return;
-
         struct SpectrogramTrack
         {
             const juce::Image* image = nullptr;
@@ -3143,6 +5710,27 @@ private:
         if (auto* a2 = displayAsset(2); a2 != nullptr && !a2->spectrogramPink.isNull())
             tracks.push_back({ &a2->spectrogramPink, a2->sampleRate,
                                static_cast<float>(a2->metrics.durationSeconds), displayLabel(2) + " tail" });
+
+        const float edcRatio = tracks.size() >= 3 ? 0.40f : (tracks.size() == 1 ? 0.48f : 0.44f);
+        auto edcPlot = plot.removeFromTop(plot.getHeight() * edcRatio);
+        plot.removeFromTop(exportMode ? 18.0f : 10.0f);
+        auto spectrogramArea = plot;
+
+        drawPlotFrame(g, edcPlot, exportMode, juce::String::fromUTF8("时间 (s)"), "EDC / decay (dB)");
+
+        const float maxTime = getMaxDecayTime();
+        const auto timeRange = getVisibleTimeRange(maxTime);
+        drawTimeDbGrid(g, edcPlot, timeRange.minSeconds, timeRange.maxSeconds, exportMode);
+        if (auto* a0 = displayAsset(0))
+            drawTimeDbPath(g, edcPlot, a0->energyDecay, timeRange, dryColour(exportMode), exportMode, -80.0f, 0.0f);
+        if (auto* a1 = displayAsset(1))
+            drawTimeDbPath(g, edcPlot, a1->energyDecay, timeRange, wetColour(exportMode), exportMode, -80.0f, 0.0f);
+        if (auto* a2 = displayAsset(2))
+            drawTimeDbPath(g, edcPlot, a2->energyDecay, timeRange, wetBColour(exportMode), exportMode, -80.0f, 0.0f);
+        drawLegend(g, edcPlot, exportMode);
+
+        if (spectrogramArea.getHeight() < 40.0f)
+            return;
 
         float maxDurationSeconds = 0.001f;
         for (const auto& track : tracks)
@@ -3172,15 +5760,16 @@ private:
         }
 
         drawPlotFrame(g, plot, exportMode, juce::String::fromUTF8("时间 (s)"), "RMS response (dB)");
-        drawTimeDbGrid(g, plot, getMaxEnvelopeTime(), exportMode);
 
         const float maxTime = getMaxEnvelopeTime();
+        const auto timeRange = getVisibleTimeRange(maxTime);
+        drawTimeDbGrid(g, plot, timeRange.minSeconds, timeRange.maxSeconds, exportMode);
         if (auto* a0 = displayAsset(0))
-            drawTimeDbPath(g, plot, a0->dynamicsRms, maxTime, dryColour(exportMode), exportMode, -80.0f, 0.0f);
+            drawTimeDbPath(g, plot, a0->dynamicsRms, timeRange, dryColour(exportMode), exportMode, -80.0f, 0.0f);
         if (auto* a1 = displayAsset(1))
-            drawTimeDbPath(g, plot, a1->dynamicsRms, maxTime, wetColour(exportMode), exportMode, -80.0f, 0.0f);
+            drawTimeDbPath(g, plot, a1->dynamicsRms, timeRange, wetColour(exportMode), exportMode, -80.0f, 0.0f);
         if (auto* a2 = displayAsset(2))
-            drawTimeDbPath(g, plot, a2->dynamicsRms, maxTime, wetBColour(exportMode), exportMode, -80.0f, 0.0f);
+            drawTimeDbPath(g, plot, a2->dynamicsRms, timeRange, wetBColour(exportMode), exportMode, -80.0f, 0.0f);
 
         drawLegend(g, plot, exportMode);
     }
@@ -3453,24 +6042,27 @@ private:
         }
     }
 
-    static void drawTimeDbGrid(juce::Graphics& g, juce::Rectangle<float> plot, float maxTime, bool exportMode)
+    static void drawTimeDbGrid(juce::Graphics& g, juce::Rectangle<float> plot,
+                               float minTime, float maxTime, bool exportMode)
     {
         drawEnvelopeGrid(g, plot, exportMode);
 
-        if (maxTime <= 0.0f)
+        if (maxTime <= minTime)
             return;
 
         g.setFont(juce::Font(juce::FontOptions(exportMode ? 15.0f : 9.0f)));
-        const int divisions = maxTime > 4.0f ? 6 : 4;
+        const float span = maxTime - minTime;
+        const int divisions = span > 4.0f ? 6 : 4;
         for (int i = 1; i < divisions; ++i)
         {
             const float t = static_cast<float>(i) / static_cast<float>(divisions);
             const float x = plot.getX() + plot.getWidth() * t;
+            const float seconds = minTime + span * t;
             g.setColour(isLightFigure(exportMode) ? juce::Colour(0xFF1E2530).withAlpha(0.12f)
                                                   : juce::Colour(0xFFF3EFE7).withAlpha(0.10f));
             g.drawVerticalLine(static_cast<int>(x), plot.getY(), plot.getBottom());
             g.setColour(axisText(exportMode).withAlpha(exportMode ? 0.80f : 0.66f));
-            g.drawText(juce::String(maxTime * t, maxTime > 2.0f ? 1 : 2) + "s",
+            g.drawText(juce::String(seconds, span > 2.0f ? 1 : 2) + "s",
                        x - 25.0f, plot.getBottom() + 2.0f, 50.0f, 18.0f,
                        juce::Justification::centred);
         }
@@ -3568,11 +6160,11 @@ private:
         g.strokePath(path, juce::PathStrokeType(exportMode ? 4.0f : 2.2f));
     }
 
-    static void drawSpectrogramPanel(juce::Graphics& g, juce::Rectangle<float> area,
-                                     const juce::Image& image, double sampleRate,
-                                     float durationSeconds, float maxDurationSeconds,
-                                     const juce::String& label,
-                                     bool exportMode)
+    void drawSpectrogramPanel(juce::Graphics& g, juce::Rectangle<float> area,
+                              const juce::Image& image, double sampleRate,
+                              float durationSeconds, float maxDurationSeconds,
+                              const juce::String& label,
+                              bool exportMode) const
     {
         const bool light = isLightFigure(exportMode);
         const auto trackColour = label.contains("Wet B") ? wetBColour(exportMode)
@@ -3590,14 +6182,30 @@ private:
             const float durationRatio = juce::jlimit(0.0f, 1.0f,
                 durationSeconds / juce::jmax(0.001f, maxDurationSeconds));
             auto imageArea = contentArea.withWidth(juce::jmax(1.0f, contentArea.getWidth() * durationRatio));
+            const float nyquist = sampleRate > 0.0 ? static_cast<float>(sampleRate * 0.5) : 24000.0f;
+            const auto range = getFrequencyRange();
+            const float minNorm = juce::jlimit(0.0f, 1.0f, range.minHz / juce::jmax(1.0f, nyquist));
+            const float maxNorm = juce::jlimit(0.0f, 1.0f, range.maxHz / juce::jmax(1.0f, nyquist));
+            const int sourceY = juce::roundToInt((1.0f - maxNorm) * static_cast<float>(image.getHeight()));
+            const int sourceBottom = juce::roundToInt((1.0f - minNorm) * static_cast<float>(image.getHeight()));
+            const auto sourceRect = juce::Rectangle<int>(0,
+                                                         juce::jlimit(0, image.getHeight() - 1, sourceY),
+                                                         image.getWidth(),
+                                                         juce::jmax(1, juce::jlimit(1, image.getHeight(), sourceBottom) - sourceY));
             if (light)
             {
                 auto lightImage = makeLightSpectrogramImage(image, trackColour);
-                g.drawImage(lightImage, imageArea, juce::RectanglePlacement::stretchToFit);
+                g.drawImage(lightImage,
+                            imageArea.getX(), imageArea.getY(), imageArea.getWidth(), imageArea.getHeight(),
+                            static_cast<float>(sourceRect.getX()), static_cast<float>(sourceRect.getY()),
+                            static_cast<float>(sourceRect.getWidth()), static_cast<float>(sourceRect.getHeight()));
             }
             else
             {
-                g.drawImage(image, imageArea, juce::RectanglePlacement::stretchToFit);
+                g.drawImage(image,
+                            imageArea.getX(), imageArea.getY(), imageArea.getWidth(), imageArea.getHeight(),
+                            static_cast<float>(sourceRect.getX()), static_cast<float>(sourceRect.getY()),
+                            static_cast<float>(sourceRect.getWidth()), static_cast<float>(sourceRect.getHeight()));
             }
         }
 
@@ -3608,11 +6216,12 @@ private:
         g.setFont(juce::Font(GoodMeterLookAndFeel::chartFont(exportMode ? 14.0f : 9.0f)));
         const float freqs[] = { 100.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
         const float nyquist = sampleRate > 0.0 ? static_cast<float>(sampleRate * 0.5) : 24000.0f;
+        const auto range = getFrequencyRange();
         for (float freq : freqs)
         {
-            if (freq > nyquist)
+            if (freq > nyquist || freq < range.minHz || freq > range.maxHz)
                 continue;
-            const float norm = freq / juce::jmax(1.0f, nyquist);
+            const float norm = (freq - range.minHz) / juce::jmax(1.0f, range.maxHz - range.minHz);
             const float y = contentArea.getBottom() - juce::jlimit(0.0f, 1.0f, norm) * contentArea.getHeight();
             g.setColour(light ? juce::Colour(0xFF334155).withAlpha(0.20f)
                               : juce::Colours::white.withAlpha(0.14f));
@@ -3657,16 +6266,20 @@ private:
 
     void drawEnvelopePath(juce::Graphics& g, juce::Rectangle<float> plot,
                           const std::vector<goodmeter::audio_doctor::PlotPoint>& points,
-                          float maxTime, juce::Colour colour, bool exportMode)
+                          TimeRange timeRange, juce::Colour colour, bool exportMode)
     {
-        if (points.empty() || maxTime <= 0.0f)
+        if (points.empty() || timeRange.maxSeconds <= timeRange.minSeconds)
             return;
 
         juce::Path path;
         bool started = false;
         for (const auto& p : points)
         {
-            const float x = plot.getX() + plot.getWidth() * juce::jlimit(0.0f, 1.0f, p.x / maxTime);
+            if (p.x < timeRange.minSeconds || p.x > timeRange.maxSeconds)
+                continue;
+
+            const float x = plot.getX() + plot.getWidth()
+                * juce::jlimit(0.0f, 1.0f, (p.x - timeRange.minSeconds) / (timeRange.maxSeconds - timeRange.minSeconds));
             const float y = yForDb(p.y, plot, -80.0f, 0.0f);
             if (!started)
             {
@@ -3685,20 +6298,21 @@ private:
 
     static void drawTimeDbPath(juce::Graphics& g, juce::Rectangle<float> plot,
                                const std::vector<goodmeter::audio_doctor::PlotPoint>& points,
-                               float maxTime, juce::Colour colour, bool exportMode,
+                               TimeRange timeRange, juce::Colour colour, bool exportMode,
                                float minDb, float maxDb)
     {
-        if (points.empty() || maxTime <= 0.0f)
+        if (points.empty() || timeRange.maxSeconds <= timeRange.minSeconds)
             return;
 
         juce::Path path;
         bool started = false;
         for (const auto& p : points)
         {
-            if (p.x < 0.0f || p.x > maxTime)
+            if (p.x < timeRange.minSeconds || p.x > timeRange.maxSeconds)
                 continue;
 
-            const float x = plot.getX() + plot.getWidth() * juce::jlimit(0.0f, 1.0f, p.x / maxTime);
+            const float x = plot.getX() + plot.getWidth()
+                * juce::jlimit(0.0f, 1.0f, (p.x - timeRange.minSeconds) / (timeRange.maxSeconds - timeRange.minSeconds));
             const float y = yForDb(p.y, plot, minDb, maxDb);
             if (!started)
             {
@@ -3862,13 +6476,6 @@ private:
             g.fillRect(legend);
             g.setColour(juce::Colour(0x22000000));
             g.drawRect(legend);
-        }
-        else
-        {
-            g.setColour(juce::Colour(0xFF07080B).withAlpha(0.68f));
-            g.fillRoundedRectangle(legend, 8.0f);
-            g.setColour(juce::Colour(0xFFF6EEE3).withAlpha(0.10f));
-            g.drawRoundedRectangle(legend.reduced(0.5f), 8.0f, 0.8f);
         }
 
         g.setFont(juce::Font(juce::FontOptions(exportMode ? 16.0f : 10.0f)));
@@ -4150,8 +6757,143 @@ private:
         if (viewMode.getSelectedId() == 4) viewName = "spectrogramABC";
         if (viewMode.getSelectedId() == 5) viewName = "reverbSpace";
         if (viewMode.getSelectedId() == 6) viewName = "dynamicsResponse";
-        if (viewMode.getSelectedId() == 7) viewName = "spatialHeatmap";
+        if (viewMode.getSelectedId() == 7) viewName = "spatialImage";
+        if (viewMode.getSelectedId() == 8) viewName = "layerFitFusion";
+        if (isTerrainProjectionActive() && viewMode.getSelectedId() == 4) viewName = "spectrogramABC2_5D";
+        if (isTerrainProjectionActive() && viewMode.getSelectedId() == 5) viewName = "reverbSpace2_5D";
         root->setProperty("view", viewName);
+        if (isTerrainProjectionActive())
+        {
+            root->setProperty("terrainCamera", terrainCameraToken(terrainCamera));
+            root->setProperty("terrainTimeReversed", terrainTimeReversed);
+        }
+        if (isSpatialImpressionView() || isLayerFitTimeIndexedMode())
+        {
+            root->setProperty("terrainCamera", terrainCameraToken(terrainCamera));
+            root->setProperty("spatialTimePositionSeconds", spatialTimePositionSeconds);
+            const float spatialDuration = juce::jmax(0.001f, getSpatialImpressionDurationSeconds());
+            const float spatialWindowWidth = juce::jlimit(0.080f, 0.420f, spatialDuration * 0.085f);
+            const float displayStart = juce::jlimit(0.0f, spatialDuration, spatialTimePositionSeconds - spatialWindowWidth * 0.5f);
+            const float displayEnd = juce::jlimit(displayStart + 0.001f, spatialDuration, spatialTimePositionSeconds + spatialWindowWidth * 0.5f);
+            double spatialSampleRate = 48000.0;
+            for (auto* asset : makeLayerFitSources())
+            {
+                if (asset != nullptr && asset->sampleRate > 0.0)
+                {
+                    spatialSampleRate = asset->sampleRate;
+                    break;
+                }
+            }
+            root->setProperty("displayTimeStartSeconds", displayStart);
+            root->setProperty("displayTimeEndSeconds", displayEnd);
+            root->setProperty("analysisWindowStartSeconds", displayStart);
+            root->setProperty("analysisWindowEndSeconds", juce::jmin(spatialDuration, displayEnd + static_cast<float>(1024.0 / spatialSampleRate)));
+            if (isLayerFitDodecahedronCrystalMode())
+            {
+                root->setProperty("crystalYawRadians", dodecahedronCrystalYawRadians);
+                root->setProperty("crystalPitchRadians", dodecahedronCrystalPitchRadians);
+            }
+        }
+        if (isLayerFitFusionView())
+        {
+            const auto layerSettings = makeLayerFitFusionSettings();
+            auto layer = std::make_unique<juce::DynamicObject>();
+            layer->setProperty("mode", "layer_fit_fusion");
+            layer->setProperty("figureType", layerSettings.figureType);
+            layer->setProperty("bandScale", goodmeter::audio_doctor::effectiveCriticalBandScale(layerSettings.bandScale, layerSettings.figureType));
+            layer->setProperty("criticalBandScale", goodmeter::audio_doctor::effectiveCriticalBandScale(layerSettings.bandScale, layerSettings.figureType));
+            layer->setProperty("criticalBandMode", layerSettings.criticalBandMode);
+            layer->setProperty("maskingModel", layerSettings.maskingModel);
+            layer->setProperty("terrainCamera", terrainCameraToken(terrainCamera));
+            layer->setProperty("terrainTimeReversed", terrainTimeReversed);
+            layer->setProperty("bandMode", bandMode.getText());
+            if (isLayerFitTimeIndexedMode())
+                layer->setProperty("spatialTimePositionSeconds", spatialTimePositionSeconds);
+            auto overlay = std::make_unique<juce::DynamicObject>();
+            overlay->setProperty("selectedStemDisplay", "same_coordinate_overlay");
+            overlay->setProperty("timeFrequencyTerrain", "shared_2_5d_time_frequency_energy_renderer");
+            overlay->setProperty("spatialImage", "same_lcr_frequency_space_overlay");
+            overlay->setProperty("criticalBandRiskOverlay", "contour_ribbons_no_point_markers");
+            overlay->setProperty("bandSoloGhostMode", "LayerFitBandSoloGhostMode");
+            layer->setProperty("overlay", juce::var(overlay.release()));
+            layer->setProperty("bounceSource", isLayerFitBounceAuto() ? "auto_bounce_selected_stems"
+                                                                      : sourceSlotId(sourceFromLayerComboId(fitBounceSource.getSelectedId())));
+            layer->setProperty("bounceLabel", layerFitBounceLabel());
+            layer->setProperty("bounceSourceMode", isLayerFitBounceAuto() ? "auto_bounce_linear_sum" : "external_bounce_source");
+            layer->setProperty("bounceLengthPolicy", isLayerFitBounceAuto() ? "max_selected_stem_length_zero_padded" : "external_bounce_source_duration");
+            layer->setProperty("sampleRatePolicy", "analysis_sample_rate_first_valid_stem_resample_linear_if_needed");
+            const auto bounceWarning = layerFitBounceWarning();
+            if (bounceWarning.isNotEmpty())
+                layer->setProperty("warning", bounceWarning);
+            juce::Array<juce::var> sources;
+            const auto fitSources = makeLayerFitSources();
+            const auto fitLabels = makeLayerFitLabels();
+            const std::array<const juce::ComboBox*, 3> fitCombos { &fitStem1Source, &fitStem2Source, &fitStem3Source };
+            int sourceCount = 0;
+            for (int i = 0; i < 3; ++i)
+            {
+                if (fitSources[static_cast<size_t>(i)] == nullptr)
+                    continue;
+                if (!layer->hasProperty("analysisSampleRate"))
+                    layer->setProperty("analysisSampleRate", fitSources[static_cast<size_t>(i)]->sampleRate);
+                ++sourceCount;
+                bool sourceEnabled = true;
+                const auto sourceSlot = layerFitSourceSlotForCombo(*fitCombos[static_cast<size_t>(i)], i, sourceEnabled);
+                auto item = std::make_unique<juce::DynamicObject>();
+                item->setProperty("slot", "Stem " + juce::String(i + 1));
+                item->setProperty("source", sourceSlotId(sourceSlot));
+                item->setProperty("label", fitLabels[static_cast<size_t>(i)]);
+                item->setProperty("name", fitSources[static_cast<size_t>(i)]->name);
+                item->setProperty("sourcePath", fitSources[static_cast<size_t>(i)]->sourcePath);
+                item->setProperty("sourceSampleRate", fitSources[static_cast<size_t>(i)]->sampleRate);
+                sources.add(juce::var(item.release()));
+            }
+            layer->setProperty("sourceCount", sourceCount);
+            const juce::var sourceArrayVar(sources);
+            layer->setProperty("sources", sourceArrayVar);
+            layer->setProperty("stemSources", sourceArrayVar);
+            if (isLayerFitCriticalBandCrystalMode() || isLayerFitDodecahedronCrystalMode())
+            {
+                double sampleRate = 48000.0;
+                for (auto* source : fitSources)
+                {
+                    if (source != nullptr && source->sampleRate > 0.0)
+                    {
+                        sampleRate = source->sampleRate;
+                        break;
+                    }
+                }
+                const float maxSeconds = getSpatialImpressionDurationSeconds();
+                const float windowSeconds = juce::jmax(0.08f, layerSettings.integrationTimeMs * 0.001f * 1.6f);
+                auto crystal = goodmeter::audio_doctor::makeCriticalBandManifest(sampleRate, layerSettings);
+                if (auto* obj = crystal.getDynamicObject())
+                {
+                    obj->setProperty("timeSeconds", spatialTimePositionSeconds);
+                    obj->setProperty("windowStartSeconds", juce::jlimit(0.0f, maxSeconds, spatialTimePositionSeconds - windowSeconds * 0.5f));
+                    obj->setProperty("windowEndSeconds", juce::jlimit(0.0f, maxSeconds, spatialTimePositionSeconds + windowSeconds * 0.5f));
+                    if (isLayerFitDodecahedronCrystalMode())
+                    {
+                        auto camera = std::make_unique<juce::DynamicObject>();
+                        camera->setProperty("preset", terrainCameraToken(terrainCamera));
+                        camera->setProperty("yaw", dodecahedronCrystalYawRadians);
+                        camera->setProperty("pitch", dodecahedronCrystalPitchRadians);
+                        camera->setProperty("roll", 0.0);
+                        obj->setProperty("camera", juce::var(camera.release()));
+                        obj->setProperty("selectedStems", sourceArrayVar);
+                        obj->setProperty("bounce", isLayerFitBounceAuto() ? "auto_bounce_selected_stems"
+                                                                          : sourceSlotId(sourceFromLayerComboId(fitBounceSource.getSelectedId())));
+                    }
+                    else
+                    {
+                        obj->setProperty("camera", terrainCameraToken(terrainCamera));
+                    }
+                }
+                layer->setProperty(isLayerFitDodecahedronCrystalMode() ? "dodecahedronCrystal" : "criticalBandCrystal",
+                                   crystal);
+            }
+            layer->setProperty("boundaryNote", "Critical-band overlap/fusion proxy; not a measured psychoacoustic threshold.");
+            root->setProperty("layerFitFusion", juce::var(layer.release()));
+        }
         const auto freqRange = getFrequencyRange();
         auto range = std::make_unique<juce::DynamicObject>();
         range->setProperty("label", freqRange.label);
@@ -4245,6 +6987,16 @@ private:
                 dynamics->setProperty("rmsP50Db", asset->dynamicsMetrics.rmsP50Db);
                 dynamics->setProperty("rmsP90Db", asset->dynamicsMetrics.rmsP90Db);
                 dynamics->setProperty("transientToSustainDb", asset->dynamicsMetrics.transientToSustainDb);
+                dynamics->setProperty("transientWindowStartSeconds", asset->dynamicsMetrics.transientWindowStartSeconds);
+                dynamics->setProperty("transientWindowEndSeconds", asset->dynamicsMetrics.transientWindowEndSeconds);
+                dynamics->setProperty("sustainWindowStartSeconds", asset->dynamicsMetrics.sustainWindowStartSeconds);
+                dynamics->setProperty("sustainWindowEndSeconds", asset->dynamicsMetrics.sustainWindowEndSeconds);
+                dynamics->setProperty("actualTransientWindowStartSeconds", asset->dynamicsMetrics.actualTransientWindowStartSeconds);
+                dynamics->setProperty("actualTransientWindowEndSeconds", asset->dynamicsMetrics.actualTransientWindowEndSeconds);
+                dynamics->setProperty("actualSustainWindowStartSeconds", asset->dynamicsMetrics.actualSustainWindowStartSeconds);
+                dynamics->setProperty("actualSustainWindowEndSeconds", asset->dynamicsMetrics.actualSustainWindowEndSeconds);
+                if (asset->dynamicsMetrics.warning.isNotEmpty())
+                    dynamics->setProperty("warning", asset->dynamicsMetrics.warning);
                 obj->setProperty("dynamics", juce::var(dynamics.release()));
                 obj->setProperty("groupDelayMetrics",
                                  goodmeter::audio_doctor::AudioDoctorFigureRenderer::writeGroupDelayMetrics(asset->groupDelay,
@@ -4315,8 +7067,26 @@ private:
             plugin->setProperty("identifier", description.createIdentifierString());
             plugin->setProperty("latencySamples", getLastLatencySamples(slot));
             plugin->setProperty("tailSeconds", getLastTailSeconds(slot));
+            plugin->setProperty("outputGainDb", getOutputGainDb(slot));
+            plugin->setProperty("outputGainDisplay", formatOutputGainDb(getOutputGainDb(slot)));
 
-            const auto& host = getPluginHost(slot);
+            auto& host = getPluginHost(slot);
+            juce::MemoryBlock currentState;
+            juce::String stateError;
+            if (host.captureCurrentState(currentState, stateError) && currentState.getSize() > 0)
+            {
+                plugin->setProperty("stateCaptured", true);
+                plugin->setProperty("stateSource", "uiExportCurrentState");
+                plugin->setProperty("stateHash", goodmeter::audio_doctor::hashMemoryBlockFnv1a64(currentState));
+                plugin->setProperty("stateBytes", static_cast<juce::int64>(currentState.getSize()));
+                plugin->setProperty("pluginStateBase64", currentState.toBase64Encoding());
+            }
+            else
+            {
+                plugin->setProperty("stateCaptured", false);
+                plugin->setProperty("stateCaptureError", stateError.isNotEmpty() ? stateError : "Plugin returned an empty state.");
+            }
+
             juce::Array<juce::var> allParams;
             for (const auto& p : host.listParameters())
             {
@@ -4364,6 +7134,8 @@ private:
             route->setProperty("wet", slot == PluginSlot::A ? "WET A" : (slot == PluginSlot::B ? "WET B" : "WET C"));
             route->setProperty("input", renderInputLabel(slot));
             route->setProperty("rendered", getHasPluginRender(slot));
+            route->setProperty("outputGainDb", getOutputGainDb(slot));
+            route->setProperty("outputGainDisplay", formatOutputGainDb(getOutputGainDb(slot)));
             const Asset* wetForRoute = slot == PluginSlot::A ? wetAsset.get()
                                     : slot == PluginSlot::B ? wetBAsset.get()
                                                             : wetCAsset.get();
@@ -4414,17 +7186,39 @@ private:
     juce::TextButton pluginCBtn   { "Plugin C" };
     juce::TextButton editPluginCBtn { "Show C" };
     juce::TextButton renderCBtn   { "Render C" };
+    PluginInsertSlotComponent pluginInsertA { "A" };
+    PluginInsertSlotComponent pluginInsertB { "B" };
+    PluginInsertSlotComponent pluginInsertC { "C" };
     juce::TextButton exportBtn    { "Export" };
     juce::TextButton resetBtn     { "Reset" };
     juce::ComboBox viewMode;
-    juce::ComboBox freqZoom;
     juce::ComboBox themeMode;
+    juce::ComboBox bandMode;
+    juce::ComboBox fitStem1Source;
+    juce::ComboBox fitStem2Source;
+    juce::ComboBox fitStem3Source;
+    juce::ComboBox fitBounceSource;
+    juce::ComboBox fitFigureType;
+    juce::ComboBox terrainCameraMode;
+    juce::Label fitStem1Label;
+    juce::Label fitStem2Label;
+    juce::Label fitStem3Label;
+    juce::Label fitBounceLabel;
+    juce::Label fitViewLabel;
+    juce::Label fitBandLabel;
+    juce::Label fitAngleLabel;
+    juce::TextButton terrainProjectionBtn { "2.5D" };
+    juce::TextButton terrainTimeFlipBtn { "Flip Time" };
+    juce::Label spatialTimeLabel;
+    juce::Slider spatialTimeSlider;
+    TimePyramidPlayButton spatialTimePlayBtn { GoodMeterLookAndFeel::accentCyan };
     juce::Label statusLabel;
     juce::Label pluginSlotLabel;
     AudioDoctorPopupLookAndFeel audioDoctorPopupLookAndFeel;
 
     std::unique_ptr<juce::FileChooser> audioChooser;
     std::unique_ptr<juce::FileChooser> pluginChooser;
+    std::unique_ptr<juce::FileChooser> projectChooser;
     juce::File lastAudioDirectory;
     juce::File lastPluginDirectory;
 
@@ -4443,6 +7237,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> audioEditWindow;
     std::unique_ptr<BusRoutingWindow> busRoutingWindow;
     std::unique_ptr<GenerateSignalWindow> generateSignalWindow;
+    std::unique_ptr<PluginLoadConfirmWindow> pluginLoadConfirmWindow;
     std::array<SourceSlot, 3> displaySlots { SourceSlot::dryA, SourceSlot::wetA, SourceSlot::wetB };
     std::array<std::array<bool, 3>, 3> renderRoutes {{
         {{ true, false, false }},
@@ -4460,6 +7255,25 @@ private:
     std::atomic<bool> rendering { false };
     float frequencyMinHz = 20.0f;
     float frequencyMaxHz = 20000.0f;
+    float timeMinSeconds = 0.0f;
+    float timeMaxSeconds = 0.0f;
+    TerrainCamera terrainCamera = TerrainCamera::diagonal;
+    bool terrainProjectionEnabled = false;
+    bool terrainTimeReversed = false;
+    SpatialWindow spatialWindow = SpatialWindow::full;
+    float spatialTimePositionSeconds = 0.0f;
+    bool spatialTimelinePlaying = false;
+    bool spatialTimelineReverse = false;
+    double spatialTimelineLastTickMs = 0.0;
+    float dodecahedronCrystalYawRadians = -0.68f;
+    float dodecahedronCrystalPitchRadians = 0.54f;
+    bool draggingDodecahedronCrystal = false;
+    bool draggingTerrainCamera = false;
+    juce::Point<float> crystalDragStart;
+    juce::Point<float> terrainDragStart;
+    TerrainCamera terrainDragStartCamera = TerrainCamera::diagonal;
+    float crystalDragStartYawRadians = -0.68f;
+    float crystalDragStartPitchRadians = 0.54f;
 
     juce::PluginDescription lastPluginDescriptionA;
     juce::PluginDescription lastPluginDescriptionB;
@@ -4473,6 +7287,9 @@ private:
     double lastTailSecondsA = 0.0;
     double lastTailSecondsB = 0.0;
     double lastTailSecondsC = 0.0;
+    double outputGainDbA = 0.0;
+    double outputGainDbB = 0.0;
+    double outputGainDbC = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioDoctorContent)
 };

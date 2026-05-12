@@ -31,6 +31,8 @@
           file="anfang.PNG"/>
     <FILE id="AudioDoctorIcon1" name="AAADOCTOR.PNG" compile="0" resource="1"
           file="AAADOCTOR.PNG"/>
+    <FILE id="AudioDoctorConfirmBg1" name="audio_doctor_plugin_confirm_bg.jpg"
+          compile="0" resource="1" file="Assets/audio_doctor_plugin_confirm_bg.jpg"/>
     <FILE id="BtnSettings1" name="btn_settings.png" compile="0" resource="1"
           file="Assets/btn_settings.png"/>
     <FILE id="BtnRecord1" name="btn_record.png" compile="0" resource="1"
@@ -122,7 +124,7 @@
                extraFrameworks="CoreMedia,CoreAudio,AVFoundation,Accelerate"
                extraLinkerFlags="-L../../ThirdParty/onnxruntime-osx-arm64-1.20.1/lib -lonnxruntime -rpath @executable_path/../Frameworks"
                headerPath="../../ThirdParty/onnxruntime-osx-arm64-1.20.1/include"
-               customPList="&lt;plist&gt;&lt;dict&gt;&lt;key&gt;NSAudioCaptureUsageDescription&lt;/key&gt;&lt;string&gt;GOODMETER needs System Audio Recording permission to capture and analyze system audio in real-time.&lt;/string&gt;&lt;/dict&gt;&lt;/plist&gt;">
+               customPList="&lt;plist&gt;&lt;dict&gt;&lt;key&gt;NSAudioCaptureUsageDescription&lt;/key&gt;&lt;string&gt;GOODMETER needs System Audio Recording permission to capture and analyze system audio in real-time.&lt;/string&gt;&lt;key&gt;CFBundleDocumentTypes&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;CFBundleTypeName&lt;/key&gt;&lt;string&gt;GOODMETER Audio Doctor Project&lt;/string&gt;&lt;key&gt;CFBundleTypeIconFile&lt;/key&gt;&lt;string&gt;audio_doctor_project_pigeon.icns&lt;/string&gt;&lt;key&gt;CFBundleTypeRole&lt;/key&gt;&lt;string&gt;Editor&lt;/string&gt;&lt;key&gt;CFBundleTypeExtensions&lt;/key&gt;&lt;array&gt;&lt;string&gt;clz&lt;/string&gt;&lt;/array&gt;&lt;key&gt;LSHandlerRank&lt;/key&gt;&lt;string&gt;Owner&lt;/string&gt;&lt;key&gt;LSItemContentTypes&lt;/key&gt;&lt;array&gt;&lt;string&gt;com.solaris.goodmeter.audiodoctor-project&lt;/string&gt;&lt;/array&gt;&lt;key&gt;LSTypeIsPackage&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/array&gt;&lt;key&gt;UTExportedTypeDeclarations&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;UTTypeIdentifier&lt;/key&gt;&lt;string&gt;com.solaris.goodmeter.audiodoctor-project&lt;/string&gt;&lt;key&gt;UTTypeDescription&lt;/key&gt;&lt;string&gt;GOODMETER Audio Doctor Project&lt;/string&gt;&lt;key&gt;UTTypeIconFile&lt;/key&gt;&lt;string&gt;audio_doctor_project_pigeon.icns&lt;/string&gt;&lt;key&gt;UTTypeConformsTo&lt;/key&gt;&lt;array&gt;&lt;string&gt;com.apple.package&lt;/string&gt;&lt;/array&gt;&lt;key&gt;UTTypeTagSpecification&lt;/key&gt;&lt;dict&gt;&lt;key&gt;public.filename-extension&lt;/key&gt;&lt;array&gt;&lt;string&gt;clz&lt;/string&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="GOODMETER" macOSDeploymentTarget="14.2"/>
         <CONFIGURATION isDebug="0" name="Release" targetName="GOODMETER" macOSDeploymentTarget="14.2"/>

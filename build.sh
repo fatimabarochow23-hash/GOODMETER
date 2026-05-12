@@ -17,6 +17,7 @@
 #==============================================================================
 
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
@@ -33,6 +34,7 @@ JLCODE_DIR="$PROJECT_DIR/JuceLibraryCode"
 JLCODE_CACHE="$PROJECT_DIR/.jlcode_cache"
 ONNXRUNTIME_LIB_DIR="$PROJECT_DIR/ThirdParty/onnxruntime-osx-arm64-1.20.1/lib"
 ONNXRUNTIME_DYLIB="$ONNXRUNTIME_LIB_DIR/libonnxruntime.1.20.1.dylib"
+AUDIO_DOCTOR_PROJECT_ICON="$PROJECT_DIR/Assets/audio_doctor_project_pigeon.icns"
 
 # .jucer → xcodeproj mapping
 JUCER_STANDALONE="$PROJECT_DIR/GOODMETER.jucer"
@@ -42,6 +44,17 @@ JUCER_IOS="$PROJECT_DIR/GOODMETER_iOS.jucer"
 XCPROJ_STANDALONE="$PROJECT_DIR/Builds/MacOSX/GOODMETER.xcodeproj"
 XCPROJ_PLUGIN="$PROJECT_DIR/Builds/MacOSX_Plugin/GOODMETER.xcodeproj"
 XCPROJ_IOS="$PROJECT_DIR/Builds/iOS/GOODMETER.xcodeproj"
+
+# Keep signed macOS products off ExFAT/iCloud working trees. macOS code signing
+# is sensitive to AppleDouble/resource-fork files (._*) that those locations can
+# create, so final .app bundles are built on the local APFS volume by default.
+BUILD_ROOT="${GOODMETER_BUILD_ROOT:-"$HOME/Library/Caches/GOODMETERBuild"}"
+PROJECT_CACHE_NAME="$(basename "$PROJECT_DIR")"
+if command -v cksum >/dev/null 2>&1; then
+    PROJECT_CACHE_HASH="$(printf "%s" "$PROJECT_DIR" | cksum | awk '{ print $1 }')"
+    PROJECT_CACHE_NAME="${PROJECT_CACHE_NAME}-${PROJECT_CACHE_HASH}"
+fi
+LOCAL_BUILD_ROOT="$BUILD_ROOT/$PROJECT_CACHE_NAME"
 
 PROJUCER=""
 for candidate in "${PROJUCER_CANDIDATES[@]}"; do
@@ -76,19 +89,38 @@ restore_jlcode() {
 bundle_onnxruntime_for_app() {
     local app_bundle="$1"
     local frameworks_dir="$app_bundle/Contents/Frameworks"
+    local resources_dir="$app_bundle/Contents/Resources"
 
     if [ ! -f "$ONNXRUNTIME_DYLIB" ]; then
         echo "ONNX Runtime dylib not found: $ONNXRUNTIME_DYLIB"
         exit 1
     fi
 
-    mkdir -p "$frameworks_dir"
-    cp "$ONNXRUNTIME_DYLIB" "$frameworks_dir/"
+    mkdir -p "$frameworks_dir" "$resources_dir"
+    COPYFILE_DISABLE=1 cp "$ONNXRUNTIME_DYLIB" "$frameworks_dir/"
     ln -sf "libonnxruntime.1.20.1.dylib" "$frameworks_dir/libonnxruntime.dylib"
+
+    if [ -f "$AUDIO_DOCTOR_PROJECT_ICON" ]; then
+        COPYFILE_DISABLE=1 cp "$AUDIO_DOCTOR_PROJECT_ICON" "$resources_dir/"
+    else
+        echo "Audio Doctor project icon not found: $AUDIO_DOCTOR_PROJECT_ICON"
+        exit 1
+    fi
 
     /usr/bin/codesign --force --sign - "$frameworks_dir/libonnxruntime.1.20.1.dylib" >/dev/null
     /usr/bin/codesign --force --sign - --preserve-metadata=entitlements,requirements,flags "$app_bundle" >/dev/null
-    echo "  [bundle] Copied ONNX Runtime → GOODMETER.app/Contents/Frameworks"
+    echo "  [bundle] Copied ONNX Runtime and Audio Doctor project icon"
+}
+
+verify_app_signature() {
+    local app_bundle="$1"
+    if find "$app_bundle" -name '._*' -type f | grep -q .; then
+        echo "AppleDouble metadata files found inside app bundle:"
+        find "$app_bundle" -name '._*' -type f | sed -n '1,20p'
+        exit 1
+    fi
+    /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_bundle" >/dev/null
+    echo "  [sign] Verified GOODMETER.app"
 }
 
 #==============================================================================
@@ -136,14 +168,26 @@ build_standalone() {
     echo " Building: macOS Standalone + AU/VST3"
     echo "=========================================="
     prepare_jlcode "standalone"
+    local build_dir="$LOCAL_BUILD_ROOT/standalone"
+    local objroot="$build_dir/OBJROOT"
+    local symroot="$build_dir/SYMROOT"
+    local products_dir="$build_dir/Products/Release"
+    local app_bundle="$products_dir/GOODMETER.app"
+    mkdir -p "$objroot" "$symroot" "$products_dir"
+    rm -rf "$app_bundle"
+    echo "  [build] Products → $products_dir"
     DEVELOPER_DIR="$DEVELOPER_DIR" "$XCODEBUILD" \
         -project "$XCPROJ_STANDALONE" \
         -scheme "GOODMETER - Standalone Plugin" \
         -configuration Release \
+        OBJROOT="$objroot" \
+        SYMROOT="$symroot" \
+        CONFIGURATION_BUILD_DIR="$products_dir" \
         build 2>&1 | tail -3
-    bundle_onnxruntime_for_app "$PROJECT_DIR/Builds/MacOSX/build/Release/GOODMETER.app"
+    bundle_onnxruntime_for_app "$app_bundle"
+    verify_app_signature "$app_bundle"
     echo "  ✓ Standalone build complete"
-    echo "  → $PROJECT_DIR/Builds/MacOSX/build/Release/GOODMETER.app"
+    echo "  → $app_bundle"
 }
 
 build_plugin() {

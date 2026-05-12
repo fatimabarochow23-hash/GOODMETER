@@ -55,6 +55,15 @@ struct DynamicsMetrics
     float rmsP90Db = -120.0f;
     float transientToSustainDb = 0.0f;
     float onsetSeconds = 0.0f;
+    float transientWindowStartSeconds = 0.0f;
+    float transientWindowEndSeconds = 0.0f;
+    float sustainWindowStartSeconds = 0.0f;
+    float sustainWindowEndSeconds = 0.0f;
+    float actualTransientWindowStartSeconds = 0.0f;
+    float actualTransientWindowEndSeconds = 0.0f;
+    float actualSustainWindowStartSeconds = 0.0f;
+    float actualSustainWindowEndSeconds = 0.0f;
+    juce::String warning;
 };
 
 struct ApparentAttenuationStats
@@ -67,6 +76,95 @@ struct ApparentAttenuationStats
     float maxExpansionDb = 0.0f;
     float peakReductionSeconds = 0.0f;
     float peakExpansionSeconds = 0.0f;
+};
+
+struct MaskingFusionSettings
+{
+    juce::String bandScale = "bark_24";
+    juce::String criticalBandMode = "bark_24";
+    juce::String figureType = "critical_band_terrain";
+    juce::String maskingModel = "cross_band_bark_proxy";
+    int preferredBandCount = 0;
+    float integrationTimeMs = 50.0f;
+    float dominanceThresholdDb = 9.0f;
+    float gateDbBelowPeak = 48.0f;
+    bool upwardSpread = true;
+    float upwardSpreadWeight = 0.35f;
+    float upwardSpreadSlopeDbPerBark = 12.0f;
+    float downwardSpreadSlopeDbPerBark = 30.0f;
+    float maskingRiskRangeDb = 18.0f;
+    float interauralCoherenceWeight = 0.25f;
+    bool estimatedMaskedThreshold = false;
+    bool showPairwiseRisk = true;
+    bool showDominantSource = true;
+    bool showFusionTendency = true;
+};
+
+struct MaskingFusionCell
+{
+    float timeStartSeconds = 0.0f;
+    float timeEndSeconds = 0.0f;
+    float frequencyLowHz = 20.0f;
+    float frequencyHighHz = 20000.0f;
+    float barkLow = 0.0f;
+    float barkHigh = 0.0f;
+    int bandIndex = 0;
+    juce::String bandScale = "bark_24";
+    float energyADb = -120.0f;
+    float energyBDb = -120.0f;
+    float energyCDb = -120.0f;
+    float totalEnergyADb = -120.0f;
+    float totalEnergyBDb = -120.0f;
+    float totalEnergyCDb = -120.0f;
+    float mixDb = -120.0f;
+    float mixTotalDb = -120.0f;
+    float overlapDb = -120.0f;
+    float dominanceDb = 0.0f;
+    float maskingRiskIndex = 0.0f;
+    float crossBandRiskIndex = 0.0f;
+    juce::String dominantSource = "None";
+    juce::String weakerSource = "None";
+    juce::String targetSource = "None";
+    juce::String dominantMasker = "None";
+    int dominantMaskerBandIndex = -1;
+    float targetEnergyDb = -120.0f;
+    float maskingThresholdProxyDb = -120.0f;
+    float mixGainDb = 0.0f;
+    float mixLossDb = 0.0f;
+    float fusionTendency = 0.0f;
+    float estimatedMaskedThresholdDb = -120.0f;
+    float maskingMarginDb = 0.0f;
+};
+
+struct MaskingFusionSummary
+{
+    bool valid = false;
+    float riskAreaPercent = 0.0f;
+    float strongestRiskFrequencyHz = 0.0f;
+    float strongestRiskTimeSeconds = 0.0f;
+    int strongestRiskBandIndex = 0;
+    float meanOverlapDb = -120.0f;
+    float meanMixGainDb = 0.0f;
+    float meanMixLossDb = 0.0f;
+    juce::String mixSourceMode = "linear_sum";
+    juce::String bounceLengthPolicy = "external_bounce_source_duration";
+    juce::String sampleRatePolicy = "analysis_sample_rate_first_valid_stem";
+    double analysisSampleRate = 0.0;
+    std::array<double, 3> sourceSampleRates { 0.0, 0.0, 0.0 };
+    double bounceSampleRate = 0.0;
+    bool resampledSources = false;
+    bool resampledBounce = false;
+    juce::String maskingModel = "cross_band_bark_proxy";
+    juce::String warning;
+    float bounceDurationSeconds = 0.0f;
+    int sourceCount = 0;
+};
+
+struct MaskingFusionAnalysis
+{
+    MaskingFusionSettings settings;
+    MaskingFusionSummary summary;
+    std::vector<MaskingFusionCell> cells;
 };
 
 struct EditMetadata
@@ -177,6 +275,10 @@ struct SpatialHeatmapCell
 {
     float timeStartSeconds = 0.0f;
     float timeEndSeconds = 0.0f;
+    float displayTimeStartSeconds = 0.0f;
+    float displayTimeEndSeconds = 0.0f;
+    float analysisWindowStartSeconds = 0.0f;
+    float analysisWindowEndSeconds = 0.0f;
     float frequencyLowHz = 0.0f;
     float frequencyHighHz = 0.0f;
     float energyDb = -120.0f;
@@ -482,6 +584,35 @@ inline juce::AudioBuffer<float> mixToMono(const juce::AudioBuffer<float>& input)
     return mono;
 }
 
+inline juce::AudioBuffer<float> resampleMonoLinear(const juce::AudioBuffer<float>& mono,
+                                                   double sourceSampleRate,
+                                                   double targetSampleRate)
+{
+    if (mono.getNumChannels() <= 0 || mono.getNumSamples() <= 0
+        || sourceSampleRate <= 0.0 || targetSampleRate <= 0.0
+        || std::abs(sourceSampleRate - targetSampleRate) <= 0.5)
+        return mono;
+
+    const int inputSamples = mono.getNumSamples();
+    const int outputSamples = juce::jmax(1, static_cast<int>(std::llround(static_cast<double>(inputSamples)
+                                      * targetSampleRate / sourceSampleRate)));
+    juce::AudioBuffer<float> out(1, outputSamples);
+    auto* dst = out.getWritePointer(0);
+    const auto* src = mono.getReadPointer(0);
+    const double step = sourceSampleRate / targetSampleRate;
+
+    for (int i = 0; i < outputSamples; ++i)
+    {
+        const double pos = static_cast<double>(i) * step;
+        const int i0 = juce::jlimit(0, inputSamples - 1, static_cast<int>(std::floor(pos)));
+        const int i1 = juce::jmin(inputSamples - 1, i0 + 1);
+        const float frac = static_cast<float>(pos - static_cast<double>(i0));
+        dst[i] = src[i0] + (src[i1] - src[i0]) * frac;
+    }
+
+    return out;
+}
+
 inline Metrics computeMetrics(const juce::AudioBuffer<float>& buffer, double sampleRate)
 {
     Metrics m;
@@ -775,13 +906,30 @@ inline DynamicsMetrics computeDynamicsMetrics(const juce::AudioBuffer<float>& bu
     const int onset = findOnsetSample(buffer);
     const int transientEnd = onset + static_cast<int>(sampleRate * 0.050);
     const int sustainEnd = onset + static_cast<int>(sampleRate * 0.500);
-    const double transientEnergy = windowEnergy(mono, onset, transientEnd);
-    const double sustainEnergy = windowEnergy(mono, transientEnd, sustainEnd);
-    const double transientRms = std::sqrt(transientEnergy / juce::jmax(1.0, static_cast<double>(transientEnd - onset)));
-    const double sustainRms = std::sqrt(sustainEnergy / juce::jmax(1.0, static_cast<double>(sustainEnd - transientEnd)));
+    const int sampleCount = buffer.getNumSamples();
+    const int actualTransientStart = juce::jlimit(0, sampleCount, onset);
+    const int actualTransientEnd = juce::jlimit(actualTransientStart, sampleCount, transientEnd);
+    const int actualSustainStart = juce::jlimit(0, sampleCount, transientEnd);
+    const int actualSustainEnd = juce::jlimit(actualSustainStart, sampleCount, sustainEnd);
+    const double transientEnergy = windowEnergy(mono, actualTransientStart, actualTransientEnd);
+    const double sustainEnergy = windowEnergy(mono, actualSustainStart, actualSustainEnd);
+    const double transientDenom = juce::jmax(1.0, static_cast<double>(actualTransientEnd - actualTransientStart));
+    const double sustainDenom = juce::jmax(1.0, static_cast<double>(actualSustainEnd - actualSustainStart));
+    const double transientRms = std::sqrt(transientEnergy / transientDenom);
+    const double sustainRms = std::sqrt(sustainEnergy / sustainDenom);
 
     metrics.valid = true;
     metrics.onsetSeconds = static_cast<float>(static_cast<double>(onset) / sampleRate);
+    metrics.transientWindowStartSeconds = metrics.onsetSeconds;
+    metrics.transientWindowEndSeconds = static_cast<float>(static_cast<double>(transientEnd) / sampleRate);
+    metrics.sustainWindowStartSeconds = metrics.transientWindowEndSeconds;
+    metrics.sustainWindowEndSeconds = static_cast<float>(static_cast<double>(sustainEnd) / sampleRate);
+    metrics.actualTransientWindowStartSeconds = static_cast<float>(static_cast<double>(actualTransientStart) / sampleRate);
+    metrics.actualTransientWindowEndSeconds = static_cast<float>(static_cast<double>(actualTransientEnd) / sampleRate);
+    metrics.actualSustainWindowStartSeconds = static_cast<float>(static_cast<double>(actualSustainStart) / sampleRate);
+    metrics.actualSustainWindowEndSeconds = static_cast<float>(static_cast<double>(actualSustainEnd) / sampleRate);
+    if ((actualSustainEnd - actualSustainStart) < static_cast<int>(sampleRate * 0.050))
+        metrics.warning = "Sustain window shorter than 50 ms; transient/sustain ratio uses the actual available window.";
     metrics.rmsP10Db = percentile(0.10f);
     metrics.rmsP50Db = percentile(0.50f);
     metrics.rmsP90Db = percentile(0.90f);
@@ -911,6 +1059,699 @@ inline juce::var writeApparentAttenuationStatsJson(const ApparentAttenuationStat
     obj->setProperty("peakReductionSeconds", stats.peakReductionSeconds);
     obj->setProperty("peakExpansionSeconds", stats.peakExpansionSeconds);
     return juce::var(obj.release());
+}
+
+inline double erbRate(double frequencyHz)
+{
+    return 21.4 * std::log10(1.0 + 0.00437 * juce::jmax(0.0, frequencyHz));
+}
+
+inline double frequencyFromErbRate(double rate)
+{
+    return (std::pow(10.0, rate / 21.4) - 1.0) / 0.00437;
+}
+
+inline double hzToBark(double frequencyHz)
+{
+    const double f = juce::jmax(0.0, frequencyHz) / 1000.0;
+    return 13.0 * std::atan(0.76 * f) + 3.5 * std::atan((f / 7.5) * (f / 7.5));
+}
+
+inline double barkToHz(double bark)
+{
+    const double target = juce::jlimit(0.0, 24.0, bark);
+    double lo = 0.0;
+    double hi = 24000.0;
+    for (int i = 0; i < 48; ++i)
+    {
+        const double mid = (lo + hi) * 0.5;
+        if (hzToBark(mid) < target)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return (lo + hi) * 0.5;
+}
+
+struct CriticalBandRange
+{
+    float lowHz = 20.0f;
+    float highHz = 20000.0f;
+    float barkLow = 0.0f;
+    float barkHigh = 24.0f;
+    juce::String scale = "bark_24";
+};
+
+inline juce::String effectiveCriticalBandScale(const juce::String& requestedScale,
+                                               const juce::String& figureType = {})
+{
+    const auto scale = requestedScale.trim().toLowerCase().replace("-", "_").replace(" ", "_");
+    const auto figure = figureType.trim().toLowerCase().replace("-", "_").replace(" ", "_");
+    if (figure.contains("crystal") || figure.contains("dodecahedron"))
+        return "bark_24";
+    if (scale == "bark" || scale == "bark_24" || scale == "critical_bands"
+        || scale == "critical_band" || scale == "critical")
+        return "bark_24";
+    if (scale == "log" || scale == "log_like")
+        return "log_like";
+    return "erb_like";
+}
+
+inline std::vector<std::pair<float, float>> makeApproximateCriticalBands(double sampleRate,
+                                                                         const juce::String& scale,
+                                                                         int preferredBandCount = 40)
+{
+    std::vector<std::pair<float, float>> pairs;
+    const auto bands = [&]
+    {
+        const float minHz = 20.0f;
+        const float maxHz = juce::jlimit(200.0f, 20000.0f, static_cast<float>(sampleRate * 0.5));
+        const auto mode = effectiveCriticalBandScale(scale);
+        const int bandCount = mode == "bark_24" ? 24 : juce::jlimit(12, 72, preferredBandCount);
+        std::vector<CriticalBandRange> out;
+        out.reserve(static_cast<size_t>(bandCount));
+
+        if (mode == "bark_24")
+        {
+            const double barkMin = hzToBark(minHz);
+            const double barkMax = hzToBark(maxHz);
+            for (int i = 0; i < bandCount; ++i)
+            {
+                const double blo = barkMin + (barkMax - barkMin) * static_cast<double>(i) / static_cast<double>(bandCount);
+                const double bhi = barkMin + (barkMax - barkMin) * static_cast<double>(i + 1) / static_cast<double>(bandCount);
+                out.push_back({ static_cast<float>(juce::jmax<double>(minHz, barkToHz(blo))),
+                                static_cast<float>(juce::jmin<double>(maxHz, barkToHz(bhi))),
+                                static_cast<float>(blo),
+                                static_cast<float>(bhi),
+                                mode });
+            }
+            return out;
+        }
+
+        if (mode == "log_like")
+        {
+            const double logMin = std::log(minHz);
+            const double logMax = std::log(maxHz);
+            for (int i = 0; i < bandCount; ++i)
+            {
+                const float lo = static_cast<float>(std::exp(logMin + (logMax - logMin) * static_cast<double>(i) / static_cast<double>(bandCount)));
+                const float hi = static_cast<float>(std::exp(logMin + (logMax - logMin) * static_cast<double>(i + 1) / static_cast<double>(bandCount)));
+                out.push_back({ lo, hi, static_cast<float>(hzToBark(lo)), static_cast<float>(hzToBark(hi)), mode });
+            }
+            return out;
+        }
+
+        const double erbMin = erbRate(minHz);
+        const double erbMax = erbRate(maxHz);
+        for (int i = 0; i < bandCount; ++i)
+        {
+            const float lo = static_cast<float>(frequencyFromErbRate(erbMin + (erbMax - erbMin) * static_cast<double>(i) / static_cast<double>(bandCount)));
+            const float hi = static_cast<float>(frequencyFromErbRate(erbMin + (erbMax - erbMin) * static_cast<double>(i + 1) / static_cast<double>(bandCount)));
+            const auto clampedLo = juce::jmax(minHz, lo);
+            const auto clampedHi = juce::jmin(maxHz, hi);
+            out.push_back({ clampedLo, clampedHi,
+                            static_cast<float>(hzToBark(clampedLo)),
+                            static_cast<float>(hzToBark(clampedHi)),
+                            mode });
+        }
+        return out;
+    }();
+
+    pairs.reserve(bands.size());
+    for (const auto& band : bands)
+        pairs.push_back({ band.lowHz, band.highHz });
+    return pairs;
+}
+
+inline std::vector<CriticalBandRange> makeCriticalBandRanges(double sampleRate,
+                                                             const MaskingFusionSettings& settings)
+{
+    const float minHz = 20.0f;
+    const float maxHz = juce::jlimit(200.0f, 20000.0f, static_cast<float>(sampleRate * 0.5));
+    const auto mode = effectiveCriticalBandScale(settings.bandScale, settings.figureType);
+    const int preferredBandCount = mode == "bark_24" ? 24
+        : (settings.preferredBandCount > 0 ? juce::jlimit(12, 72, settings.preferredBandCount) : 40);
+    const int bandCount = juce::jlimit(12, 72, preferredBandCount);
+    std::vector<CriticalBandRange> out;
+    out.reserve(static_cast<size_t>(bandCount));
+
+    if (mode == "bark_24")
+    {
+        const double barkMin = hzToBark(minHz);
+        const double barkMax = hzToBark(maxHz);
+        for (int i = 0; i < 24; ++i)
+        {
+            const double blo = barkMin + (barkMax - barkMin) * static_cast<double>(i) / 24.0;
+            const double bhi = barkMin + (barkMax - barkMin) * static_cast<double>(i + 1) / 24.0;
+            out.push_back({ static_cast<float>(juce::jmax<double>(minHz, barkToHz(blo))),
+                            static_cast<float>(juce::jmin<double>(maxHz, barkToHz(bhi))),
+                            static_cast<float>(blo),
+                            static_cast<float>(bhi),
+                            mode });
+        }
+        return out;
+    }
+
+    if (mode == "log_like")
+    {
+        const double logMin = std::log(minHz);
+        const double logMax = std::log(maxHz);
+        for (int i = 0; i < bandCount; ++i)
+        {
+            const float lo = static_cast<float>(std::exp(logMin + (logMax - logMin) * static_cast<double>(i) / static_cast<double>(bandCount)));
+            const float hi = static_cast<float>(std::exp(logMin + (logMax - logMin) * static_cast<double>(i + 1) / static_cast<double>(bandCount)));
+            out.push_back({ lo, hi, static_cast<float>(hzToBark(lo)), static_cast<float>(hzToBark(hi)), mode });
+        }
+        return out;
+    }
+
+    const double erbMin = erbRate(minHz);
+    const double erbMax = erbRate(maxHz);
+    for (int i = 0; i < bandCount; ++i)
+    {
+        const float lo = static_cast<float>(frequencyFromErbRate(erbMin + (erbMax - erbMin) * static_cast<double>(i) / static_cast<double>(bandCount)));
+        const float hi = static_cast<float>(frequencyFromErbRate(erbMin + (erbMax - erbMin) * static_cast<double>(i + 1) / static_cast<double>(bandCount)));
+        const auto clampedLo = juce::jmax(minHz, lo);
+        const auto clampedHi = juce::jmin(maxHz, hi);
+        out.push_back({ clampedLo, clampedHi,
+                        static_cast<float>(hzToBark(clampedLo)),
+                        static_cast<float>(hzToBark(clampedHi)),
+                        "erb_like" });
+    }
+    return out;
+}
+
+inline int preferredCriticalBandCountForSettings(const MaskingFusionSettings& settings)
+{
+    if (effectiveCriticalBandScale(settings.bandScale, settings.figureType) == "bark_24")
+        return 24;
+
+    if (settings.preferredBandCount > 0)
+        return juce::jlimit(12, 72, settings.preferredBandCount);
+
+    return 40;
+}
+
+inline juce::var makeCriticalBandManifest(double sampleRate, const MaskingFusionSettings& settings)
+{
+    const auto bands = makeCriticalBandRanges(sampleRate > 0.0 ? sampleRate : 48000.0, settings);
+    const auto effectiveScale = effectiveCriticalBandScale(settings.bandScale, settings.figureType);
+    auto obj = std::make_unique<juce::DynamicObject>();
+    obj->setProperty("bandCount", static_cast<int>(bands.size()));
+    obj->setProperty("bandScale", effectiveScale);
+    obj->setProperty("criticalBandScale", effectiveScale);
+    obj->setProperty("criticalBandMode", settings.criticalBandMode);
+    if (effectiveScale == "bark_24")
+        obj->setProperty("formula", "z = 13 atan(0.00076 f_Hz) + 3.5 atan((f_Hz / 7500)^2); 24 equal z-interval bands over the analysed Nyquist-limited range");
+    else if (effectiveScale == "erb_like")
+        obj->setProperty("formula", "ERB-rate-like proxy, not Bark; 21.4 log10(1 + 0.00437 f_Hz)");
+
+    juce::Array<juce::var> bandArray;
+    for (int i = 0; i < static_cast<int>(bands.size()); ++i)
+    {
+        const auto& range = bands[static_cast<size_t>(i)];
+        auto band = std::make_unique<juce::DynamicObject>();
+        band->setProperty("index", i + 1);
+        band->setProperty("lowHz", range.lowHz);
+        band->setProperty("highHz", range.highHz);
+        band->setProperty("centerHz", std::sqrt(juce::jmax(1.0f, range.lowHz * range.highHz)));
+        band->setProperty("barkLow", range.barkLow);
+        band->setProperty("barkHigh", range.barkHigh);
+        band->setProperty("scale", range.scale);
+        bandArray.add(juce::var(band.release()));
+    }
+
+    obj->setProperty("bands", juce::var(bandArray));
+    if (settings.figureType.trim().toLowerCase().contains("dodecahedron"))
+    {
+        obj->setProperty("figureType", "dodecahedron_crystal");
+        obj->setProperty("criticalBandGrouping", "pairwise_24_to_12");
+        juce::Array<juce::var> faces;
+        for (int face = 0; face < 12; ++face)
+        {
+            auto faceObj = std::make_unique<juce::DynamicObject>();
+            juce::Array<juce::var> faceBands;
+            faceBands.add(face * 2 + 1);
+            faceBands.add(face * 2 + 2);
+            faceObj->setProperty("face", face + 1);
+            faceObj->setProperty("bands", juce::var(faceBands));
+            faces.add(juce::var(faceObj.release()));
+        }
+        obj->setProperty("faces", juce::var(faces));
+    }
+    return juce::var(obj.release());
+}
+
+struct MaskingBandPower
+{
+    double density = 0.0;
+    double total = 0.0;
+};
+
+inline MaskingBandPower maskingBandPowers(const std::vector<float>& fftMagnitudes,
+                                          double sampleRate,
+                                          int fftSize,
+                                          float lowHz,
+                                          float highHz)
+{
+    const int halfSize = static_cast<int>(fftMagnitudes.size());
+    const int lowBin = juce::jlimit(1, halfSize - 1, static_cast<int>(std::floor(static_cast<double>(lowHz) * fftSize / sampleRate)));
+    const int highBin = juce::jlimit(lowBin, halfSize - 1, static_cast<int>(std::ceil(static_cast<double>(highHz) * fftSize / sampleRate)));
+    double sum = 0.0;
+    int count = 0;
+    for (int bin = lowBin; bin <= highBin; ++bin)
+    {
+        const double mag = static_cast<double>(fftMagnitudes[static_cast<size_t>(bin)]);
+        sum += mag * mag;
+        ++count;
+    }
+    return { count > 0 ? sum / static_cast<double>(count) : 0.0, sum };
+}
+
+inline double maskingBandPower(const std::vector<float>& fftMagnitudes,
+                               double sampleRate,
+                               int fftSize,
+                               float lowHz,
+                               float highHz)
+{
+    return maskingBandPowers(fftMagnitudes, sampleRate, fftSize, lowHz, highHz).density;
+}
+
+inline MaskingFusionAnalysis computeLayerFitFusionAnalysis(const std::array<const Asset*, 3>& sources,
+                                                           const Asset* bounceSource,
+                                                           MaskingFusionSettings settings = {})
+{
+    MaskingFusionAnalysis result;
+    if (settings.figureType.trim().toLowerCase().contains("crystal") && settings.preferredBandCount <= 0)
+        settings.preferredBandCount = 24;
+    const auto effectiveBandScale = effectiveCriticalBandScale(settings.bandScale, settings.figureType);
+    settings.bandScale = effectiveBandScale;
+    if (effectiveBandScale == "bark_24")
+        settings.criticalBandMode = "bark_24";
+    result.settings = settings;
+
+    std::array<bool, 3> active {};
+    int sourceCount = 0;
+    double sampleRate = 0.0;
+    int minSourceSamples = std::numeric_limits<int>::max();
+    int maxSourceSamples = 0;
+    bool sampleRateMismatch = false;
+    for (size_t i = 0; i < sources.size(); ++i)
+    {
+        const auto* source = sources[i];
+        if (source == nullptr || source->buffer.getNumSamples() <= 0)
+            continue;
+
+        active[i] = true;
+        result.summary.sourceSampleRates[i] = source->sampleRate;
+        ++sourceCount;
+        if (sampleRate <= 0.0)
+            sampleRate = source->sampleRate;
+        else if (std::abs(source->sampleRate - sampleRate) > 0.5)
+            sampleRateMismatch = true;
+
+        minSourceSamples = juce::jmin(minSourceSamples, source->buffer.getNumSamples());
+        maxSourceSamples = juce::jmax(maxSourceSamples, source->buffer.getNumSamples());
+    }
+
+    if (sourceCount <= 0 || maxSourceSamples <= 0 || minSourceSamples == std::numeric_limits<int>::max())
+        return result;
+
+    std::array<juce::AudioBuffer<float>, 3> monoSources;
+    minSourceSamples = std::numeric_limits<int>::max();
+    maxSourceSamples = 0;
+    for (size_t i = 0; i < sources.size(); ++i)
+        if (active[i])
+        {
+            auto mono = mixToMono(sources[i]->buffer);
+            if (std::abs(sources[i]->sampleRate - sampleRate) > 0.5)
+            {
+                mono = resampleMonoLinear(mono, sources[i]->sampleRate, sampleRate);
+                result.summary.resampledSources = true;
+            }
+            monoSources[i] = std::move(mono);
+            maxSourceSamples = juce::jmax(maxSourceSamples, monoSources[i].getNumSamples());
+            minSourceSamples = juce::jmin(minSourceSamples, monoSources[i].getNumSamples());
+        }
+
+    juce::AudioBuffer<float> monoMix;
+    juce::String mixMode = "auto_bounce_linear_sum";
+    juce::String bounceLengthPolicy = "max_selected_stem_length_zero_padded";
+    int samples = maxSourceSamples;
+    if (bounceSource != nullptr && bounceSource->buffer.getNumSamples() > 0)
+    {
+        mixMode = "external_bounce_source";
+        bounceLengthPolicy = "external_bounce_source_duration";
+        result.summary.bounceSampleRate = bounceSource->sampleRate;
+        monoMix = mixToMono(bounceSource->buffer);
+        if (std::abs(bounceSource->sampleRate - sampleRate) > 0.5)
+        {
+            monoMix = resampleMonoLinear(monoMix, bounceSource->sampleRate, sampleRate);
+            result.summary.resampledBounce = true;
+        }
+        samples = monoMix.getNumSamples();
+    }
+    else
+    {
+        monoMix.setSize(1, samples);
+        monoMix.clear();
+        auto* dst = monoMix.getWritePointer(0);
+        for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+        {
+            if (!active[sourceIndex])
+                continue;
+
+            const auto* src = monoSources[sourceIndex].getReadPointer(0);
+            const int sourceSamples = monoSources[sourceIndex].getNumSamples();
+            for (int i = 0; i < samples; ++i)
+                if (i < sourceSamples)
+                    dst[i] += src[i];
+        }
+    }
+
+    int fftOrder = 11;
+    while (fftOrder > 8 && samples < (1 << fftOrder))
+        --fftOrder;
+    const int fftSize = 1 << fftOrder;
+    const int halfSize = fftSize / 2;
+    if (samples < fftSize || sampleRate <= 0.0)
+        return result;
+
+    const int hop = juce::jmax(64, static_cast<int>(sampleRate * juce::jlimit(15.0f, 200.0f, settings.integrationTimeMs) / 1000.0f));
+    const int frames = juce::jmax(1, (samples - fftSize) / hop + 1);
+    const auto bands = makeCriticalBandRanges(sampleRate, settings);
+    const juce::String bandScale = settings.bandScale.isNotEmpty() ? settings.bandScale : "bark_24";
+
+    juce::dsp::FFT fft(fftOrder);
+    juce::dsp::WindowingFunction<float> window(fftSize, juce::dsp::WindowingFunction<float>::hann);
+    std::vector<float> fftData(static_cast<size_t>(fftSize * 2), 0.0f);
+    std::array<std::vector<float>, 3> mags;
+    for (auto& sourceMags : mags)
+        sourceMags.assign(static_cast<size_t>(halfSize), 0.0f);
+    std::vector<float> magsM(static_cast<size_t>(halfSize), 0.0f);
+
+    auto fillMagnitudes = [&] (const juce::AudioBuffer<float>& mono, int pos, std::vector<float>& magnitudes)
+    {
+        std::fill(fftData.begin(), fftData.end(), 0.0f);
+        const auto* src = mono.getReadPointer(0);
+        const int availableSamples = mono.getNumSamples();
+        for (int i = 0; i < fftSize; ++i)
+        {
+            const int sampleIndex = pos + i;
+            if (sampleIndex < availableSamples)
+                fftData[static_cast<size_t>(i)] = src[sampleIndex];
+        }
+        window.multiplyWithWindowingTable(fftData.data(), fftSize);
+        fft.performFrequencyOnlyForwardTransform(fftData.data());
+        for (int bin = 0; bin < halfSize; ++bin)
+            magnitudes[static_cast<size_t>(bin)] = fftData[static_cast<size_t>(bin)] / static_cast<float>(fftSize);
+    };
+
+    result.cells.reserve(static_cast<size_t>(frames * static_cast<int>(bands.size())));
+    std::array<float, 3> peaks { -120.0f, -120.0f, -120.0f };
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        const int pos = frame * hop;
+        for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+            if (active[sourceIndex])
+                fillMagnitudes(monoSources[sourceIndex], pos, mags[sourceIndex]);
+        fillMagnitudes(monoMix, pos, magsM);
+        for (int bandIndex = 0; bandIndex < static_cast<int>(bands.size()); ++bandIndex)
+        {
+            const auto& band = bands[static_cast<size_t>(bandIndex)];
+            const auto lowHz = band.lowHz;
+            const auto highHz = band.highHz;
+            std::array<double, 3> powers {};
+            std::array<double, 3> totalPowers {};
+            std::array<float, 3> dbs { -120.0f, -120.0f, -120.0f };
+            std::array<float, 3> totalDbs { -120.0f, -120.0f, -120.0f };
+            for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+            {
+                if (!active[sourceIndex])
+                    continue;
+
+                const auto bandPower = maskingBandPowers(mags[sourceIndex], sampleRate, fftSize, lowHz, highHz);
+                powers[sourceIndex] = bandPower.density;
+                totalPowers[sourceIndex] = bandPower.total;
+                dbs[sourceIndex] = safeGainToDb(static_cast<float>(std::sqrt(powers[sourceIndex]))) + 54.0f;
+                totalDbs[sourceIndex] = safeGainToDb(static_cast<float>(std::sqrt(totalPowers[sourceIndex]))) + 54.0f;
+                peaks[sourceIndex] = juce::jmax(peaks[sourceIndex], dbs[sourceIndex]);
+            }
+            const auto mixPower = maskingBandPowers(magsM, sampleRate, fftSize, lowHz, highHz);
+            const double pM = mixPower.density;
+            const float mDb = safeGainToDb(static_cast<float>(std::sqrt(pM))) + 54.0f;
+            const float mTotalDb = safeGainToDb(static_cast<float>(std::sqrt(mixPower.total))) + 54.0f;
+
+            float maxDb = -120.0f;
+            float minDb = 120.0f;
+            int dominantIndex = -1;
+            int weakerIndex = -1;
+            double expectedPower = 0.0;
+            for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+            {
+                if (!active[sourceIndex])
+                    continue;
+
+                expectedPower += powers[sourceIndex];
+                if (dbs[sourceIndex] > maxDb)
+                {
+                    maxDb = dbs[sourceIndex];
+                    dominantIndex = static_cast<int>(sourceIndex);
+                }
+                if (dbs[sourceIndex] < minDb)
+                {
+                    minDb = dbs[sourceIndex];
+                    weakerIndex = static_cast<int>(sourceIndex);
+                }
+            }
+
+            MaskingFusionCell cell;
+            cell.timeStartSeconds = static_cast<float>(static_cast<double>(pos) / sampleRate);
+            cell.timeEndSeconds = static_cast<float>(static_cast<double>(pos + fftSize) / sampleRate);
+            cell.frequencyLowHz = lowHz;
+            cell.frequencyHighHz = highHz;
+            cell.barkLow = band.barkLow;
+            cell.barkHigh = band.barkHigh;
+            cell.bandIndex = bandIndex;
+            cell.bandScale = bandScale;
+            cell.energyADb = dbs[0];
+            cell.energyBDb = dbs[1];
+            cell.energyCDb = dbs[2];
+            cell.totalEnergyADb = totalDbs[0];
+            cell.totalEnergyBDb = totalDbs[1];
+            cell.totalEnergyCDb = totalDbs[2];
+            cell.mixDb = mDb;
+            cell.mixTotalDb = mTotalDb;
+            cell.overlapDb = sourceCount >= 2 ? minDb : maxDb;
+            cell.dominanceDb = sourceCount >= 2 ? juce::jmax(0.0f, maxDb - minDb) : 0.0f;
+            cell.dominantSource = dominantIndex >= 0 ? ("Stem " + juce::String(dominantIndex + 1)) : "None";
+            cell.weakerSource = weakerIndex >= 0 && sourceCount >= 2 ? ("Stem " + juce::String(weakerIndex + 1)) : "None";
+            const float expectedDb = safeGainToDb(std::sqrt(juce::jmax(0.0f, static_cast<float>(expectedPower)))) + 54.0f;
+            cell.mixGainDb = mDb - maxDb;
+            cell.mixLossDb = mDb - expectedDb;
+            if (settings.estimatedMaskedThreshold)
+            {
+                const float centreHz = (lowHz + highHz) * 0.5f;
+                const float upwardBonus = (settings.upwardSpread && centreHz < 2000.0f)
+                    ? settings.upwardSpreadWeight * (centreHz < 500.0f ? 12.0f : 5.0f)
+                    : 0.0f;
+                cell.estimatedMaskedThresholdDb = maxDb - juce::jlimit(6.0f, 24.0f,
+                                                                       settings.dominanceThresholdDb + upwardBonus);
+                cell.maskingMarginDb = minDb - cell.estimatedMaskedThresholdDb;
+            }
+            result.cells.push_back(cell);
+        }
+    }
+
+    for (auto& cell : result.cells)
+    {
+        const std::array<float, 3> dbs { cell.energyADb, cell.energyBDb, cell.energyCDb };
+        int gatedCount = 0;
+        float minActivePeak = 120.0f;
+        for (size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+        {
+            if (!active[sourceIndex])
+                continue;
+
+            minActivePeak = juce::jmin(minActivePeak, peaks[sourceIndex]);
+            if (dbs[sourceIndex] >= peaks[sourceIndex] - settings.gateDbBelowPeak)
+                ++gatedCount;
+        }
+
+        const float dominance = juce::jmax(0.0f, cell.dominanceDb - settings.dominanceThresholdDb);
+        const float overlap = juce::jlimit(0.0f, 1.0f,
+            (cell.overlapDb - minActivePeak + settings.gateDbBelowPeak) / juce::jmax(1.0f, settings.gateDbBelowPeak));
+        float upward = 0.0f;
+        if (settings.upwardSpread && cell.dominantSource != "None")
+        {
+            const float centreHz = (cell.frequencyLowHz + cell.frequencyHighHz) * 0.5f;
+            upward = centreHz < 500.0f ? settings.upwardSpreadWeight
+                   : centreHz < 2000.0f ? settings.upwardSpreadWeight * 0.45f : 0.0f;
+        }
+        cell.maskingRiskIndex = (gatedCount >= 2)
+            ? juce::jlimit(0.0f, 1.0f, (dominance / 18.0f) * 0.68f + overlap * 0.25f + upward * 0.18f)
+            : 0.0f;
+        cell.fusionTendency = (gatedCount >= 2)
+            ? juce::jlimit(0.0f, 1.0f,
+                           overlap * juce::jlimit(0.0f, 1.0f, 1.0f - cell.dominanceDb / juce::jmax(1.0f, settings.dominanceThresholdDb)))
+            : 0.0f;
+    }
+
+    auto cellEnergyDb = [] (const MaskingFusionCell& cell, int sourceIndex)
+    {
+        if (sourceIndex == 1) return cell.energyBDb;
+        if (sourceIndex == 2) return cell.energyCDb;
+        return cell.energyADb;
+    };
+
+    const bool useCrossBandMasking = settings.maskingModel.trim().toLowerCase().contains("cross");
+    if (useCrossBandMasking && sourceCount >= 2 && !result.cells.empty() && !bands.empty())
+    {
+        const int bandCount = static_cast<int>(bands.size());
+        for (int frame = 0; frame < frames; ++frame)
+        {
+            const int frameOffset = frame * bandCount;
+            if (frameOffset + bandCount > static_cast<int>(result.cells.size()))
+                break;
+
+            for (int bandIndex = 0; bandIndex < bandCount; ++bandIndex)
+            {
+                auto& targetCell = result.cells[static_cast<size_t>(frameOffset + bandIndex)];
+                const float targetBark = (targetCell.barkLow + targetCell.barkHigh) * 0.5f;
+                float bestRisk = 0.0f;
+                float bestTargetDb = -120.0f;
+                float bestPressureDb = -120.0f;
+                float bestMarginDb = 120.0f;
+                int bestTargetSource = -1;
+                int bestMaskerSource = -1;
+                int bestMaskerBand = -1;
+
+                for (int targetSource = 0; targetSource < 3; ++targetSource)
+                {
+                    if (!active[static_cast<size_t>(targetSource)])
+                        continue;
+
+                    const float targetDb = cellEnergyDb(targetCell, targetSource);
+                    if (targetDb < peaks[static_cast<size_t>(targetSource)] - settings.gateDbBelowPeak)
+                        continue;
+
+                    float pressureDb = -120.0f;
+                    int pressureSource = -1;
+                    int pressureBand = -1;
+                    for (int maskerSource = 0; maskerSource < 3; ++maskerSource)
+                    {
+                        if (maskerSource == targetSource || !active[static_cast<size_t>(maskerSource)])
+                            continue;
+
+                        for (int maskerBand = 0; maskerBand < bandCount; ++maskerBand)
+                        {
+                            const auto& maskerCell = result.cells[static_cast<size_t>(frameOffset + maskerBand)];
+                            const float maskerDb = cellEnergyDb(maskerCell, maskerSource);
+                            if (maskerDb < peaks[static_cast<size_t>(maskerSource)] - settings.gateDbBelowPeak)
+                                continue;
+
+                            const float maskerBark = (maskerCell.barkLow + maskerCell.barkHigh) * 0.5f;
+                            const float dz = targetBark - maskerBark;
+                            const float slope = dz >= 0.0f ? settings.upwardSpreadSlopeDbPerBark
+                                                           : settings.downwardSpreadSlopeDbPerBark;
+                            const float spreadLoss = std::abs(dz) * slope;
+                            const float candidatePressure = maskerDb - spreadLoss;
+                            if (candidatePressure > pressureDb)
+                            {
+                                pressureDb = candidatePressure;
+                                pressureSource = maskerSource;
+                                pressureBand = maskerBand;
+                            }
+                        }
+                    }
+
+                    if (pressureSource < 0)
+                        continue;
+
+                    const float marginDb = targetDb - pressureDb;
+                    const float risk = juce::jlimit(0.0f, 1.0f,
+                        (-marginDb) / juce::jmax(1.0f, settings.maskingRiskRangeDb));
+                    if (risk > bestRisk)
+                    {
+                        bestRisk = risk;
+                        bestTargetDb = targetDb;
+                        bestPressureDb = pressureDb;
+                        bestMarginDb = marginDb;
+                        bestTargetSource = targetSource;
+                        bestMaskerSource = pressureSource;
+                        bestMaskerBand = pressureBand;
+                    }
+                }
+
+                targetCell.crossBandRiskIndex = bestRisk;
+                if (bestTargetSource >= 0)
+                {
+                    targetCell.targetSource = "Stem " + juce::String(bestTargetSource + 1);
+                    targetCell.targetEnergyDb = bestTargetDb;
+                    targetCell.maskingThresholdProxyDb = bestPressureDb;
+                    targetCell.maskingMarginDb = bestMarginDb;
+                    targetCell.estimatedMaskedThresholdDb = bestPressureDb;
+                    targetCell.dominantMasker = "Stem " + juce::String(bestMaskerSource + 1);
+                    targetCell.dominantMaskerBandIndex = bestMaskerBand;
+                    if (bestRisk > targetCell.maskingRiskIndex)
+                    {
+                        targetCell.maskingRiskIndex = bestRisk;
+                        targetCell.dominantSource = targetCell.dominantMasker;
+                        targetCell.weakerSource = targetCell.targetSource;
+                    }
+                }
+            }
+        }
+    }
+
+    int risky = 0;
+    double overlapSum = 0.0;
+    double gainSum = 0.0;
+    double lossSum = 0.0;
+    float strongestRisk = 0.0f;
+    for (const auto& cell : result.cells)
+    {
+        if (cell.maskingRiskIndex > 0.15f)
+            ++risky;
+        overlapSum += cell.overlapDb;
+        gainSum += cell.mixGainDb;
+        lossSum += cell.mixLossDb;
+        if (cell.maskingRiskIndex > strongestRisk)
+        {
+            strongestRisk = cell.maskingRiskIndex;
+            result.summary.strongestRiskFrequencyHz = (cell.frequencyLowHz + cell.frequencyHighHz) * 0.5f;
+            result.summary.strongestRiskTimeSeconds = (cell.timeStartSeconds + cell.timeEndSeconds) * 0.5f;
+            result.summary.strongestRiskBandIndex = cell.bandIndex;
+        }
+    }
+
+    const double count = static_cast<double>(std::max<size_t>(1, result.cells.size()));
+    result.summary.valid = !result.cells.empty();
+    result.summary.riskAreaPercent = static_cast<float>(100.0 * static_cast<double>(risky) / count);
+    result.summary.meanOverlapDb = static_cast<float>(overlapSum / count);
+    result.summary.meanMixGainDb = static_cast<float>(gainSum / count);
+    result.summary.meanMixLossDb = static_cast<float>(lossSum / count);
+    result.summary.mixSourceMode = mixMode;
+    result.summary.bounceLengthPolicy = bounceLengthPolicy;
+    result.summary.sampleRatePolicy = "analysis_sample_rate_first_valid_stem_resample_linear_if_needed";
+    result.summary.analysisSampleRate = sampleRate;
+    result.summary.maskingModel = settings.maskingModel;
+    result.summary.bounceDurationSeconds = static_cast<float>(static_cast<double>(samples) / sampleRate);
+    if (sampleRateMismatch && result.summary.resampledSources)
+        result.summary.warning = "Layer Fit/Fusion: selected stems were linearly resampled to the analysis sample rate.";
+    if (result.summary.resampledBounce)
+        result.summary.warning = (result.summary.warning.isNotEmpty() ? result.summary.warning + " " : juce::String())
+                               + "External bounce was linearly resampled to the analysis sample rate.";
+    result.summary.sourceCount = sourceCount;
+    return result;
+}
+
+inline MaskingFusionAnalysis computeMaskingFusionAnalysis(const Asset* sourceA,
+                                                          const Asset* sourceB,
+                                                          const Asset* mixSource,
+                                                          MaskingFusionSettings settings = {})
+{
+    return computeLayerFitFusionAnalysis({ sourceA, sourceB, nullptr }, mixSource, settings);
 }
 
 inline std::vector<PlotPoint> computeAverageSpectrum(const juce::AudioBuffer<float>& buffer,
@@ -1220,6 +2061,8 @@ inline std::vector<PlotPoint> computeTransferGroupDelay(const juce::AudioBuffer<
     std::vector<juce::dsp::Complex<float>> dryOut(static_cast<size_t>(fftSize));
     std::vector<juce::dsp::Complex<float>> wetOut(static_cast<size_t>(fftSize));
     std::vector<std::complex<double>> cross(static_cast<size_t>(halfSize));
+    std::vector<double> dryMagSum(static_cast<size_t>(halfSize), 0.0);
+    std::vector<double> wetMagSum(static_cast<size_t>(halfSize), 0.0);
 
     const int hop = fftSize / 2;
     const int availableFrames = juce::jmax(1, (samples - fftSize) / hop + 1);
@@ -1249,8 +2092,15 @@ inline std::vector<PlotPoint> computeTransferGroupDelay(const juce::AudioBuffer<
             const auto y = std::complex<double>(wetOut[static_cast<size_t>(bin)].real(),
                                                 wetOut[static_cast<size_t>(bin)].imag());
             cross[static_cast<size_t>(bin)] += y * std::conj(x);
+            dryMagSum[static_cast<size_t>(bin)] += std::abs(x);
+            wetMagSum[static_cast<size_t>(bin)] += std::abs(y);
         }
     }
+
+    const double maxDryMag = *std::max_element(dryMagSum.begin(), dryMagSum.end());
+    const double maxWetMag = *std::max_element(wetMagSum.begin(), wetMagSum.end());
+    const double dryGate = maxDryMag * std::pow(10.0, -60.0 / 20.0);
+    const double wetGate = maxWetMag * std::pow(10.0, -60.0 / 20.0);
 
     std::vector<double> phases(static_cast<size_t>(halfSize), 0.0);
     double unwrapOffset = 0.0;
@@ -1286,7 +2136,9 @@ inline std::vector<PlotPoint> computeTransferGroupDelay(const juce::AudioBuffer<
             continue;
 
         const auto c = cross[static_cast<size_t>(bin)];
-        if (std::abs(c) < 1.0e-9)
+        if (std::abs(c) < 1.0e-9
+            || dryMagSum[static_cast<size_t>(bin)] < dryGate
+            || wetMagSum[static_cast<size_t>(bin)] < wetGate)
             continue;
 
         const double dPhase = phases[static_cast<size_t>(bin)] - phases[static_cast<size_t>(bin - 1)];
@@ -1534,6 +2386,7 @@ inline SpatialHeatmapAnalysis computeSpatialHeatmapAnalysis(const juce::AudioBuf
         const int pos = prepareFrame(col);
         const float timeStart = static_cast<float>(static_cast<double>(pos) / sampleRate);
         const float timeEnd = static_cast<float>(static_cast<double>(pos + hopSize) / sampleRate);
+        const float analysisEnd = static_cast<float>(static_cast<double>(pos + fftSize) / sampleRate);
 
         for (int bin = 1; bin < halfFFT; ++bin)
         {
@@ -1590,6 +2443,10 @@ inline SpatialHeatmapAnalysis computeSpatialHeatmapAnalysis(const juce::AudioBuf
                 SpatialHeatmapCell cell;
                 cell.timeStartSeconds = timeStart;
                 cell.timeEndSeconds = timeEnd;
+                cell.displayTimeStartSeconds = timeStart;
+                cell.displayTimeEndSeconds = timeEnd;
+                cell.analysisWindowStartSeconds = timeStart;
+                cell.analysisWindowEndSeconds = analysisEnd;
                 const float binWidth = static_cast<float>(sampleRate / static_cast<double>(fftSize));
                 cell.frequencyLowHz = juce::jmax(0.0f, freq - binWidth * 0.5f);
                 cell.frequencyHighHz = freq + binWidth * 0.5f;
@@ -2439,6 +3296,14 @@ inline juce::String hashSourceFnv1a64(const juce::String& sourcePath)
     return "fnv1a64:" + juce::String::toHexString(static_cast<juce::int64>(hash));
 }
 
+inline juce::String hashMemoryBlockFnv1a64(const juce::MemoryBlock& block)
+{
+    constexpr uint64_t offsetBasis = 1469598103934665603ULL;
+    const auto* data = static_cast<const uint8_t*>(block.getData());
+    const auto hash = fnv1a64Bytes(data, block.getSize(), offsetBasis);
+    return "fnv1a64:" + juce::String::toHexString(static_cast<juce::int64>(hash));
+}
+
 inline juce::int64 sourceBytesOnDisk(const juce::String& sourcePath)
 {
     const juce::File file(sourcePath);
@@ -2471,6 +3336,220 @@ inline void writeApparentAttenuationCsv(const juce::File& dataDir, const juce::S
     writeCurveCsv(dataDir, role, "apparent_attenuation_seconds_delta_db", "seconds,delta_dB",
                   computeApparentAttenuationCurve(reference->dynamicsRms, target->dynamicsRms),
                   dataFiles);
+}
+
+inline juce::String csvCell(juce::String text)
+{
+    if (text.containsAnyOf(",\"\n\r"))
+        return "\"" + text.replace("\"", "\"\"") + "\"";
+    return text;
+}
+
+inline void writeLayerFitFusionCsv(const juce::File& dataDir, const juce::String& role,
+                                   const std::array<const Asset*, 3>& sources,
+                                   const Asset* bounce,
+                                   const MaskingFusionSettings& settings,
+                                   juce::Array<juce::var>& dataFiles)
+{
+    auto analysis = computeLayerFitFusionAnalysis(sources, bounce, settings);
+    if (!analysis.summary.valid)
+        return;
+
+    const auto baseRole = role.endsWithIgnoreCase("_layer_fit_fusion") || role.equalsIgnoreCase("layer_fit_fusion")
+        ? role
+        : role + "_layer_fit_fusion";
+    const auto summaryFile = dataDir.getChildFile(baseRole + "_summary").withFileExtension(".csv");
+    juce::String summary = "algorithmName,algorithmVersion,psychoacousticMode,sourceCount,source1FileName,source2FileName,source3FileName,bounceSourceMode,bounceLengthPolicy,bounceDurationSeconds,sampleRatePolicy,analysisSampleRate,source1SampleRate,source2SampleRate,source3SampleRate,bounceSampleRate,resampledSources,resampledBounce,warning,figureType,bandScale,criticalBandMode,criticalBandScale,maskingModel,preferredBandCount,integrationTimeMs,dominanceThresholdDb,gateDbBelowPeak,upwardSpread,upwardSpreadWeight,upwardSlopeDbPerBark,downwardSlopeDbPerBark,estimatedMaskedThreshold,riskAreaPercent,strongestRiskFrequencyHz,strongestRiskTimeSeconds,strongestRiskBandIndex,meanOverlapDb,meanMixGainDb,meanMixLossDb\n";
+    summary += "critical_band_layer_fit_fusion,3,bark_24_proxy,"
+             + juce::String(analysis.summary.sourceCount) + ","
+             + csvCell(sources[0] != nullptr ? sources[0]->name : juce::String()) + ","
+             + csvCell(sources[1] != nullptr ? sources[1]->name : juce::String()) + ","
+             + csvCell(sources[2] != nullptr ? sources[2]->name : juce::String()) + ","
+             + analysis.summary.mixSourceMode + ","
+             + analysis.summary.bounceLengthPolicy + ","
+             + juce::String(analysis.summary.bounceDurationSeconds, 6) + ","
+             + analysis.summary.sampleRatePolicy + ","
+             + juce::String(analysis.summary.analysisSampleRate, 6) + ","
+             + juce::String(analysis.summary.sourceSampleRates[0], 6) + ","
+             + juce::String(analysis.summary.sourceSampleRates[1], 6) + ","
+             + juce::String(analysis.summary.sourceSampleRates[2], 6) + ","
+             + juce::String(analysis.summary.bounceSampleRate, 6) + ","
+             + juce::String(analysis.summary.resampledSources ? 1 : 0) + ","
+             + juce::String(analysis.summary.resampledBounce ? 1 : 0) + ","
+             + csvCell(analysis.summary.warning) + ","
+             + analysis.settings.figureType + ","
+             + analysis.settings.bandScale + ","
+             + analysis.settings.criticalBandMode + ","
+             + effectiveCriticalBandScale(analysis.settings.bandScale, analysis.settings.figureType) + ","
+             + analysis.settings.maskingModel + ","
+             + juce::String(preferredCriticalBandCountForSettings(analysis.settings)) + ","
+             + juce::String(analysis.settings.integrationTimeMs, 6) + ","
+             + juce::String(analysis.settings.dominanceThresholdDb, 6) + ","
+             + juce::String(analysis.settings.gateDbBelowPeak, 6) + ","
+             + juce::String(analysis.settings.upwardSpread ? 1 : 0) + ","
+             + juce::String(analysis.settings.upwardSpreadWeight, 6) + ","
+             + juce::String(analysis.settings.upwardSpreadSlopeDbPerBark, 6) + ","
+             + juce::String(analysis.settings.downwardSpreadSlopeDbPerBark, 6) + ","
+             + juce::String(analysis.settings.estimatedMaskedThreshold ? 1 : 0) + ","
+             + juce::String(analysis.summary.riskAreaPercent, 6) + ","
+             + juce::String(analysis.summary.strongestRiskFrequencyHz, 6) + ","
+             + juce::String(analysis.summary.strongestRiskTimeSeconds, 6) + ","
+             + juce::String(analysis.summary.strongestRiskBandIndex) + ","
+             + juce::String(analysis.summary.meanOverlapDb, 6) + ","
+             + juce::String(analysis.summary.meanMixGainDb, 6) + ","
+             + juce::String(analysis.summary.meanMixLossDb, 6) + "\n";
+    summaryFile.replaceWithText(summary);
+    dataFiles.add(summaryFile.getFullPathName());
+
+    const auto cellsFile = dataDir.getChildFile(baseRole + "_cells").withFileExtension(".csv");
+    juce::String cells = "timeStartSeconds,timeEndSeconds,frequencyLowHz,frequencyHighHz,barkLow,barkHigh,bandIndex,bandScale,sourceCount,energyDensityStem1Db,energyDensityStem2Db,energyDensityStem3Db,totalEnergyStem1Db,totalEnergyStem2Db,totalEnergyStem3Db,mixDensityDb,mixTotalDb,overlapDb,dominanceDb,maskingRiskIndex,crossBandRiskIndex,dominantSource,maskedCandidate,targetSource,targetEnergyDb,maskingThresholdProxyDb,maskingMarginDb,dominantMasker,dominantMaskerBandIndex,mixGainDb,mixLossDb,fusionTendency,estimatedMaskedThresholdDb\n";
+    for (const auto& cell : analysis.cells)
+    {
+        cells += juce::String(cell.timeStartSeconds, 6) + ","
+              + juce::String(cell.timeEndSeconds, 6) + ","
+              + juce::String(cell.frequencyLowHz, 6) + ","
+              + juce::String(cell.frequencyHighHz, 6) + ","
+              + juce::String(cell.barkLow, 6) + ","
+              + juce::String(cell.barkHigh, 6) + ","
+              + juce::String(cell.bandIndex) + ","
+              + cell.bandScale + ","
+              + juce::String(analysis.summary.sourceCount) + ","
+              + juce::String(cell.energyADb, 6) + ","
+              + juce::String(cell.energyBDb, 6) + ","
+              + juce::String(cell.energyCDb, 6) + ","
+              + juce::String(cell.totalEnergyADb, 6) + ","
+              + juce::String(cell.totalEnergyBDb, 6) + ","
+              + juce::String(cell.totalEnergyCDb, 6) + ","
+              + juce::String(cell.mixDb, 6) + ","
+              + juce::String(cell.mixTotalDb, 6) + ","
+              + juce::String(cell.overlapDb, 6) + ","
+              + juce::String(cell.dominanceDb, 6) + ","
+              + juce::String(cell.maskingRiskIndex, 6) + ","
+              + juce::String(cell.crossBandRiskIndex, 6) + ","
+              + csvCell(cell.dominantSource) + ","
+              + csvCell(cell.weakerSource) + ","
+              + csvCell(cell.targetSource) + ","
+              + juce::String(cell.targetEnergyDb, 6) + ","
+              + juce::String(cell.maskingThresholdProxyDb, 6) + ","
+              + juce::String(cell.maskingMarginDb, 6) + ","
+              + csvCell(cell.dominantMasker) + ","
+              + juce::String(cell.dominantMaskerBandIndex) + ","
+              + juce::String(cell.mixGainDb, 6) + ","
+              + juce::String(cell.mixLossDb, 6) + ","
+              + juce::String(cell.fusionTendency, 6) + ","
+              + juce::String(cell.estimatedMaskedThresholdDb, 6) + "\n";
+    }
+    cellsFile.replaceWithText(cells);
+    dataFiles.add(cellsFile.getFullPathName());
+
+    const auto figureType = analysis.settings.figureType.trim().toLowerCase();
+    if (figureType.contains("crystal"))
+    {
+        const auto crystalFile = dataDir.getChildFile(baseRole + "_critical_band_crystal").withFileExtension(".csv");
+        juce::String crystal = "timeSeconds,windowStartSeconds,windowEndSeconds,bandIndex,bandLowHz,bandHighHz,barkLow,barkHigh,stem1DensityDb,stem2DensityDb,stem3DensityDb,bounceDensityDb,stem1TotalDb,stem2TotalDb,stem3TotalDb,bounceTotalDb,dominantStem,maskedCandidate,targetSource,dominantMasker,dominantMaskerBandIndex,fusionTendency,maskingRisk,crossBandRisk,mixGainDb,mixLossDb\n";
+        for (const auto& cell : analysis.cells)
+        {
+            crystal += juce::String((cell.timeStartSeconds + cell.timeEndSeconds) * 0.5f, 6) + ","
+                    + juce::String(cell.timeStartSeconds, 6) + ","
+                    + juce::String(cell.timeEndSeconds, 6) + ","
+                    + juce::String(cell.bandIndex + 1) + ","
+                    + juce::String(cell.frequencyLowHz, 6) + ","
+                    + juce::String(cell.frequencyHighHz, 6) + ","
+                    + juce::String(cell.barkLow, 6) + ","
+                    + juce::String(cell.barkHigh, 6) + ","
+                    + juce::String(cell.energyADb, 6) + ","
+                    + juce::String(cell.energyBDb, 6) + ","
+                    + juce::String(cell.energyCDb, 6) + ","
+                    + juce::String(cell.mixDb, 6) + ","
+                    + juce::String(cell.totalEnergyADb, 6) + ","
+                    + juce::String(cell.totalEnergyBDb, 6) + ","
+                    + juce::String(cell.totalEnergyCDb, 6) + ","
+                    + juce::String(cell.mixTotalDb, 6) + ","
+                    + csvCell(cell.dominantSource) + ","
+                    + csvCell(cell.weakerSource) + ","
+                    + csvCell(cell.targetSource) + ","
+                    + csvCell(cell.dominantMasker) + ","
+                    + juce::String(cell.dominantMaskerBandIndex) + ","
+                    + juce::String(cell.fusionTendency, 6) + ","
+                    + juce::String(cell.maskingRiskIndex, 6) + ","
+                    + juce::String(cell.crossBandRiskIndex, 6) + ","
+                    + juce::String(cell.mixGainDb, 6) + ","
+                    + juce::String(cell.mixLossDb, 6) + "\n";
+        }
+        crystalFile.replaceWithText(crystal);
+        dataFiles.add(crystalFile.getFullPathName());
+
+        if (figureType.contains("dodecahedron"))
+        {
+            auto sumDb = [] (float a, float b)
+            {
+                if (a <= -119.0f)
+                    return b;
+                if (b <= -119.0f)
+                    return a;
+                const float hi = juce::jmax(a, b);
+                return hi + 10.0f * std::log10(std::pow(10.0f, (a - hi) / 10.0f)
+                                             + std::pow(10.0f, (b - hi) / 10.0f));
+            };
+
+            const auto dodecaFile = dataDir.getChildFile(baseRole + "_dodecahedron_crystal_faces").withFileExtension(".csv");
+            juce::String text = "timeSeconds,windowStartSeconds,windowEndSeconds,faceIndex,bandAIndex,bandALowHz,bandAHighHz,bandADb,bandBIndex,bandBLowHz,bandBHighHz,bandBDb,stem1FaceDb,stem2FaceDb,stem3FaceDb,bounceFaceDb,dominantStem,maskedCandidate,fusionTendency,maskingRisk,mixGainDb,mixLossDb\n";
+
+            for (const auto& first : analysis.cells)
+            {
+                if ((first.bandIndex % 2) != 0)
+                    continue;
+
+                const MaskingFusionCell* second = nullptr;
+                for (const auto& candidate : analysis.cells)
+                {
+                    if (candidate.bandIndex == first.bandIndex + 1
+                        && std::abs(candidate.timeStartSeconds - first.timeStartSeconds) < 0.0001f
+                        && std::abs(candidate.timeEndSeconds - first.timeEndSeconds) < 0.0001f)
+                    {
+                        second = &candidate;
+                        break;
+                    }
+                }
+
+                const auto& b = second != nullptr ? *second : first;
+                const auto& metricCell = b.maskingRiskIndex > first.maskingRiskIndex ? b : first;
+                text += juce::String((first.timeStartSeconds + first.timeEndSeconds) * 0.5f, 6) + ","
+                     + juce::String(first.timeStartSeconds, 6) + ","
+                     + juce::String(first.timeEndSeconds, 6) + ","
+                     + juce::String(first.bandIndex / 2 + 1) + ","
+                     + juce::String(first.bandIndex + 1) + ","
+                     + juce::String(first.frequencyLowHz, 6) + ","
+                     + juce::String(first.frequencyHighHz, 6) + ","
+                     + juce::String(first.energyADb, 6) + ","
+                     + juce::String(b.bandIndex + 1) + ","
+                     + juce::String(b.frequencyLowHz, 6) + ","
+                     + juce::String(b.frequencyHighHz, 6) + ","
+                     + juce::String(b.energyADb, 6) + ","
+                     + juce::String(sumDb(first.energyADb, b.energyADb), 6) + ","
+                     + juce::String(sumDb(first.energyBDb, b.energyBDb), 6) + ","
+                     + juce::String(sumDb(first.energyCDb, b.energyCDb), 6) + ","
+                     + juce::String(sumDb(first.mixDb, b.mixDb), 6) + ","
+                     + csvCell(metricCell.dominantSource) + ","
+                     + csvCell(metricCell.weakerSource) + ","
+                     + juce::String(juce::jmax(first.fusionTendency, b.fusionTendency), 6) + ","
+                     + juce::String(juce::jmax(first.maskingRiskIndex, b.maskingRiskIndex), 6) + ","
+                     + juce::String(std::abs(b.mixGainDb) > std::abs(first.mixGainDb) ? b.mixGainDb : first.mixGainDb, 6) + ","
+                     + juce::String(std::abs(b.mixLossDb) > std::abs(first.mixLossDb) ? b.mixLossDb : first.mixLossDb, 6) + "\n";
+            }
+
+            dodecaFile.replaceWithText(text);
+            dataFiles.add(dodecaFile.getFullPathName());
+        }
+    }
+}
+
+inline void writeMaskingFusionCsv(const juce::File& dataDir, const juce::String& role,
+                                  const Asset* sourceA, const Asset* sourceB, const Asset* mix,
+                                  const MaskingFusionSettings& settings,
+                                  juce::Array<juce::var>& dataFiles)
+{
+    writeLayerFitFusionCsv(dataDir, role, { sourceA, sourceB, nullptr }, mix, settings, dataFiles);
 }
 
 inline void writeSpectrumPeakCsv(const juce::File& dataDir, const juce::String& role,
@@ -2526,6 +3605,8 @@ inline juce::var writeSpatialHeatmapMetricsJson(const SpatialHeatmapMetrics& m)
     obj->setProperty("hopSize", m.hopSize);
     obj->setProperty("window", "hann");
     obj->setProperty("frequencyScale", "linear FFT bin");
+    obj->setProperty("displayTimeWindowDefinition", "cell timeStartSeconds/timeEndSeconds use hop-sized display bins");
+    obj->setProperty("analysisWindowDefinition", "cell analysisWindowStartSeconds/analysisWindowEndSeconds use the full FFT window that produced the display bin");
     obj->setProperty("minFrequencyHz", m.minFrequencyHz);
     obj->setProperty("maxFrequencyHz", m.maxFrequencyHz);
     obj->setProperty("floorDb", m.floorDb);
@@ -2627,11 +3708,15 @@ inline void writeSpatialHeatmapCsv(const juce::File& dataDir, const juce::String
         return;
 
     const auto cellsFile = dataDir.getChildFile(role + "_spatial_heatmap_cells").withFileExtension(".csv");
-    juce::String cells = "timeStartSeconds,timeEndSeconds,frequencyLowHz,frequencyHighHz,energyDb,widthIndex,sideToMidDb,lrBalanceDb,correlation\n";
+    juce::String cells = "timeStartSeconds,timeEndSeconds,displayTimeStartSeconds,displayTimeEndSeconds,analysisWindowStartSeconds,analysisWindowEndSeconds,frequencyLowHz,frequencyHighHz,energyDb,widthIndex,sideToMidDb,lrBalanceDb,correlation\n";
     for (const auto& cell : asset->spatialHeatmap.sampledCells)
     {
         cells += juce::String(cell.timeStartSeconds, 6) + ","
               + juce::String(cell.timeEndSeconds, 6) + ","
+              + juce::String(cell.displayTimeStartSeconds, 6) + ","
+              + juce::String(cell.displayTimeEndSeconds, 6) + ","
+              + juce::String(cell.analysisWindowStartSeconds, 6) + ","
+              + juce::String(cell.analysisWindowEndSeconds, 6) + ","
               + juce::String(cell.frequencyLowHz, 6) + ","
               + juce::String(cell.frequencyHighHz, 6) + ","
               + juce::String(cell.energyDb, 6) + ","

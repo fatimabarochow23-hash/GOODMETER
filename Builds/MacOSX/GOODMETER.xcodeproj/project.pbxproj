@@ -122,6 +122,7 @@
 		519AFDF014306BEB3643783D /* guoba_nose.png */ /* guoba_nose.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = guoba_nose.png; path = ../../guoba_nose.png; sourceTree = SOURCE_ROOT; };
 		5601F5084588B7882643E6D8 /* Accelerate.framework */ /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		5640E0E88787D04594E71B7A /* juce_analytics */ /* juce_analytics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_analytics; path = /Users/caiyiyang/Downloads/JUCE/modules/juce_analytics; sourceTree = "<absolute>"; };
+		57DE02E1436B6F3161D7D7E6 /* audio_doctor_plugin_confirm_bg.jpg */ /* audio_doctor_plugin_confirm_bg.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = audio_doctor_plugin_confirm_bg.jpg; path = ../../Assets/audio_doctor_plugin_confirm_bg.jpg; sourceTree = SOURCE_ROOT; };
 		5BCBDDEF18EACBAFBBF61366 /* include_juce_graphics.mm */ /* include_juce_graphics.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_graphics.mm; path = ../../JuceLibraryCode/include_juce_graphics.mm; sourceTree = SOURCE_ROOT; };
 		600EEE8C24588943A250EE38 /* include_juce_audio_plugin_client_AU_1.mm */ /* include_juce_audio_plugin_client_AU_1.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = include_juce_audio_plugin_client_AU_1.mm; path = ../../JuceLibraryCode/include_juce_audio_plugin_client_AU_1.mm; sourceTree = SOURCE_ROOT; };
 		60E65648A2E405CDD328EDD6 /* JuceHeader.h */ /* JuceHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = JuceHeader.h; path = ../../JuceLibraryCode/JuceHeader.h; sourceTree = SOURCE_ROOT; };
@@ -424,6 +425,7 @@
 				B248570375BB50FC26707FC8,
 				99221F7EE9DE2804B3A11091,
 				BC99D7F6E2556507D106422C,
+				57DE02E1436B6F3161D7D7E6,
 				7C7CF699A7F3BD44D95CC99C,
 				C6C747D28412EB825EEE61FF,
 				94A3AA4F79EFA5610B860549,

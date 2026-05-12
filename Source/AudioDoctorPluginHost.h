@@ -60,6 +60,11 @@ public:
         return hasPlugin ? &currentPlugin : nullptr;
     }
 
+    juce::PluginDescription getCurrentPluginDescriptionCopy() const
+    {
+        return hasPlugin ? currentPlugin : juce::PluginDescription();
+    }
+
     juce::String getCurrentPluginName() const
     {
         return hasPlugin ? (currentPlugin.name + " (" + currentPlugin.pluginFormatName + ")")
@@ -283,6 +288,31 @@ public:
         return true;
     }
 
+    bool applyState(const juce::MemoryBlock& state, juce::String& error)
+    {
+        if (state.getSize() == 0)
+        {
+            error = "Plugin state is empty.";
+            return false;
+        }
+
+        if (!ensureEditableInstance(error))
+            return false;
+
+        if (editableInstance == nullptr)
+        {
+            error = "No plugin instance available.";
+            return false;
+        }
+
+        savedState = state;
+        editableInstance->setStateInformation(savedState.getData(),
+                                              static_cast<int>(savedState.getSize()));
+        refreshChangedParameterSnapshot();
+        error.clear();
+        return true;
+    }
+
     void refreshChangedParameterSnapshot()
     {
         if (editableInstance == nullptr)
@@ -410,6 +440,82 @@ public:
         result.wet.sourcePath = dry.sourcePath;
         result.wet.sampleRate = dry.sampleRate;
         result.wet.buffer = std::move(output);
+        refreshAnalysis(result.wet);
+        return result;
+    }
+
+    static OfflineRenderResult renderOfflineWithDescription(const juce::PluginDescription& description,
+                                                            const Asset& dry,
+                                                            const juce::MemoryBlock* stateToApply = nullptr,
+                                                            int blockSize = 512,
+                                                            double fallbackTailSeconds = 1.0)
+    {
+        PluginHost offlineHost;
+        offlineHost.currentPlugin = description;
+        offlineHost.hasPlugin = true;
+        return offlineHost.renderOffline(dry, stateToApply, blockSize, fallbackTailSeconds);
+    }
+
+    static OfflineRenderResult renderOfflineWithMessageThreadPreparedDescription(const juce::PluginDescription& description,
+                                                                                 const Asset& dry,
+                                                                                 const juce::MemoryBlock* stateToApply = nullptr,
+                                                                                 int blockSize = 512,
+                                                                                 double fallbackTailSeconds = 1.0)
+    {
+        OfflineRenderResult result;
+
+        if (description.fileOrIdentifier.isEmpty())
+        {
+            result.error = "No plugin loaded.";
+            return result;
+        }
+
+        if (dry.buffer.getNumSamples() <= 0 || dry.sampleRate <= 0.0)
+        {
+            result.error = "No dry audio available.";
+            return result;
+        }
+
+        PluginHost offlineHost;
+        offlineHost.currentPlugin = description;
+        offlineHost.hasPlugin = true;
+
+        juce::String creationError;
+        auto prepared = juce::MessageManager::callSync([&]() mutable
+        {
+            return offlineHost.createPreparedInstance(description,
+                                                      dry.sampleRate,
+                                                      blockSize,
+                                                      creationError,
+                                                      stateToApply,
+                                                      true);
+        });
+
+        if (!prepared.has_value() || prepared->get() == nullptr)
+        {
+            result.error = creationError.isNotEmpty() ? creationError : "Plugin instance creation failed.";
+            return result;
+        }
+
+        auto instance = std::move(*prepared);
+        renderPreparedBlocks(*instance, description, dry, result, blockSize, fallbackTailSeconds);
+
+        const auto released = juce::MessageManager::callSync([&]() mutable
+        {
+            instance->releaseResources();
+            instance.reset();
+            return true;
+        });
+
+        if (!released.has_value())
+        {
+            instance->releaseResources();
+            instance.reset();
+        }
+
+        if (result.latencySamples > 0)
+            compensateLatency(result.wet.buffer, result.latencySamples);
+
         refreshAnalysis(result.wet);
         return result;
     }
@@ -587,6 +693,59 @@ private:
         result.wet.sampleRate = dry.sampleRate;
         result.wet.buffer = std::move(output);
         refreshAnalysis(result.wet);
+    }
+
+    static void renderPreparedBlocks(juce::AudioPluginInstance& instance,
+                                     const juce::PluginDescription& description,
+                                     const Asset& dry,
+                                     OfflineRenderResult& result,
+                                     int blockSize,
+                                     double fallbackTailSeconds)
+    {
+        const int hostChannels = 2;
+        auto input = toStereoBuffer(dry.buffer);
+
+        const double pluginTail = instance.getTailLengthSeconds();
+        const double tailSeconds = std::isfinite(pluginTail) && pluginTail > 0.0
+            ? juce::jlimit(0.0, 8.0, pluginTail)
+            : fallbackTailSeconds;
+
+        const int tailSamples = static_cast<int>(tailSeconds * dry.sampleRate);
+        const int totalSamples = input.getNumSamples() + tailSamples;
+
+        juce::AudioBuffer<float> output(hostChannels, totalSamples);
+        output.clear();
+
+        const int blockChannels = totalChannelsForRender(instance, hostChannels);
+        juce::AudioBuffer<float> block(blockChannels, blockSize);
+        juce::MidiBuffer midi;
+
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int numThisBlock = juce::jmin(blockSize, totalSamples - pos);
+            block.clear();
+            midi.clear();
+
+            if (pos < input.getNumSamples())
+            {
+                const int inputSamples = juce::jmin(numThisBlock, input.getNumSamples() - pos);
+                for (int ch = 0; ch < hostChannels; ++ch)
+                    block.copyFrom(ch, 0, input, ch, pos, inputSamples);
+            }
+
+            instance.processBlock(block, midi);
+
+            for (int ch = 0; ch < hostChannels; ++ch)
+                output.copyFrom(ch, pos, block, ch, 0, numThisBlock);
+        }
+
+        result.latencySamples = juce::jmax(0, instance.getLatencySamples());
+        result.tailSeconds = tailSeconds;
+        result.pluginDescription = description;
+        result.wet.name = dry.name + " -> " + description.name;
+        result.wet.sourcePath = dry.sourcePath;
+        result.wet.sampleRate = dry.sampleRate;
+        result.wet.buffer = std::move(output);
     }
 
     std::unique_ptr<juce::AudioPluginInstance> createPreparedInstance(const juce::PluginDescription& description,
