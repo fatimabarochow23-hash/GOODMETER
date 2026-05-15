@@ -574,13 +574,17 @@ public:
                                    juce::DocumentWindow::closeButton),
               onClose(std::move(closeCallback))
         {
+            setOpaque(false);
             setUsingNativeTitleBar(false);
-            setResizable(true, true);
+            setBackgroundColour(juce::Colours::transparentBlack);
+            setResizable(true, false);
             setAlwaysOnTop(false);
+            setDropShadowEnabled(true);
             setLookAndFeel(&lookAndFeel);
 
             auto* content = new AudioDoctorContent(exportDir);
             content->setSize(1080, 820);
+            content->setOpaque(false);
             content->setLookAndFeel(&lookAndFeel);
             setContentOwned(content, true);
 
@@ -599,8 +603,22 @@ public:
 
         void closeButtonPressed() override
         {
-            if (onClose != nullptr)
-                juce::MessageManager::callAsync(onClose);
+            setVisible(false);
+        }
+
+        int getDesktopWindowStyleFlags() const override
+        {
+            return juce::DocumentWindow::getDesktopWindowStyleFlags()
+                 | juce::ComponentPeer::windowIsSemiTransparent;
+        }
+
+        bool loadAudioDoctorProject(const juce::File& projectPath, juce::String& error)
+        {
+            if (auto* content = dynamic_cast<AudioDoctorContent*>(getContentComponent()))
+                return content->loadProjectPackageFromFile(projectPath, error);
+
+            error = "Audio Doctor content is not available.";
+            return false;
         }
 
     private:
@@ -638,6 +656,7 @@ public:
     {
         if (audioDoctorWindow != nullptr)
         {
+            audioDoctorWindow->setVisible(true);
             audioDoctorWindow->toFront(true);
             return;
         }
@@ -647,6 +666,21 @@ public:
             customLookAndFeel,
             *this,
             [this] { audioDoctorWindow.reset(); });
+    }
+
+    bool openAudioDoctorProject(const juce::File& projectPath, juce::String& error)
+    {
+        openAudioDoctorDialog();
+
+        if (audioDoctorWindow == nullptr)
+        {
+            error = "Audio Doctor window could not be opened.";
+            return false;
+        }
+
+        audioDoctorWindow->setVisible(true);
+        audioDoctorWindow->toFront(true);
+        return audioDoctorWindow->loadAudioDoctorProject(projectPath, error);
     }
 
 private:

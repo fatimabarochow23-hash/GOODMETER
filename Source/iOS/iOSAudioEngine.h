@@ -33,14 +33,6 @@ public:
         : processor(proc)
     {
         formatManager.registerBasicFormats();
-
-        // 0 inputs, 2 outputs (playback only, no microphone)
-        auto err = deviceManager.initialise(0, 2, nullptr, true);
-        juce::ignoreUnused(err);
-
-        // Use ourselves as audio callback — we read from transport,
-        // feed through processor, then output to speaker
-        deviceManager.addAudioCallback(this);
         transportSource.addChangeListener(this);
     }
 
@@ -54,7 +46,9 @@ public:
         }
 
         transportSource.removeChangeListener(this);
-        deviceManager.removeAudioCallback(this);
+
+        if (deviceInitialised)
+            deviceManager.removeAudioCallback(this);
     }
 
     //==========================================================================
@@ -143,6 +137,8 @@ public:
     //==========================================================================
     void play()
     {
+        ensureDeviceInitialised();
+
         const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
 
         if (fileLoaded)
@@ -256,6 +252,20 @@ public:
     juce::AudioTransportSource& getTransportSource() { return transportSource; }
 
 private:
+    void ensureDeviceInitialised()
+    {
+        if (deviceInitialised)
+            return;
+
+        // Delay RemoteIO startup until the app actually needs playback.
+        // Starting the device during app launch can deadlock on iOS simulator.
+        auto err = deviceManager.initialise(0, 2, nullptr, true);
+        juce::ignoreUnused(err);
+
+        deviceManager.addAudioCallback(this);
+        deviceInitialised = true;
+    }
+
     //==========================================================================
     // AudioIODeviceCallback: read from transport -> process -> output
     //==========================================================================
@@ -471,6 +481,7 @@ private:
     juce::AudioFormatManager formatManager;
     juce::AudioTransportSource transportSource;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+    bool deviceInitialised = false;
 
     juce::String currentFileName;
     juce::String currentFilePath;

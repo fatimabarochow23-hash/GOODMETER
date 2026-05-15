@@ -305,7 +305,13 @@ public:
     bool moreThanOneInstanceAllowed() override
     {
         const auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
-        return args.indexOf("--audio-doctor-job") >= 0 || args.indexOf("--doctor-job") >= 0;
+        for (const auto& arg : args)
+        {
+            if (arg == "--audio-doctor-job" || arg == "--doctor-job"
+                || arg.startsWith("--audio-doctor-job=") || arg.startsWith("--doctor-job="))
+                return true;
+        }
+        return false;
     }
 
     //==========================================================================
@@ -344,6 +350,8 @@ public:
             std::move(pluginHolder)
         );
 
+        openAudioDoctorProjectIfRequested(commandLine);
+
 #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu(this);
 #endif
@@ -361,21 +369,24 @@ public:
 
     void anotherInstanceStarted(const juce::String& commandLine) override
     {
-        runAudioDoctorJobIfRequested(commandLine, false);
+        if (runAudioDoctorJobIfRequested(commandLine, false))
+            return;
+
+        openAudioDoctorProjectIfRequested(commandLine);
     }
 
     bool runAudioDoctorJobIfRequested(const juce::String& commandLine, bool shouldQuitAfter)
     {
-        juce::StringArray args;
-        args.addTokens(commandLine, true);
+        auto args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+        if (args.isEmpty())
+            args.addTokens(commandLine, true);
         args.trim();
         args.removeEmptyStrings();
 
-        const int jobIndex = args.indexOf("--audio-doctor-job");
-        const int shortJobIndex = args.indexOf("--doctor-job");
-        const int index = jobIndex >= 0 ? jobIndex : shortJobIndex;
-        if (index < 0 || index + 1 >= args.size())
-            return false;
+        int index = args.indexOf("--audio-doctor-job");
+        if (index < 0)
+            index = args.indexOf("--doctor-job");
+        int pathContinuationStart = -1;
 
         auto stripPathQuotes = [](juce::String text)
         {
@@ -387,10 +398,40 @@ public:
             return text.trim();
         };
 
-        auto jobPath = stripPathQuotes(args[index + 1]);
+        juce::String jobPath;
+        if (index >= 0)
+        {
+            if (index + 1 >= args.size())
+                return false;
+            jobPath = stripPathQuotes(args[index + 1]);
+            pathContinuationStart = index + 2;
+        }
+        else
+        {
+            for (int i = 0; i < args.size(); ++i)
+            {
+                const auto& arg = args[i];
+                if (arg.startsWith("--audio-doctor-job="))
+                {
+                    jobPath = stripPathQuotes(arg.fromFirstOccurrenceOf("=", false, false));
+                    pathContinuationStart = i + 1;
+                    break;
+                }
+                if (arg.startsWith("--doctor-job="))
+                {
+                    jobPath = stripPathQuotes(arg.fromFirstOccurrenceOf("=", false, false));
+                    pathContinuationStart = i + 1;
+                    break;
+                }
+            }
+            if (jobPath.isEmpty())
+                return false;
+        }
+
         if (!juce::File(jobPath).existsAsFile())
         {
-            for (int i = index + 2; i < args.size(); ++i)
+            const int startIndex = juce::jmax(0, pathContinuationStart);
+            for (int i = startIndex; i < args.size(); ++i)
             {
                 if (args[i].startsWith("--"))
                     break;
@@ -717,6 +758,76 @@ private:
         if (mainWindow != nullptr)
             return dynamic_cast<StandaloneNonoEditor*>(mainWindow->getEditor());
         return nullptr;
+    }
+
+    static bool isAudioDoctorProjectPath(const juce::File& file)
+    {
+        if (file.existsAsFile() && file.getFileName().equalsIgnoreCase("project.json"))
+            return true;
+
+        const auto ext = file.getFileExtension().toLowerCase();
+        if (ext != ".clz" && ext != ".goodmeterdoctor")
+            return false;
+
+        return file.exists() || file.getChildFile("project.json").existsAsFile();
+    }
+
+    static juce::String stripPathQuotes(juce::String text)
+    {
+        text = text.trim();
+        if (text.startsWithChar('"') || text.startsWithChar('\''))
+            text = text.substring(1);
+        if (text.endsWithChar('"') || text.endsWithChar('\''))
+            text = text.dropLastCharacters(1);
+        return text.trim();
+    }
+
+    static juce::File findAudioDoctorProjectArgument(const juce::String& commandLine)
+    {
+        juce::StringArray args;
+        args.addTokens(commandLine, true);
+        if (args.isEmpty())
+            args = juce::JUCEApplicationBase::getCommandLineParameterArray();
+        args.trim();
+        args.removeEmptyStrings();
+
+        for (int start = 0; start < args.size(); ++start)
+        {
+            auto joined = stripPathQuotes(args[start]);
+            if (joined.startsWithChar('-'))
+                continue;
+
+            for (int end = start; end < args.size(); ++end)
+            {
+                if (end > start)
+                    joined << " " << stripPathQuotes(args[end]);
+
+                const juce::File candidate(joined);
+                if (isAudioDoctorProjectPath(candidate))
+                    return candidate;
+            }
+        }
+
+        return {};
+    }
+
+    void openAudioDoctorProjectIfRequested(const juce::String& commandLine)
+    {
+        const auto projectFile = findAudioDoctorProjectArgument(commandLine);
+        if (projectFile == juce::File{})
+            return;
+
+        if (mainWindow != nullptr)
+            mainWindow->toFront(true);
+
+        if (auto* ed = getStandaloneEditor())
+        {
+            juce::String error;
+            if (!ed->openAudioDoctorProject(projectFile, error))
+                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                       "Audio Doctor Project",
+                                                       error);
+        }
     }
 
     /** Get current skin from the editor */

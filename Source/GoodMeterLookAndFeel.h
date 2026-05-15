@@ -890,17 +890,18 @@ public:
         if (window.getName().equalsIgnoreCase("AUDIO DOCTOR"))
         {
             const bool light = static_cast<bool>(window.getProperties().getWithDefault("audioDoctorLightTheme", false));
-            const auto bar = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
+            const auto bar = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h + 28));
+            juce::Path barPath;
+            barPath.addRoundedRectangle(bar.getX(), bar.getY(), bar.getWidth(), bar.getHeight(),
+                                        24.0f, 24.0f, true, true, false, false);
+            g.fillAll(juce::Colours::transparentBlack);
             g.setColour(light ? juce::Colour(0xFFF2F4F7) : juce::Colour(0xFF05070B));
-            g.fillRect(bar);
+            g.fillPath(barPath);
 
-            const auto plate = bar.reduced(8.0f, 4.0f);
-            g.setColour(light ? juce::Colours::white.withAlpha(0.82f)
-                              : juce::Colour(0xFF0B1017).withAlpha(0.92f));
-            g.fillRoundedRectangle(plate, 14.0f);
-            g.setColour(light ? juce::Colour(0xFF1E2530).withAlpha(0.14f)
-                              : juce::Colours::white.withAlpha(0.12f));
-            g.drawRoundedRectangle(plate.reduced(0.5f), 14.0f, 0.95f);
+            g.setColour(light ? juce::Colour(0xFF1B2430).withAlpha(0.10f)
+                              : juce::Colour(0xFFE7EEF7).withAlpha(0.08f));
+            g.drawLine(18.0f, static_cast<float>(h) - 0.5f,
+                       static_cast<float>(w - 18), static_cast<float>(h) - 0.5f, 1.0f);
 
             g.setColour(light ? juce::Colour(0xFF171D27).withAlpha(0.92f)
                               : juce::Colour(0xFFF6F8FB).withAlpha(0.94f));
@@ -1088,14 +1089,73 @@ public:
         }
     }
 
+    void fillResizableWindowBackground(juce::Graphics& g, int w, int h,
+                                       const juce::BorderSize<int>& border,
+                                       juce::ResizableWindow& window) override
+    {
+        juce::ignoreUnused(w, h, border);
+
+        if (window.getName().equalsIgnoreCase("AUDIO DOCTOR"))
+        {
+            const bool light = static_cast<bool>(window.getProperties().getWithDefault("audioDoctorLightTheme", false));
+            const auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
+                                                       static_cast<float>(w) - 1.0f,
+                                                       static_cast<float>(h) - 1.0f);
+            g.fillAll(juce::Colours::transparentBlack);
+            g.setColour(light ? juce::Colour(0xFFF2F4F7)
+                              : juce::Colour(0xFF05070B));
+            g.fillRoundedRectangle(bounds, 24.0f);
+            return;
+        }
+
+        juce::LookAndFeel_V4::fillResizableWindowBackground(g, w, h, border, window);
+    }
+
     void drawResizableWindowBorder(juce::Graphics& g, int w, int h,
                                     const juce::BorderSize<int>& border,
-                                    juce::ResizableWindow& /*window*/) override
+                                    juce::ResizableWindow& window) override
     {
         juce::ignoreUnused(border);
+
+        if (window.getName().equalsIgnoreCase("AUDIO DOCTOR"))
+        {
+            const bool light = static_cast<bool>(window.getProperties().getWithDefault("audioDoctorLightTheme", false));
+            const auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
+                                                       static_cast<float>(w) - 1.0f,
+                                                       static_cast<float>(h) - 1.0f);
+            g.setColour(light ? juce::Colour(0xFF1B2430).withAlpha(0.14f)
+                              : juce::Colour(0xFFE7EEF7).withAlpha(0.12f));
+            g.drawRoundedRectangle(bounds, 24.0f, 1.15f);
+            return;
+        }
+
         // Thin subtle border instead of thick ink (blends with paper)
         g.setColour(ink.withAlpha(0.25f));
         g.drawRect(0, 0, w, h, 1);
+    }
+
+    void drawCornerResizer(juce::Graphics& g, int w, int h,
+                           bool isMouseOver, bool isMouseDragging) override
+    {
+        const float alpha = isMouseDragging ? 0.70f : (isMouseOver ? 0.56f : 0.38f);
+        g.setColour(juce::Colour(0xFF9AA5B4).withAlpha(alpha));
+
+        const auto centre = juce::Point<float>(static_cast<float>(w) - 2.0f,
+                                               static_cast<float>(h) - 2.0f);
+        const float radii[] { 28.0f, 19.0f, 10.0f };
+        for (int i = 0; i < 3; ++i)
+        {
+            const float r = radii[i];
+            const auto arc = juce::Rectangle<float>(centre.x - r, centre.y - r, r * 2.0f, r * 2.0f);
+            juce::Path p;
+            p.addArc(arc.getX(), arc.getY(), arc.getWidth(), arc.getHeight(),
+                     juce::MathConstants<float>::pi,
+                     juce::MathConstants<float>::pi * 1.5f,
+                     true);
+            g.strokePath(p, juce::PathStrokeType(1.9f - static_cast<float>(i) * 0.25f,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+        }
     }
 
     juce::Button* createDocumentWindowButton(int buttonType) override
@@ -1111,6 +1171,49 @@ public:
                 {
                     auto b = getLocalBounds().toFloat().reduced(1.0f);
                     static const juce::Colour inkC(0xFF2A2A35);
+                    bool audioDoctor = false;
+                    bool audioDoctorLight = false;
+                    for (auto* parent = getParentComponent(); parent != nullptr; parent = parent->getParentComponent())
+                    {
+                        if (parent->getName().equalsIgnoreCase("AUDIO DOCTOR"))
+                        {
+                            audioDoctor = true;
+                            audioDoctorLight = static_cast<bool>(parent->getProperties().getWithDefault("audioDoctorLightTheme", false));
+                            break;
+                        }
+                    }
+
+                    if (audioDoctor)
+                    {
+                        const float side = juce::jmin(b.getWidth(), b.getHeight());
+                        const auto circle = b.withSizeKeepingCentre(side - 1.0f, side - 1.0f).reduced(1.0f);
+                        const auto fg = audioDoctorLight ? juce::Colour(0xFF151B25)
+                                                         : juce::Colour(0xFFF3F7FB);
+                        const auto bg = audioDoctorLight ? juce::Colour(0xFFE2E6EC)
+                                                         : juce::Colour(0xFF151B21);
+
+                        if (isOver || isDown)
+                        {
+                            g.setColour((isDown ? juce::Colour(0xFFE6335F) : bg).withAlpha(isDown ? 0.92f : 0.82f));
+                            g.fillEllipse(circle);
+                        }
+
+                        const float stroke = juce::jlimit(1.65f, 2.35f, side * 0.12f);
+                        const auto inner = circle.reduced(juce::jmax(3.4f, side * 0.28f));
+                        juce::Path xPath;
+                        xPath.startNewSubPath(inner.getX(), inner.getY());
+                        xPath.lineTo(inner.getRight(), inner.getBottom());
+                        xPath.startNewSubPath(inner.getRight(), inner.getY());
+                        xPath.lineTo(inner.getX(), inner.getBottom());
+
+                        g.setColour((isDown ? juce::Colours::white : fg)
+                                        .withAlpha(isDown ? 0.98f : (isOver ? 0.92f : 0.72f)));
+                        g.strokePath(xPath, juce::PathStrokeType(stroke,
+                                                                 juce::PathStrokeType::curved,
+                                                                 juce::PathStrokeType::rounded));
+                        return;
+                    }
+
                     bool darkMode = GoodMeterLookAndFeel::holoTitleBar
                                  || GoodMeterLookAndFeel::spectroTitleBar;
                     auto fgCol = darkMode ? juce::Colour(0xFFD5D3DE) : inkC;
