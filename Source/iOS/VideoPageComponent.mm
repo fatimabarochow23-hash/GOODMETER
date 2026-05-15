@@ -246,13 +246,31 @@ public:
     void play()
     {
         if (player != nil)
+        {
+            ++volumeRampSerial;
+            player.muted = outputMuted ? YES : NO;
             [player play];
+        }
     }
 
     void pause()
     {
         if (player != nil)
         {
+            ++volumeRampSerial;
+            outputMuted = true;
+            player.muted = YES;
+            player.volume = 0.0f;
+            player.rate = 0.0f;
+            [player pause];
+        }
+    }
+
+    void pauseClockOnly()
+    {
+        if (player != nil)
+        {
+            ++volumeRampSerial;
             player.rate = 0.0f;
             [player pause];
         }
@@ -350,8 +368,83 @@ public:
 
     void setVolume(float volume)
     {
+        ++volumeRampSerial;
         if (player != nil)
             player.volume = volume;
+    }
+
+    void setMuted(bool shouldMute)
+    {
+        ++volumeRampSerial;
+        outputMuted = shouldMute;
+        if (player != nil)
+            player.muted = shouldMute ? YES : NO;
+    }
+
+    void rampVolumeTo(float targetVolume, int durationMs)
+    {
+        if (player == nil)
+            return;
+
+        const int serial = ++volumeRampSerial;
+        auto life = lifeToken;
+        const float startVolume = player.volume;
+        const float target = juce::jlimit(0.0f, 1.0f, targetVolume);
+        const int steps = juce::jlimit(3, 12, durationMs / 8);
+
+        for (int step = 1; step <= steps; ++step)
+        {
+            const int delayMs = juce::roundToInt((float) durationMs * (float) step / (float) steps);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t) delayMs * NSEC_PER_MSEC),
+                           dispatch_get_main_queue(), ^
+            {
+                if (!life->load(std::memory_order_relaxed)
+                    || serial != this->volumeRampSerial
+                    || this->player == nil)
+                {
+                    return;
+                }
+
+                const float t = (float) step / (float) steps;
+                this->player.volume = startVolume + (target - startVolume) * t;
+            });
+        }
+    }
+
+    void rampDownAndPause(int durationMs)
+    {
+        if (player == nil)
+            return;
+
+        rampVolumeTo(0.0f, durationMs);
+        const int serial = volumeRampSerial;
+        auto life = lifeToken;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t) durationMs * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^
+        {
+            if (!life->load(std::memory_order_relaxed)
+                || serial != this->volumeRampSerial
+                || this->player == nil)
+            {
+                return;
+            }
+
+            this->player.rate = 0.0f;
+            [this->player pause];
+        });
+    }
+
+    void muteAndPause()
+    {
+        if (player == nil)
+            return;
+
+        ++volumeRampSerial;
+        outputMuted = true;
+        player.muted = YES;
+        player.volume = 0.0f;
+        player.rate = 0.0f;
+        [player pause];
     }
 
     bool reloadPreservingState(double targetSeconds, bool shouldResume, juce::String& error)
@@ -470,7 +563,9 @@ private:
     bool chaseNeedsExact = false;
     bool resumeAfterSeek = false;
     double chasePositionSeconds = 0.0;
+    int volumeRampSerial = 0;
     std::shared_ptr<std::atomic<bool>> lifeToken = std::make_shared<std::atomic<bool>>(true);
+    bool outputMuted = false;
     bool isThemeDark = false;
 };
 
@@ -484,12 +579,17 @@ public:
     void clear() {}
     void play() {}
     void pause() {}
+    void pauseClockOnly() {}
     bool isPlaying() const { return false; }
     void setPosition(double, bool = true) {}
     void seekPreview(double) {}
     double getPosition() const { return 0.0; }
     double getDuration() const { return 0.0; }
     void setVolume(float) {}
+    void setMuted(bool) {}
+    void rampVolumeTo(float, int) {}
+    void rampDownAndPause(int) {}
+    void muteAndPause() {}
     juce::String getCurrentPath() const { return {}; }
 
 private:
@@ -630,8 +730,7 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
         if (!hasVideoLoaded)
             return;
 
-        nativePlayer->queueSmoothSeek(0.0, true);
-        queueProgressSeek(0.0);
+        rewindTransport();
     };
     skipBackBtn.onClick = [this]()
     {
@@ -647,7 +746,7 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
         if (!hasVideoLoaded)
             return;
 
-        const bool shouldPlay = !nativePlayer->isPlaying();
+        const bool shouldPlay = !userRequestedPlayingState;
         setPlayButtonVisualState(shouldPlay);
 
         juce::Component::SafePointer<VideoPageComponent> safeThis(this);
@@ -677,10 +776,7 @@ VideoPageComponent::VideoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEn
         if (!hasVideoLoaded)
             return;
 
-        auto duration = getDurationSeconds();
-        auto target = juce::jmax(0.0, duration - 0.05);
-        nativePlayer->queueSmoothSeek(target, true);
-        queueProgressSeek(target);
+        jumpToEndTransport();
     };
 
     volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -982,6 +1078,7 @@ bool VideoPageComponent::attachSyncedAudioIfAvailable()
     {
         syncedAudioLoaded = false;
         syncedAudioPath.clear();
+        nativePlayer->setMuted(false);
         nativePlayer->setVolume((float) volumeSlider.getValue());
         return false;
     }
@@ -989,6 +1086,7 @@ bool VideoPageComponent::attachSyncedAudioIfAvailable()
     syncedAudioLoaded = true;
     syncedAudioPath = extractedPath;
     audioEngine.setVolume((float) volumeSlider.getValue());
+    nativePlayer->setMuted(true);
     nativePlayer->setVolume(0.0f);
     return true;
 }
@@ -999,7 +1097,12 @@ void VideoPageComponent::syncAudioTransportToPosition(double positionSeconds, bo
         return;
 
     const bool shouldResume = preservePlayingState && nativePlayer->isPlaying();
-    audioEngine.pause();
+    if (!shouldResume)
+    {
+        audioEngine.pauseAndSeek(positionSeconds);
+        return;
+    }
+
     audioEngine.seek(positionSeconds);
     if (shouldResume)
         audioEngine.play();
@@ -1653,6 +1756,7 @@ bool VideoPageComponent::loadVideo(const juce::File& file)
     hasVideoLoaded = true;
     forcedPausePosition = 0.0;
     userRequestedPlayingState = false;
+    nativeEndFadeStarted = false;
     playbackIntentHoldFrames = 0;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
@@ -1663,9 +1767,16 @@ bool VideoPageComponent::loadVideo(const juce::File& file)
     nativePlayer->setPosition(0.0);
     attachSyncedAudioIfAvailable();
     if (!syncedAudioLoaded)
+    {
+        nativePlayer->setMuted(false);
         nativePlayer->setVolume((float) volumeSlider.getValue());
+    }
     else
+    {
+        nativePlayer->setMuted(true);
+        nativePlayer->setVolume(0.0f);
         syncAudioTransportToPosition(0.0, false);
+    }
     setPlayButtonVisualState(false);
     drawerOpen = false;
     resized();
@@ -1677,8 +1788,7 @@ void VideoPageComponent::clearVideo()
 {
     if (syncedAudioLoaded && audioEngine.getCurrentFilePath() == syncedAudioPath)
     {
-        audioEngine.pause();
-        audioEngine.seek(0.0);
+        audioEngine.stop();
     }
 
     nativePlayer->clear();
@@ -1689,6 +1799,7 @@ void VideoPageComponent::clearVideo()
     syncedAudioLoaded = false;
     forcedPausePosition = 0.0;
     userRequestedPlayingState = false;
+    nativeEndFadeStarted = false;
     playbackIntentHoldFrames = 0;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
@@ -1730,7 +1841,10 @@ bool VideoPageComponent::ownsSharedAudioTransport() const
 
 bool VideoPageComponent::isTransportPlaying() const
 {
-    return hasVideoLoaded && nativePlayer != nullptr && nativePlayer->isPlaying();
+    return hasVideoLoaded
+        && userRequestedPlayingState
+        && nativePlayer != nullptr
+        && nativePlayer->isPlaying();
 }
 
 double VideoPageComponent::getTransportPositionSeconds() const
@@ -1751,15 +1865,26 @@ void VideoPageComponent::playTransport()
     if (!hasVideoLoaded || nativePlayer == nullptr)
         return;
 
+    auto startPosition = nativePlayer->getPosition();
+    const auto duration = getDurationSeconds();
+    if (duration > 0.1 && startPosition >= duration - 0.06)
+    {
+        startPosition = 0.0;
+        nativePlayer->setPosition(0.0, true);
+    }
+
     forcedPausePosition = 0.0;
     userRequestedPlayingState = true;
+    nativeEndFadeStarted = false;
     playbackIntentHoldFrames = 8;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
-    lastObservedVideoPosition = nativePlayer->getPosition();
+    lastObservedVideoPosition = startPosition;
     setPlayButtonVisualState(true);
     attachSyncedAudioIfAvailable();
-    syncAudioTransportToPosition(nativePlayer->getPosition(), false);
+    syncAudioTransportToPosition(startPosition, false);
+    nativePlayer->setVolume(syncedAudioLoaded ? 0.0f : (float) volumeSlider.getValue());
+    nativePlayer->setMuted(syncedAudioLoaded);
     nativePlayer->play();
     if (syncedAudioLoaded)
         audioEngine.play();
@@ -1772,22 +1897,21 @@ void VideoPageComponent::pauseTransport()
 
     forcedPausePosition = nativePlayer->getPosition();
     userRequestedPlayingState = false;
+    nativeEndFadeStarted = false;
     playbackIntentHoldFrames = 0;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
     lastObservedVideoPosition = forcedPausePosition;
     setPlayButtonVisualState(false);
-    nativePlayer->pause();
-    if (std::abs(nativePlayer->getPosition() - forcedPausePosition) > 0.02)
-        nativePlayer->setPosition(forcedPausePosition, true);
+    if (syncedAudioLoaded)
+        nativePlayer->pauseClockOnly();
+    else
+        nativePlayer->rampDownAndPause(72);
 
     if (syncedAudioLoaded)
     {
-        audioEngine.pause();
-        audioEngine.seek(forcedPausePosition);
+        audioEngine.pauseAndSeek(forcedPausePosition);
     }
-
-    refreshVideoPlaybackSurface(false, "pause-refresh");
 }
 
 void VideoPageComponent::rewindTransport()
@@ -1796,13 +1920,28 @@ void VideoPageComponent::rewindTransport()
         return;
 
     userRequestedPlayingState = false;
+    nativeEndFadeStarted = false;
     playbackIntentHoldFrames = 0;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
     lastObservedVideoPosition = 0.0;
     setPlayButtonVisualState(false);
-    nativePlayer->pause();
-    nativePlayer->queueSmoothSeek(0.0, true);
+    const int nativeSeekDelayMs = syncedAudioLoaded ? 36 : 88;
+    if (syncedAudioLoaded)
+        nativePlayer->pauseClockOnly();
+    else
+        nativePlayer->rampDownAndPause(72);
+    auto safeThis = juce::Component::SafePointer<VideoPageComponent>(this);
+    juce::Timer::callAfterDelay(nativeSeekDelayMs, [safeThis]()
+    {
+        if (safeThis != nullptr && safeThis->nativePlayer != nullptr
+            && !safeThis->userRequestedPlayingState)
+        {
+            safeThis->nativePlayer->queueSmoothSeek(0.0, true);
+        }
+    });
+    if (syncedAudioLoaded)
+        audioEngine.stop();
     queueProgressSeek(0.0);
 }
 
@@ -1812,6 +1951,8 @@ void VideoPageComponent::seekTransport(double seconds)
         return;
 
     auto target = juce::jlimit(0.0, getDurationSeconds(), seconds);
+    if (target < getDurationSeconds() - 0.25)
+        nativeEndFadeStarted = false;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
     lastObservedVideoPosition = target;
@@ -1825,10 +1966,29 @@ void VideoPageComponent::jumpToEndTransport()
         return;
 
     auto target = juce::jmax(0.0, getDurationSeconds() - 0.05);
+    userRequestedPlayingState = false;
+    nativeEndFadeStarted = false;
+    playbackIntentHoldFrames = 0;
     stagnantVideoFrameCount = 0;
     stagnantVideoRecoveryAttempts = 0;
     lastObservedVideoPosition = target;
-    nativePlayer->queueSmoothSeek(target, true);
+    setPlayButtonVisualState(false);
+    const int nativeSeekDelayMs = syncedAudioLoaded ? 36 : 88;
+    if (syncedAudioLoaded)
+        nativePlayer->pauseClockOnly();
+    else
+        nativePlayer->rampDownAndPause(72);
+    auto safeThis = juce::Component::SafePointer<VideoPageComponent>(this);
+    juce::Timer::callAfterDelay(nativeSeekDelayMs, [safeThis, target]()
+    {
+        if (safeThis != nullptr && safeThis->nativePlayer != nullptr
+            && !safeThis->userRequestedPlayingState)
+        {
+            safeThis->nativePlayer->queueSmoothSeek(target, true);
+        }
+    });
+    if (syncedAudioLoaded)
+        audioEngine.stop();
     queueProgressSeek(target);
 }
 
@@ -2029,6 +2189,17 @@ void VideoPageComponent::timerCallback()
 
     auto nowPlaying = nativePlayer->isPlaying();
 
+    if (userRequestedPlayingState && nowPlaying && !syncedAudioLoaded
+        && !nativeEndFadeStarted && !progressScrubDragging && duration > 0.25)
+    {
+        const double remainingSeconds = duration - position;
+        if (remainingSeconds > 0.0 && remainingSeconds <= 0.24)
+        {
+            nativeEndFadeStarted = true;
+            nativePlayer->rampVolumeTo(0.0f, 180);
+        }
+    }
+
     if (userRequestedPlayingState && syncedAudioLoaded && audioEngine.isPlaying()
         && !progressScrubDragging && !nativePlayer->hasPendingSeek())
     {
@@ -2087,19 +2258,56 @@ void VideoPageComponent::timerCallback()
         if (syncedAudioLoaded && userRequestedPlayingState && !audioEngine.isPlaying())
             audioEngine.play();
     }
-    else if (syncedAudioLoaded)
+    else if (syncedAudioLoaded && userRequestedPlayingState)
     {
         if (nowPlaying && !audioEngine.isPlaying())
             audioEngine.play();
         else if (!nowPlaying && audioEngine.isPlaying())
             audioEngine.pause();
     }
+    else if (syncedAudioLoaded && !userRequestedPlayingState && audioEngine.isPlaying())
+    {
+        audioEngine.pauseAndSeek(juce::jlimit(0.0, duration, forcedPausePosition > 0.0 ? forcedPausePosition : position));
+    }
 
     const bool reachedEnd = duration > 0.01 && position >= duration - 0.05;
     if (userRequestedPlayingState && !nowPlaying && playbackIntentHoldFrames <= 0 && reachedEnd)
     {
         userRequestedPlayingState = false;
+        forcedPausePosition = 0.0;
+        playbackIntentHoldFrames = 0;
+        stagnantVideoFrameCount = 0;
+        stagnantVideoRecoveryAttempts = 0;
+        lastObservedVideoPosition = 0.0;
+        if (syncedAudioLoaded)
+        {
+            nativePlayer->pauseClockOnly();
+            audioEngine.stop();
+        }
+        else if (!nativeEndFadeStarted)
+        {
+            nativePlayer->rampDownAndPause(90);
+        }
+        else
+        {
+            nativePlayer->pause();
+        }
+
+        nativeEndFadeStarted = false;
+        auto safeThis = juce::Component::SafePointer<VideoPageComponent>(this);
+        juce::Timer::callAfterDelay(140, [safeThis]()
+        {
+            if (safeThis != nullptr && safeThis->nativePlayer != nullptr
+                && !safeThis->userRequestedPlayingState)
+            {
+                safeThis->nativePlayer->pauseClockOnly();
+                safeThis->nativePlayer->setPosition(0.0, true);
+            }
+        });
         setPlayButtonVisualState(false);
+        currentTimeLabel.setText("0:00", juce::dontSendNotification);
+        remainingTimeLabel.setText("-" + fmtTime(duration), juce::dontSendNotification);
+        progressSlider.setValue(0.0, juce::dontSendNotification);
     }
 }
 

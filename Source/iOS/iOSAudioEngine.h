@@ -21,6 +21,13 @@
 class iOSAudioEngine : private juce::ChangeListener,
                         private juce::AudioIODeviceCallback
 {
+    enum class FadeCompletionAction
+    {
+        none,
+        pause,
+        stopAtStart
+    };
+
 public:
     iOSAudioEngine(GOODMETERAudioProcessor& proc)
         : processor(proc)
@@ -84,6 +91,7 @@ public:
             transportSource.setPosition(0.0);
             transportSource.setSource(nullptr);
             readerSource.reset();
+            resetOutputEnvelope();
 
             readerSource = std::move(newReaderSource);
             transportSource.setSource(readerSource.get(), 0, nullptr,
@@ -127,6 +135,7 @@ public:
         transportSource.setPosition(0.0);
         transportSource.setSource(nullptr);
         readerSource.reset();
+        resetOutputEnvelope();
     }
 
     //==========================================================================
@@ -138,30 +147,75 @@ public:
 
         if (fileLoaded)
         {
+            ++transportCommandSerial;
+            transportStopPending.store(false, std::memory_order_release);
             const double totalLength = getTotalLength();
             if (totalLength > 0.1 && transportSource.getCurrentPosition() >= totalLength - 0.01)
                 transportSource.setPosition(0.0);
 
+            forceOutputMute.store(false, std::memory_order_release);
+            beginOutputFade(1.0f, FadeCompletionAction::none, -1.0);
             transportSource.start();
         }
     }
 
     void pause()
     {
+        pauseAndSeek(-1.0);
+    }
+
+    void pauseAndSeek(double positionSeconds)
+    {
         const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
-        transportSource.stop();
+
+        if (!fileLoaded)
+            return;
+
+        if (transportStopPending.load(std::memory_order_acquire))
+            return;
+
+        if (!transportSource.isPlaying())
+        {
+            transportSource.stop();
+            if (positionSeconds >= 0.0)
+                transportSource.setPosition(positionSeconds);
+            transportStopPending.store(false, std::memory_order_release);
+            silenceOutputEnvelope();
+            return;
+        }
+
+        const auto serial = ++transportCommandSerial;
+        beginDeferredTransportStop(serial, FadeCompletionAction::pause, positionSeconds);
     }
 
     void stop()
     {
         const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
-        transportSource.stop();
-        transportSource.setPosition(0.0);
+
+        if (transportStopPending.load(std::memory_order_acquire))
+            return;
+
+        if (!fileLoaded || !transportSource.isPlaying())
+        {
+            transportSource.stop();
+            transportSource.setPosition(0.0);
+            transportStopPending.store(false, std::memory_order_release);
+            silenceOutputEnvelope();
+            return;
+        }
+
+        const auto serial = ++transportCommandSerial;
+        beginDeferredTransportStop(serial, FadeCompletionAction::stopAtStart, 0.0);
     }
 
     void seek(double positionSeconds)
     {
         const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
+        ++transportCommandSerial;
+        transportStopPending.store(false, std::memory_order_release);
+        fadeCompletionAction = FadeCompletionAction::none;
+        fadeCompletionSeekPosition = -1.0;
+        outputEnvelopeSamplesRemaining = 0;
         transportSource.setPosition(positionSeconds);
     }
 
@@ -216,6 +270,12 @@ private:
         juce::AudioBuffer<float> buffer(outputData, numOutputChannels, numSamples);
         buffer.clear();
 
+        if (forceOutputMute.load(std::memory_order_acquire))
+        {
+            buffer.clear();
+            return;
+        }
+
         // Fill buffer from transport source (file playback)
         juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
         transportSource.getNextAudioBlock(info);
@@ -224,7 +284,8 @@ private:
         juce::MidiBuffer midi;
         processor.processBlock(buffer, midi);
 
-        buffer.applyGain(playbackGain.load(std::memory_order_relaxed));
+        maybeBeginEndFade();
+        applyOutputEnvelope(buffer, numSamples);
 
         // Output buffer already points to outputData, so we're done
     }
@@ -234,6 +295,8 @@ private:
         double sr = device->getCurrentSampleRate();
         int bs = device->getCurrentBufferSizeSamples();
 
+        currentDeviceSampleRate = sr > 0.0 ? sr : 48000.0;
+        currentDeviceBufferSizeSamples = bs > 0 ? bs : 512;
         transportSource.prepareToPlay(bs, sr);
 
         processor.setPlayConfigDetails(0, 2, sr, bs);
@@ -248,13 +311,159 @@ private:
 
     void changeListenerCallback(juce::ChangeBroadcaster*) override
     {
-        // Transport state changed (e.g. reached end of file)
-        if (!transportSource.isPlaying() && transportSource.getLengthInSeconds() > 0.1
-            && transportSource.getCurrentPosition() >= transportSource.getLengthInSeconds() - 0.01)
+        // End-of-file rewinds are handled by page-level transport code after a
+        // declick fade. Seeking here bypasses that gate and can click on iOS.
+    }
+
+    void resetOutputEnvelope()
+    {
+        outputEnvelopeGain = 1.0f;
+        outputEnvelopeTargetGain = 1.0f;
+        outputEnvelopeSamplesRemaining = 0;
+        fadeCompletionAction = FadeCompletionAction::none;
+        fadeCompletionSeekPosition = -1.0;
+        forceOutputMute.store(false, std::memory_order_release);
+    }
+
+    int getOutputFadeSamples() const
+    {
+        const auto sr = currentDeviceSampleRate > 0.0 ? currentDeviceSampleRate : 48000.0;
+        return juce::jlimit(512, 8192, (int) std::round(sr * 0.090));
+    }
+
+    void beginOutputFade(float targetGain, FadeCompletionAction completionAction, double seekAfterFade)
+    {
+        outputEnvelopeTargetGain = juce::jlimit(0.0f, 1.0f, targetGain);
+        outputEnvelopeSamplesRemaining = getOutputFadeSamples();
+        fadeCompletionAction = completionAction;
+        fadeCompletionSeekPosition = seekAfterFade;
+    }
+
+    void silenceOutputEnvelope()
+    {
+        outputEnvelopeGain = 0.0f;
+        outputEnvelopeTargetGain = 0.0f;
+        outputEnvelopeSamplesRemaining = 0;
+        fadeCompletionAction = FadeCompletionAction::none;
+        fadeCompletionSeekPosition = -1.0;
+        forceOutputMute.store(true, std::memory_order_release);
+    }
+
+    int getOutputFadeMilliseconds() const
+    {
+        const auto sr = currentDeviceSampleRate > 0.0 ? currentDeviceSampleRate : 48000.0;
+        const auto bufferMs = 1000.0 * (double) juce::jmax(1, currentDeviceBufferSizeSamples) / sr;
+        return juce::jlimit(20, 180,
+                            (int) std::ceil(1000.0 * (double) getOutputFadeSamples() / sr
+                                             + bufferMs + 8.0));
+    }
+
+    int getPostMuteDrainMilliseconds() const
+    {
+        const auto sr = currentDeviceSampleRate > 0.0 ? currentDeviceSampleRate : 48000.0;
+        const auto bufferMs = 1000.0 * (double) juce::jmax(1, currentDeviceBufferSizeSamples) / sr;
+        return juce::jlimit(32, 120, (int) std::ceil(bufferMs * 2.0 + 24.0));
+    }
+
+    void beginDeferredTransportStop(uint32_t serial, FadeCompletionAction action, double seekAfterFade)
+    {
+        transportStopPending.store(true, std::memory_order_release);
+        forceOutputMute.store(false, std::memory_order_release);
+        beginOutputFade(0.0f, FadeCompletionAction::none, -1.0);
+        scheduleDeferredTransportStop(serial, action, seekAfterFade);
+    }
+
+    void scheduleDeferredTransportStop(uint32_t serial, FadeCompletionAction action, double seekAfterFade)
+    {
+        juce::Timer::callAfterDelay(getOutputFadeMilliseconds(),
+            [this, serial, action, seekAfterFade]()
+            {
+                const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
+
+                if (transportCommandSerial.load(std::memory_order_relaxed) != serial)
+                    return;
+
+                silenceOutputEnvelope();
+
+                juce::Timer::callAfterDelay(getPostMuteDrainMilliseconds(),
+                    [this, serial, action, seekAfterFade]()
+                    {
+                        const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
+
+                        if (transportCommandSerial.load(std::memory_order_relaxed) != serial)
+                            return;
+
+                        transportSource.stop();
+
+                        if (action == FadeCompletionAction::stopAtStart)
+                            transportSource.setPosition(0.0);
+                        else if (seekAfterFade >= 0.0)
+                            transportSource.setPosition(seekAfterFade);
+
+                        transportStopPending.store(false, std::memory_order_release);
+                        silenceOutputEnvelope();
+                    });
+            });
+    }
+
+    void maybeBeginEndFade()
+    {
+        if (!fileLoaded || !transportSource.isPlaying()
+            || fadeCompletionAction != FadeCompletionAction::none
+            || outputEnvelopeTargetGain <= 0.0f)
         {
-            // Playback finished — reset to start
-            transportSource.setPosition(0.0);
+            return;
         }
+
+        const double totalLength = getTotalLength();
+        if (totalLength <= 0.1)
+            return;
+
+        const double remainingSeconds = totalLength - transportSource.getCurrentPosition();
+        if (remainingSeconds > 0.0 && remainingSeconds <= 0.18)
+            beginOutputFade(0.0f, FadeCompletionAction::none, -1.0);
+    }
+
+    void applyOutputEnvelope(juce::AudioBuffer<float>& buffer, int numSamples)
+    {
+        const float userGain = playbackGain.load(std::memory_order_relaxed);
+
+        if (outputEnvelopeSamplesRemaining <= 0)
+        {
+            outputEnvelopeGain = outputEnvelopeTargetGain;
+            buffer.applyGain(userGain * outputEnvelopeGain);
+            return;
+        }
+
+        int sample = 0;
+        while (sample < numSamples && outputEnvelopeSamplesRemaining > 0)
+        {
+            const float step = (outputEnvelopeTargetGain - outputEnvelopeGain)
+                / (float) outputEnvelopeSamplesRemaining;
+            outputEnvelopeGain += step;
+            --outputEnvelopeSamplesRemaining;
+
+            const float gain = userGain * outputEnvelopeGain;
+            for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+                buffer.setSample(channel, sample, buffer.getSample(channel, sample) * gain);
+
+            ++sample;
+        }
+
+        if (outputEnvelopeSamplesRemaining <= 0)
+        {
+            outputEnvelopeGain = outputEnvelopeTargetGain;
+
+            if (outputEnvelopeTargetGain <= 0.0f)
+            {
+                if (sample < numSamples)
+                    buffer.clear(sample, numSamples - sample);
+                return;
+            }
+        }
+
+        if (sample < numSamples)
+            buffer.applyGain(sample, numSamples - sample, userGain * outputEnvelopeGain);
     }
 
     GOODMETERAudioProcessor& processor;
@@ -270,4 +479,14 @@ private:
     double fileSampleRate = 0.0;
     int64_t fileLengthSamples = 0;
     std::atomic<float> playbackGain { 0.8f };
+    double currentDeviceSampleRate = 48000.0;
+    int currentDeviceBufferSizeSamples = 512;
+    float outputEnvelopeGain = 1.0f;
+    float outputEnvelopeTargetGain = 1.0f;
+    int outputEnvelopeSamplesRemaining = 0;
+    FadeCompletionAction fadeCompletionAction = FadeCompletionAction::none;
+    double fadeCompletionSeekPosition = -1.0;
+    std::atomic<uint32_t> transportCommandSerial { 1 };
+    std::atomic<bool> transportStopPending { false };
+    std::atomic<bool> forceOutputMute { false };
 };

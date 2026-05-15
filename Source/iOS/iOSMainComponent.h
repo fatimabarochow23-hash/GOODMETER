@@ -57,6 +57,8 @@ public:
 
             if (isVideoFile(file))
                 videoPage->loadVideo(file);
+            else if (videoPage->hasLoadedVideo())
+                videoPage->clearVideo();
         };
 
         // ── Wire Settings callbacks ──
@@ -116,7 +118,12 @@ public:
                     switchToPage(4);
             }
             else if (nonoPage->loadLibraryFile(file))
+            {
+                if (videoPage->hasLoadedVideo())
+                    videoPage->clearVideo();
+
                 switchToPage(0);
+            }
         };
 
         historyPage->onDeleteFileRequested = [this](const juce::File& file)

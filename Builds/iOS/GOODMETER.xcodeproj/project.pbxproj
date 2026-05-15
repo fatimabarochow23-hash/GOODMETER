@@ -46,6 +46,8 @@
 		D19200D610B5EAB93AA93D5B /* include_juce_audio_processors_ara.cpp */ = {isa = PBXBuildFile; fileRef = 8C8B384F0E6C5B5590195A53; };
 		D3499DB5040E24C532952911 /* include_juce_graphics.mm */ = {isa = PBXBuildFile; fileRef = DD1EB47F68E6124101F23800; };
 		DB02F79DC58DFB845AF5A443 /* include_juce_audio_processors.mm */ = {isa = PBXBuildFile; fileRef = 102F20BFDE9E6200987F0534; };
+		C0D3A1100507A00100000010 /* IOSPhotoVideoPicker.mm */ = {isa = PBXBuildFile; fileRef = C0D3A1100507A00100000013; };
+		C0D3A1100507A00100000011 /* PhotosUI.framework */ = {isa = PBXBuildFile; fileRef = C0D3A1100507A00100000014; settings = { ATTRIBUTES = (Weak, ); }; };
 		E2C56A97CED8B02C3F784F2D /* UniformTypeIdentifiers.framework */ = {isa = PBXBuildFile; fileRef = 3240D6E8CC24CFCEF8262D7D; settings = { ATTRIBUTES = (Weak, ); }; };
 		E37A5CCEBBAC32829D50E935 /* CoreImage.framework */ = {isa = PBXBuildFile; fileRef = B8E66F879F6FF923F5BA0ECC; };
 		F049F9F8775C65844B568361 /* Accelerate.framework */ = {isa = PBXBuildFile; fileRef = 6AD174F0117F0E01DA55D287; };
@@ -105,6 +107,9 @@
 		8A1C0D2E4F6A8B0C1D3E5F71 /* VideoPageComponent.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = VideoPageComponent.mm; path = ../../Source/iOS/VideoPageComponent.mm; sourceTree = SOURCE_ROOT; };
 		8A1C0D2E4F6A8B0C1D3E5F73 /* VideoAudioExtractor.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = VideoAudioExtractor.mm; path = ../../Source/VideoAudioExtractor.mm; sourceTree = SOURCE_ROOT; };
 		8A1C0D2E4F6A8B0C1D3E5F75 /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
+		C0D3A1100507A00100000012 /* IOSPhotoVideoPicker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = IOSPhotoVideoPicker.h; path = ../../Source/iOS/IOSPhotoVideoPicker.h; sourceTree = SOURCE_ROOT; };
+		C0D3A1100507A00100000013 /* IOSPhotoVideoPicker.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = IOSPhotoVideoPicker.mm; path = ../../Source/iOS/IOSPhotoVideoPicker.mm; sourceTree = SOURCE_ROOT; };
+		C0D3A1100507A00100000014 /* PhotosUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PhotosUI.framework; path = System/Library/Frameworks/PhotosUI.framework; sourceTree = SDKROOT; };
 		8C8B384F0E6C5B5590195A53 /* include_juce_audio_processors_ara.cpp */ /* include_juce_audio_processors_ara.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = include_juce_audio_processors_ara.cpp; path = ../../JuceLibraryCode/include_juce_audio_processors_ara.cpp; sourceTree = SOURCE_ROOT; };
 		8F1AAA162FA51441BBA6F0D5 /* juce_gui_basics */ /* juce_gui_basics */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_gui_basics; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_gui_basics; sourceTree = "<absolute>"; };
 		924D8F4216592F2723D36CA6 /* juce_audio_utils */ /* juce_audio_utils */ = {isa = PBXFileReference; lastKnownFileType = folder; name = juce_audio_utils; path = /Users/MediaStorm/Downloads/JUCE/modules/juce_audio_utils; sourceTree = "<absolute>"; };
@@ -165,6 +170,7 @@
 				B8654EF1BD7E644C8F672D67,
 				8F88F0434E5E24E13A603C77,
 				9E818E31095EC16576B768D1,
+				C0D3A1100507A00100000011,
 				E2C56A97CED8B02C3F784F2D,
 				3752CECEAED23CBF33B6C874,
 			);
@@ -216,6 +222,8 @@
 				DC5FEDF9DE4E2D50E779494A,
 				3D94D926AAB419C218A3D03C,
 				84F7984E71DA655E99B9E5BA,
+				C0D3A1100507A00100000012,
+				C0D3A1100507A00100000013,
 				8A1C0D2E4F6A8B0C1D3E5F71,
 				8A1C0D2E4F6A8B0C1D3E5F73,
 				D7028884B4338F3999BDB705,
@@ -287,6 +295,7 @@
 				BBADB5772254D9AC5F9FFB16,
 				AF90B403545695F8292C6A74,
 				C1FBC2A59F11C3DB45401879,
+				C0D3A1100507A00100000014,
 				3240D6E8CC24CFCEF8262D7D,
 				E07C79356DE9E1062624EE37,
 			);
@@ -411,6 +420,7 @@
 				87ED2D36F7AA48EADBCD804B,
 				8A1C0D2E4F6A8B0C1D3E5F70,
 				8A1C0D2E4F6A8B0C1D3E5F72,
+				C0D3A1100507A00100000010,
 				0AC7362C39BF4008DFD96D50,
 				6BDDC55C459AFF871D8C56B0,
 				4A694C6990EE7A52AF0CA44C,

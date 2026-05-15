@@ -362,8 +362,7 @@ public:
                 return;
             }
 
-            double total = audioEngine.getTotalLength();
-            audioEngine.seek(juce::jmax(0.0, total - 0.1));
+            audioEngine.stop();
         };
 
         // Volume slider

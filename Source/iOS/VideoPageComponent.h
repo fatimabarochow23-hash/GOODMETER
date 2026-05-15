@@ -340,6 +340,7 @@ private:
     bool lastLandscapeLayout = false;
     bool isDarkTheme = false;
     bool userRequestedPlayingState = false;
+    bool nativeEndFadeStarted = false;
     int playbackIntentHoldFrames = 0;
     double forcedPausePosition = 0.0;
     bool progressScrubDragging = false;

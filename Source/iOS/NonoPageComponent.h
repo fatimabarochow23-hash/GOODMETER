@@ -20,6 +20,7 @@
 #include "iOSAudioEngine.h"
 #include "MarkerModel.h"
 #include "DigitalTimecodeRenderer.h"
+#include "IOSPhotoVideoPicker.h"
 
 // Marathon art style: iOS uses dot matrix rendering for BACKGROUND only
 #define MARATHON_ART_STYLE 1
@@ -116,7 +117,7 @@ public:
         syncCharacterRendererVisibility();
 
         // Import button
-        importButton.setButtonText("IMPORT AUDIO");
+        importButton.setButtonText("IMPORT MEDIA");
         GoodMeterLookAndFeel::markAsIOSEnglishMono(importButton);
         importButton.onClick = [this]() { openImportDialog(); };
         importButton.setVisible(showImportButton);
@@ -714,6 +715,31 @@ private:
 
     void openImportDialog()
     {
+        juce::PopupMenu sourceMenu;
+        sourceMenu.addItem(1, "Files");
+
+        if (GoodMeterIOSPhotoVideoPicker::isAvailable())
+            sourceMenu.addItem(2, "Photos Video");
+
+        auto safeThis = juce::Component::SafePointer<NonoPageComponent>(this);
+        sourceMenu.showMenuAsync(
+            juce::PopupMenu::Options()
+                .withTargetComponent(&importButton)
+                .withStandardItemHeight(44),
+            [safeThis](int result)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                if (result == 1)
+                    safeThis->openFileImportDialog();
+                else if (result == 2)
+                    safeThis->openPhotoVideoImportDialog();
+            });
+    }
+
+    void openFileImportDialog()
+    {
         fileChooser = std::make_unique<juce::FileChooser>(
             "Select Media File", juce::File{},
             "*.wav;*.mp3;*.aiff;*.aif;*.flac;*.ogg;*.m4a;*.caf;*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.mpg;*.mpeg;*.webm");
@@ -725,6 +751,17 @@ private:
                 auto resultUrl = fc.getURLResult();
                 if (!resultUrl.isEmpty())
                     handleImportedUrl(resultUrl);
+            });
+    }
+
+    void openPhotoVideoImportDialog()
+    {
+        auto safeThis = juce::Component::SafePointer<NonoPageComponent>(this);
+        GoodMeterIOSPhotoVideoPicker::open(this,
+            [safeThis](const juce::URL& resultUrl)
+            {
+                if (safeThis != nullptr && !resultUrl.isEmpty())
+                    safeThis->handleImportedUrl(resultUrl);
             });
     }
 
