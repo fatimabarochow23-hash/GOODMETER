@@ -313,6 +313,44 @@ public:
         return true;
     }
 
+    bool prepareRealtimePreview(double sampleRate, int blockSize, juce::String& error)
+    {
+        if (!ensureEditableInstance(error))
+            return false;
+
+        if (editableInstance == nullptr)
+        {
+            error = "No plugin instance available.";
+            return false;
+        }
+
+        configurePluginBuses(*editableInstance, 2);
+        editableInstance->setNonRealtime(false);
+        editableInstance->setRateAndBufferSizeDetails(sampleRate, blockSize);
+        editableInstance->prepareToPlay(sampleRate, blockSize);
+        error.clear();
+        return true;
+    }
+
+    void releaseRealtimePreview()
+    {
+        if (editableInstance != nullptr)
+            editableInstance->releaseResources();
+    }
+
+    juce::AudioPluginInstance* getRealtimePreviewInstance() const
+    {
+        return editableInstance.get();
+    }
+
+    int totalChannelsForRealtimePreview(int hostChannels) const
+    {
+        if (editableInstance == nullptr)
+            return hostChannels;
+
+        return totalChannelsForRender(*editableInstance, hostChannels);
+    }
+
     void refreshChangedParameterSnapshot()
     {
         if (editableInstance == nullptr)

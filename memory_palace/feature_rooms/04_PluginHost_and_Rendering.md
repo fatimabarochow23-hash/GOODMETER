@@ -6,9 +6,9 @@ Audio Doctor 的插件宿主负责加载 AU/VST3、打开插件编辑器、捕�
 
 关键源码：
 
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorPluginHost.h`
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorComponent.h`
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorJobRunner.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorPluginHost.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorComponent.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorJobRunner.h`
 
 ## 复现原则
 

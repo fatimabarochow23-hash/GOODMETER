@@ -7,7 +7,7 @@
 论文侧记忆宫殿：
 
 ```text
-/Users/caiyiyang/Desktop/论文工作文件夹/记忆宫殿
+/Volumes/solari/Codex_Work/论文工作文件夹/记忆宫殿
 ```
 
 ## 新 AI 读取顺序
@@ -15,8 +15,9 @@
 1. `README.md`
 2. `00_index.md`
 3. `timeline/2026-05-01_to_2026-05-08_key_timeline.md`
-4. 当前任务相关主题房间
-5. `asset_index/` 下的需求单、源码、插件、测试输出索引
+4. `timeline/2026-05-09_to_2026-05-16_key_timeline.md`
+5. 当前任务相关主题房间
+6. `asset_index/` 下的需求单、源码、插件、测试输出索引
 
 ## 当前事实与历史方案
 
@@ -25,6 +26,17 @@
 - **风险边界**：算法口径、插件兼容、尚未验证的行为，必须明确写出。
 
 如果一个条目没有构建或 JobRunner 验证，只能写“待验证”，不能写“已完成”。
+
+## 当前恢复口诀
+
+```text
+先确认工作区：/Volumes/solari/Codex_Work/GOODMETER
+先确认分支：codex/thesis-audio-doctor-20260505
+先确认远端：git ls-remote origin codex/thesis-audio-doctor-20260505 main
+不要提交：Signing/、dist/、releases/、tmp/、._*、DMG、zip、p8、Word 临时文件
+主线大电脑：不要只拉 main，要合入论文分支最新 Audio Doctor 内容
+Windows Codex：重点验收 .clz 跨平台、VST3、JobRunner、路径空格/中文
+```
 
 ## 每次施工后如何追加
 
@@ -109,4 +121,3 @@ GOODMETER 侧记录：
 ```text
 图例来源：GOODMETER Audio Doctor，技术实现详见 GOODMETER 记忆宫殿对应条目。
 ```
-

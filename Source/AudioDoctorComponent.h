@@ -10,6 +10,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <cmath>
+#include <optional>
 #include "GoodMeterLookAndFeel.h"
 #include "AudioDoctorPluginHost.h"
 #include "AudioDoctorFigureRenderer.h"
@@ -35,10 +36,26 @@ public:
         wetC
     };
 
-    explicit AudioDoctorContent(const juce::File& exportDir = {})
-        : exportDirectory(exportDir.exists() ? exportDir : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory))
+    enum class PreviewMode
+    {
+        none,
+        loop,
+        timeline,
+        plugin
+    };
+
+    explicit AudioDoctorContent(const juce::File& exportDir = {},
+                                juce::AudioDeviceManager* sharedDevMgr = nullptr)
+        : exportDirectory(exportDir.exists() ? exportDir : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)),
+          deviceMgr(sharedDevMgr)
     {
         setOpaque(false);
+        seniorCornerLeftImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+            BinaryData::audio_doctor_cursor_senior_left_png,
+            BinaryData::audio_doctor_cursor_senior_left_pngSize));
+        seniorCornerRightImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+            BinaryData::audio_doctor_cursor_senior_right_png,
+            BinaryData::audio_doctor_cursor_senior_right_pngSize));
 
         importDryBtn.onClick = [this] { showLoadDryMenu(); };
         generateBtn.onClick = [this] { showGenerateMenu(); };
@@ -67,6 +84,16 @@ public:
             button->setColour(juce::TextButton::textColourOnId, juce::Colour(0xFF080A0F));
         }
 
+        outputButton.onPrimaryClick = [this] { showOutputMenu(); };
+        outputButton.onSecondaryClick = [this] { disablePreviewOutput(); };
+        addAndMakeVisible(outputButton);
+
+        previewDimButton.onChange = [this] (bool shouldDim) { setPreviewDimEnabled(shouldDim); };
+        addAndMakeVisible(previewDimButton);
+
+        figureLoopPreviewBtn.onTrigger = [this] { return toggleFigureLoopPreview(); };
+        addAndMakeVisible(figureLoopPreviewBtn);
+
         for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
                               &pluginBBtn, &editPluginBBtn, &renderBBtn,
                               &pluginCBtn, &editPluginCBtn, &renderCBtn })
@@ -75,6 +102,9 @@ public:
         auto setupPluginInsert = [this] (PluginInsertSlotComponent& insert, PluginSlot slot)
         {
             insert.onMain = [this, slot] { handlePluginInsertMainClick(slot); };
+            insert.onChainRender = [this, slot] { renderWetWithPluginChain(slot); };
+            insert.onInsertMain = [this, slot] (int insertIndex) { handlePluginInsertMainClick(slot, insertIndex); };
+            insert.onInsertBypass = [this, slot] (int insertIndex) { togglePluginInsertBypass(slot, insertIndex); };
             addAndMakeVisible(insert);
         };
         setupPluginInsert(pluginInsertA, PluginSlot::A);
@@ -90,7 +120,7 @@ public:
         viewMode.addItem("Spatial Image", 7);
         viewMode.addItem("Layer Fit / Fusion", 8);
         viewMode.setSelectedId(1, juce::dontSendNotification);
-        viewMode.onChange = [this] { updateTerrainCameraControls(); resized(); repaint(); };
+        viewMode.onChange = [this] { stopAudioPreview(false); updateTerrainCameraControls(); resized(); repaint(); };
         GoodMeterLookAndFeel::markAsIOSEnglishMono(viewMode);
         viewMode.setLookAndFeel(&audioDoctorPopupLookAndFeel);
         addAndMakeVisible(viewMode);
@@ -220,7 +250,8 @@ public:
         }
 
         spatialTimeLabel.setJustificationType(juce::Justification::centredLeft);
-        spatialTimeLabel.setText("Time 0.00 s", juce::dontSendNotification);
+        spatialTimeLabel.setMinimumHorizontalScale(0.82f);
+        spatialTimeLabel.setText("Time 0.00s", juce::dontSendNotification);
         GoodMeterLookAndFeel::markAsIOSEnglishMono(spatialTimeLabel);
         addAndMakeVisible(spatialTimeLabel);
 
@@ -228,9 +259,35 @@ public:
         spatialTimeSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         spatialTimeSlider.setRange(0.0, 1.0, 0.001);
         spatialTimeSlider.setValue(0.0, juce::dontSendNotification);
+        spatialTimeSlider.setLookAndFeel(&spatialTimeSliderLookAndFeel);
+        spatialTimeSlider.onDragStart = [this]
+        {
+            spatialTimeSliderDragging = true;
+            lastSpatialTimeDragValue = spatialTimeSlider.getValue();
+        };
+        spatialTimeSlider.onDragEnd = [this]
+        {
+            spatialTimeSliderDragging = false;
+            spatialTimeSliderLookAndFeel.setScrubDirection(false, false);
+            spatialTimeSlider.repaint();
+        };
         spatialTimeSlider.onValueChange = [this]
         {
-            spatialTimePositionSeconds = static_cast<float>(spatialTimeSlider.getValue());
+            const auto newValue = spatialTimeSlider.getValue();
+            if (spatialTimeSliderDragging)
+            {
+                const auto delta = newValue - lastSpatialTimeDragValue;
+                if (std::abs(delta) > 0.0005)
+                {
+                    spatialTimeSliderLookAndFeel.setScrubDirection(true, delta < 0.0);
+                    spatialTimeSlider.repaint();
+                }
+                lastSpatialTimeDragValue = newValue;
+            }
+
+            spatialTimePositionSeconds = static_cast<float>(newValue);
+            if (previewMode == PreviewMode::timeline)
+                previewSource.setPositionSeconds(spatialTimePositionSeconds);
             updateTerrainCameraControls();
             repaint();
         };
@@ -248,6 +305,14 @@ public:
         if (!lastPluginDirectory.exists())
             lastPluginDirectory = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
 
+        if (deviceMgr == nullptr)
+        {
+            ownPreviewDeviceManager = std::make_unique<juce::AudioDeviceManager>();
+            ownPreviewDeviceManager->initialiseWithDefaultDevices(0, 2);
+            deviceMgr = ownPreviewDeviceManager.get();
+        }
+        audioSourcePlayer.setSource(&previewSource);
+
         refreshThemeColours();
         updateTerrainCameraControls();
         setSize(1080, 820);
@@ -255,7 +320,10 @@ public:
 
     ~AudioDoctorContent() override
     {
+        stopAudioPreview(true);
+        audioSourcePlayer.setSource(nullptr);
         stopSpatialTimelinePlayback();
+        spatialTimeSlider.setLookAndFeel(nullptr);
         terrainCameraMode.setLookAndFeel(nullptr);
         fitFigureType.setLookAndFeel(nullptr);
         fitBounceSource.setLookAndFeel(nullptr);
@@ -311,11 +379,24 @@ public:
         generateBtn.setBounds(row1.removeFromLeft(88).reduced(2));
         row1.removeFromLeft(8);
         const auto insertWidth = juce::jlimit(124, 164, (row1.getWidth() - 12) / 3);
-        pluginInsertA.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+        auto placeInsert = [this, insertWidth] (PluginInsertSlotComponent& insert, PluginSlot slot, juce::Rectangle<int> area)
+        {
+            auto bounds = area.reduced(2);
+            bounds.setHeight(PluginInsertSlotComponent::preferredHeightForRows(visiblePluginInsertRows(slot)));
+            insert.setBounds(bounds);
+            if (pluginChainExpanded[static_cast<size_t>(pluginIndex(slot))])
+                insert.toFront(false);
+        };
+
+        placeInsert(pluginInsertA, PluginSlot::A, row1.removeFromLeft(insertWidth));
         row1.removeFromLeft(6);
-        pluginInsertB.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+        placeInsert(pluginInsertB, PluginSlot::B, row1.removeFromLeft(insertWidth));
         row1.removeFromLeft(6);
-        pluginInsertC.setBounds(row1.removeFromLeft(insertWidth).reduced(2));
+        placeInsert(pluginInsertC, PluginSlot::C, row1.removeFromLeft(insertWidth));
+        row1.removeFromLeft(8);
+        outputButton.setBounds(row1.removeFromLeft(104).reduced(2));
+        row1.removeFromLeft(4);
+        previewDimButton.setBounds(row1.removeFromLeft(36).reduced(2));
 
         for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
                               &pluginBBtn, &editPluginBBtn, &renderBBtn,
@@ -334,6 +415,11 @@ public:
         fitAngleLabel.setBounds(row2.removeFromLeft(62).reduced(1));
         terrainCameraMode.setBounds(row2.removeFromLeft(168).reduced(2));
         layoutTerrainCameraControls();
+        if (shouldShowLoopPreviewButton())
+        {
+            figureLoopPreviewBtn.setBounds(getToolbarPreviewButtonBounds().getSmallestIntegerContainer());
+            figureLoopPreviewBtn.toFront(false);
+        }
 
         bounds.removeFromTop(toolbarStatusGap);
         auto statusRow = bounds.removeFromTop(statusHeight);
@@ -483,8 +569,13 @@ private:
 
     void timerCallback() override
     {
+        serviceAudioPreview();
+
         if (!spatialTimelinePlaying)
+        {
+            stopTimerIfIdle();
             return;
+        }
 
         const bool timeVisible = isSpatialImpressionView() || isLayerFitTimeIndexedMode();
         if (!timeVisible)
@@ -514,6 +605,7 @@ private:
         }
 
         spatialTimeSlider.setValue(spatialTimePositionSeconds, juce::dontSendNotification);
+        spatialTimeSlider.repaint();
         updateTerrainCameraControls();
         repaint();
 
@@ -539,11 +631,15 @@ private:
 
         spatialTimelineReverse = reverse;
         spatialTimelinePlaying = true;
+        spatialTimeSliderLookAndFeel.setPlaybackState(spatialTimelinePlaying, spatialTimelineReverse);
         spatialTimelineLastTickMs = juce::Time::getMillisecondCounterHiRes();
         grabKeyboardFocus();
         spatialTimePlayBtn.setPlaying(true, reverse);
         spatialTimeSlider.setValue(spatialTimePositionSeconds, juce::dontSendNotification);
+        spatialTimeSlider.repaint();
         updateTerrainCameraControls();
+        if (previewOutputEnabled)
+            startTimelineAudioPreview(reverse);
         startTimerHz(30);
         repaint();
     }
@@ -553,13 +649,19 @@ private:
         if (!spatialTimelinePlaying)
         {
             spatialTimePlayBtn.setPlaying(false, spatialTimelineReverse);
-            stopTimer();
+            spatialTimeSliderLookAndFeel.setPlaybackState(false, spatialTimelineReverse);
+            spatialTimeSlider.repaint();
+            stopTimerIfIdle();
             return;
         }
 
         spatialTimelinePlaying = false;
         spatialTimePlayBtn.setPlaying(false, spatialTimelineReverse);
-        stopTimer();
+        spatialTimeSliderLookAndFeel.setPlaybackState(false, spatialTimelineReverse);
+        spatialTimeSlider.repaint();
+        if (previewMode == PreviewMode::timeline)
+            stopAudioPreview(false);
+        stopTimerIfIdle();
     }
 
     static const char* terrainCameraLabel(int index)
@@ -764,7 +866,10 @@ private:
 
     bool hasFigureBottomControls() const
     {
-        return isTerrainProjectionCompatibleView() || isSpatialImpressionView() || isLayerFitFusionView();
+        return shouldShowLoopPreviewButton()
+            || isTerrainProjectionCompatibleView()
+            || isSpatialImpressionView()
+            || isLayerFitFusionView();
     }
 
     bool isTerrainProjectionToggleView() const
@@ -777,6 +882,12 @@ private:
     {
         const int id = viewMode.getSelectedId();
         return (id == 4 || id == 5) && terrainProjectionEnabled;
+    }
+
+    bool shouldShowLoopPreviewButton() const
+    {
+        return hasAnySourceAsset()
+            && !(isSpatialImpressionView() || isLayerFitTimeIndexedMode());
     }
 
     float getSpatialImpressionDurationSeconds() const
@@ -806,6 +917,7 @@ private:
         const bool toggleVisible = isTerrainProjectionToggleView();
         const bool layerFitVisible = isLayerFitFusionView();
         const bool spatialTimeVisible = isSpatialImpressionView() || isLayerFitTimeIndexedMode();
+        const bool loopPreviewVisible = shouldShowLoopPreviewButton();
         const bool cameraVisible = active || spatialTimeVisible || layerFitVisible;
         const bool light = isLightThemeSelected();
         const auto selectedFill = light ? juce::Colour(0xFFE7ECF2) : juce::Colour(0xFFF3F7FB).withAlpha(0.18f);
@@ -833,7 +945,7 @@ private:
         if (std::abs(spatialTimeSlider.getValue() - clampedSeconds) > 0.0005)
             spatialTimeSlider.setValue(clampedSeconds, juce::dontSendNotification);
         spatialTimePositionSeconds = static_cast<float>(clampedSeconds);
-        spatialTimeLabel.setText("Time " + juce::String(clampedSeconds, 2) + " s", juce::dontSendNotification);
+        spatialTimeLabel.setText("Time " + juce::String(clampedSeconds, 2) + "s", juce::dontSendNotification);
         spatialTimeLabel.setVisible(spatialTimeVisible);
         spatialTimeSlider.setVisible(spatialTimeVisible);
         spatialTimePlayBtn.setVisible(spatialTimeVisible);
@@ -846,7 +958,13 @@ private:
         spatialTimeSlider.setColour(juce::Slider::thumbColourId, GoodMeterLookAndFeel::accentCyan);
         spatialTimeSlider.setColour(juce::Slider::trackColourId, GoodMeterLookAndFeel::accentCyan.withAlpha(light ? 0.62f : 0.42f));
         spatialTimeSlider.setColour(juce::Slider::backgroundColourId, idleText.withAlpha(light ? 0.16f : 0.12f));
+        spatialTimeSliderLookAndFeel.setPlaybackState(spatialTimelinePlaying, spatialTimelineReverse);
         spatialTimePlayBtn.setPalette(GoodMeterLookAndFeel::accentCyan, idleText, light);
+        figureLoopPreviewBtn.setVisible(loopPreviewVisible);
+        figureLoopPreviewBtn.setEnabled(loopPreviewVisible);
+        figureLoopPreviewBtn.setPalette(GoodMeterLookAndFeel::accentCyan, idleText, light);
+        if (!loopPreviewVisible && previewMode == PreviewMode::loop)
+            stopAudioPreview(false);
 
         for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource, &fitFigureType })
         {
@@ -879,6 +997,7 @@ private:
         spatialTimeLabel.setBounds(juce::Rectangle<int>());
         spatialTimeSlider.setBounds(juce::Rectangle<int>());
         spatialTimePlayBtn.setBounds(juce::Rectangle<int>());
+        figureLoopPreviewBtn.setBounds(juce::Rectangle<int>());
         for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource, &fitFigureType })
             combo->setBounds(juce::Rectangle<int>());
         for (auto* label : { &fitStem1Label, &fitStem2Label, &fitStem3Label, &fitBounceLabel, &fitViewLabel, &fitBandLabel })
@@ -927,7 +1046,7 @@ private:
                 auto playArea = utilityRow.removeFromRight(38);
                 spatialTimePlayBtn.setBounds(playArea.withSizeKeepingCentre(34, 34));
                 utilityRow.removeFromRight(gap);
-                spatialTimeLabel.setBounds(utilityRow.removeFromLeft(104).reduced(1));
+                spatialTimeLabel.setBounds(utilityRow.removeFromLeft(112).reduced(1));
                 spatialTimeSlider.setBounds(utilityRow.reduced(2));
             }
             return;
@@ -939,7 +1058,7 @@ private:
             auto playArea = sliderArea.removeFromRight(38);
             spatialTimePlayBtn.setBounds(playArea.withSizeKeepingCentre(34, 34));
             sliderArea.removeFromRight(8);
-            spatialTimeLabel.setBounds(sliderArea.removeFromLeft(88).reduced(2));
+            spatialTimeLabel.setBounds(sliderArea.removeFromLeft(112).reduced(2));
             spatialTimeSlider.setBounds(sliderArea.reduced(4, 2));
             return;
         }
@@ -1101,9 +1220,858 @@ private:
         float rotationAngle = 0.0f;
     };
 
+    class AudioDoctorTimelineSliderLookAndFeel final : public GoodMeterLookAndFeel
+    {
+    public:
+        AudioDoctorTimelineSliderLookAndFeel()
+        {
+            rightDownImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_cursor_right_down_png,
+                BinaryData::audio_doctor_cursor_right_down_pngSize));
+            rightUpImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_cursor_right_up_png,
+                BinaryData::audio_doctor_cursor_right_up_pngSize));
+            leftDownImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_cursor_left_down_png,
+                BinaryData::audio_doctor_cursor_left_down_pngSize));
+            leftUpImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_cursor_left_up_png,
+                BinaryData::audio_doctor_cursor_left_up_pngSize));
+        }
+
+        void setPlaybackState(bool isPlaying, bool isReverse)
+        {
+            playing = isPlaying;
+            reverse = isReverse;
+            if (playing)
+                hasManualScrubDirection = false;
+        }
+
+        void setScrubDirection(bool isScrubbing, bool isReverse)
+        {
+            scrubbing = isScrubbing;
+            if (!isScrubbing)
+                return;
+
+            scrubReverse = isReverse;
+            manualScrubReverse = isReverse;
+            hasManualScrubDirection = true;
+        }
+
+        void drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
+                              float sliderPos, float minSliderPos, float maxSliderPos,
+                              juce::Slider::SliderStyle style, juce::Slider& slider) override
+        {
+            juce::ignoreUnused(minSliderPos, maxSliderPos, style);
+
+            const auto bounds = juce::Rectangle<float>(static_cast<float>(x), static_cast<float>(y),
+                                                       static_cast<float>(width), static_cast<float>(height));
+            const auto thumbColour = slider.findColour(juce::Slider::thumbColourId);
+            const auto trackColour = slider.findColour(juce::Slider::trackColourId);
+            const auto backgroundColour = slider.findColour(juce::Slider::backgroundColourId);
+            const float clampedSliderPos = juce::jlimit(bounds.getX(), bounds.getRight(), sliderPos);
+
+            const float trackHeight = 4.0f;
+            const auto track = juce::Rectangle<float>(bounds.getX(), bounds.getCentreY() - trackHeight * 0.5f,
+                                                      bounds.getWidth(), trackHeight);
+            g.setColour(backgroundColour);
+            g.fillRoundedRectangle(track, trackHeight * 0.5f);
+
+            if (clampedSliderPos > bounds.getX())
+            {
+                auto progress = track.withWidth(clampedSliderPos - bounds.getX());
+                g.setColour(trackColour);
+                g.fillRoundedRectangle(progress, trackHeight * 0.5f);
+            }
+
+            const auto& image = getCurrentCursorImage();
+            if (image.isValid())
+            {
+                const float thumbSize = juce::jlimit(22.0f, 32.0f, bounds.getHeight() + 8.0f);
+                auto imageArea = juce::Rectangle<float>(0.0f, 0.0f, thumbSize, thumbSize)
+                                     .withCentre({ clampedSliderPos, bounds.getCentreY() });
+                imageArea = imageArea.withX(juce::jlimit(bounds.getX() - thumbSize * 0.20f,
+                                                         bounds.getRight() - thumbSize * 0.80f,
+                                                         imageArea.getX()));
+
+                const float alpha = slider.isEnabled() ? (slider.isMouseOverOrDragging() ? 1.0f : 0.94f) : 0.42f;
+                g.setOpacity(alpha);
+                g.drawImage(image, imageArea, juce::RectanglePlacement::centred
+                                            | juce::RectanglePlacement::onlyReduceInSize);
+                g.setOpacity(1.0f);
+                return;
+            }
+
+            const float thumbWidth = 14.0f;
+            const float thumbHeight = 20.0f;
+            const auto fallbackThumb = juce::Rectangle<float>(clampedSliderPos - thumbWidth * 0.5f,
+                                                              bounds.getCentreY() - thumbHeight * 0.5f,
+                                                              thumbWidth,
+                                                              thumbHeight);
+            g.setColour(slider.isMouseOverOrDragging() ? thumbColour : thumbColour.withAlpha(0.85f));
+            g.fillRect(fallbackThumb);
+        }
+
+    private:
+        const juce::Image& getCurrentCursorImage() const
+        {
+            const bool cursorReverse = scrubbing ? scrubReverse
+                                                 : (hasManualScrubDirection ? manualScrubReverse : reverse);
+            const bool shouldAnimate = playing || scrubbing;
+
+            if (!shouldAnimate)
+                return cursorReverse ? leftDownImage : rightDownImage;
+
+            const auto frame = (juce::Time::getMillisecondCounter() / 140) % 2;
+            if (cursorReverse)
+                return frame == 0 ? leftDownImage : leftUpImage;
+
+            return frame == 0 ? rightDownImage : rightUpImage;
+        }
+
+        static juce::Image trimTransparentPadding(const juce::Image& source)
+        {
+            if (!source.isValid())
+                return {};
+
+            auto bounds = juce::Rectangle<int>();
+            for (int y = 0; y < source.getHeight(); ++y)
+            {
+                for (int x = 0; x < source.getWidth(); ++x)
+                {
+                    if (source.getPixelAt(x, y).getAlpha() > 8)
+                    {
+                        const auto pixel = juce::Rectangle<int>(x, y, 1, 1);
+                        bounds = bounds.isEmpty() ? pixel : bounds.getUnion(pixel);
+                    }
+                }
+            }
+
+            if (bounds.isEmpty())
+                return source;
+
+            return source.getClippedImage(bounds);
+        }
+
+        juce::Image rightDownImage;
+        juce::Image rightUpImage;
+        juce::Image leftDownImage;
+        juce::Image leftUpImage;
+        bool playing = false;
+        bool reverse = false;
+        bool scrubbing = false;
+        bool scrubReverse = false;
+        bool hasManualScrubDirection = false;
+        bool manualScrubReverse = false;
+    };
+
+    class SpeakerPreviewButton final : public juce::Component,
+                                       private juce::Timer
+    {
+    public:
+        SpeakerPreviewButton()
+        {
+            setInterceptsMouseClicks(true, false);
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            inactiveImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_live_preview_inactive_png,
+                BinaryData::audio_doctor_live_preview_inactive_pngSize));
+            activeImage = trimTransparentPadding(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_live_preview_active_png,
+                BinaryData::audio_doctor_live_preview_active_pngSize));
+        }
+
+        std::function<bool()> onTrigger;
+
+        void setPalette(juce::Colour accentToUse, juce::Colour textToUse, bool lightToUse)
+        {
+            accent = accentToUse;
+            text = textToUse;
+            light = lightToUse;
+            repaint();
+        }
+
+        void setActive(bool shouldBeActive)
+        {
+            active = shouldBeActive;
+            stopTimer();
+            repaint();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            auto area = getLocalBounds().toFloat();
+            const auto activeWarm = juce::Colour(0xFFE2D4AC);
+
+            const auto& image = active ? activeImage : inactiveImage;
+            if (image.isValid())
+            {
+                const auto imageArea = getLocalBounds().toFloat();
+                g.setOpacity(1.0f);
+                g.drawImage(image, imageArea, juce::RectanglePlacement::centred
+                                              | juce::RectanglePlacement::onlyReduceInSize);
+                g.setOpacity(1.0f);
+            }
+            else
+            {
+                const auto fallbackIcon = active ? activeWarm : text.withAlpha(isHovering ? 0.94f : 0.72f);
+                drawSpeaker(g, area.reduced(8.0f, 7.0f), fallbackIcon, active);
+            }
+        }
+
+        void mouseMove(const juce::MouseEvent&) override
+        {
+            if (!isHovering)
+            {
+                isHovering = true;
+                repaint();
+            }
+        }
+
+        void mouseExit(const juce::MouseEvent&) override
+        {
+            if (isHovering)
+            {
+                isHovering = false;
+                repaint();
+            }
+        }
+
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            if (event.mods.isPopupMenu() || event.mods.isRightButtonDown())
+                return;
+
+            if (onTrigger != nullptr)
+                setActive(onTrigger());
+        }
+
+    private:
+        void timerCallback() override
+        {
+            animationPhase += 0.18f;
+            if (animationPhase > juce::MathConstants<float>::twoPi)
+                animationPhase -= juce::MathConstants<float>::twoPi;
+            repaint();
+        }
+
+        static void drawSpeaker(juce::Graphics& g, juce::Rectangle<float> area,
+                                juce::Colour colour, bool waves)
+        {
+            const float h = area.getHeight();
+            const float y = area.getY();
+            const float x = area.getX();
+            const float speakerW = area.getWidth() * 0.43f;
+            const auto box = juce::Rectangle<float>(x, y + h * 0.34f, speakerW * 0.34f, h * 0.32f);
+
+            juce::Path body;
+            body.addRoundedRectangle(box, 2.0f);
+            body.startNewSubPath(box.getRight(), y + h * 0.32f);
+            body.lineTo(x + speakerW, y + h * 0.18f);
+            body.lineTo(x + speakerW, y + h * 0.82f);
+            body.lineTo(box.getRight(), y + h * 0.68f);
+            body.closeSubPath();
+
+            g.setColour(colour);
+            g.fillPath(body);
+
+            const auto waveColour = colour.withAlpha(waves ? 0.86f : 0.46f);
+            g.setColour(waveColour);
+            for (int i = 0; i < (waves ? 2 : 1); ++i)
+            {
+                const float inset = static_cast<float>(i) * 5.0f;
+                juce::Path arc;
+                const auto arcBounds = juce::Rectangle<float>(x + speakerW - 2.0f + inset,
+                                                               y + h * (0.24f - 0.07f * static_cast<float>(i)),
+                                                               h * (0.78f + 0.22f * static_cast<float>(i)),
+                                                               h * (0.52f + 0.14f * static_cast<float>(i)));
+                arc.addArc(arcBounds.getX(), arcBounds.getY(), arcBounds.getWidth(), arcBounds.getHeight(),
+                           -0.78f, 0.78f, true);
+                g.strokePath(arc, juce::PathStrokeType(1.55f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+            }
+        }
+
+        static juce::Image trimTransparentPadding(const juce::Image& source)
+        {
+            if (!source.isValid())
+                return {};
+
+            auto bounds = juce::Rectangle<int>();
+            for (int y = 0; y < source.getHeight(); ++y)
+            {
+                for (int x = 0; x < source.getWidth(); ++x)
+                {
+                    if (source.getPixelAt(x, y).getAlpha() > 8)
+                    {
+                        const auto pixel = juce::Rectangle<int>(x, y, 1, 1);
+                        bounds = bounds.isEmpty() ? pixel : bounds.getUnion(pixel);
+                    }
+                }
+            }
+
+            if (bounds.isEmpty())
+                return source;
+
+            return source.getClippedImage(bounds);
+        }
+
+        juce::Colour accent { GoodMeterLookAndFeel::accentCyan };
+        juce::Colour text { juce::Colours::white };
+        juce::Image activeImage;
+        juce::Image inactiveImage;
+        bool light = false;
+        bool active = false;
+        bool isHovering = false;
+        float animationPhase = 0.0f;
+    };
+
+    class OutputSelectorButton final : public juce::Component
+    {
+    public:
+        OutputSelectorButton()
+        {
+            setInterceptsMouseClicks(true, false);
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        }
+
+        std::function<void()> onPrimaryClick;
+        std::function<void()> onSecondaryClick;
+
+        void setState(bool enabledToUse, bool previewingToUse, juce::String deviceNameToUse,
+                      juce::Colour textToUse, bool lightToUse)
+        {
+            enabled = enabledToUse;
+            previewing = previewingToUse;
+            deviceName = std::move(deviceNameToUse);
+            text = textToUse;
+            light = lightToUse;
+            repaint();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            auto area = getLocalBounds().toFloat().reduced(0.5f);
+            const auto accent = enabled ? GoodMeterLookAndFeel::accentCyan : text.withAlpha(light ? 0.36f : 0.30f);
+            const auto fill = light ? juce::Colours::white.withAlpha(enabled ? 0.92f : 0.66f)
+                                    : juce::Colour(0xFF101720).withAlpha(enabled ? 0.92f : 0.72f);
+
+            g.setColour(fill);
+            g.fillRoundedRectangle(area, 10.0f);
+            g.setColour(accent.withAlpha(enabled ? 0.82f : 0.34f));
+            g.drawRoundedRectangle(area.reduced(0.5f), 10.0f, enabled ? 1.15f : 0.9f);
+
+            const auto dot = area.withX(area.getX() + 10.0f).withY(area.getCentreY() - 3.0f).withSize(6.0f, 6.0f);
+            g.setColour(previewing ? GoodMeterLookAndFeel::accentYellow : accent.withAlpha(enabled ? 0.90f : 0.45f));
+            g.fillEllipse(dot);
+
+            g.setColour(text.withAlpha(enabled ? 0.94f : 0.54f));
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+            g.drawText("Output", area.toNearestInt().reduced(22, 0), juce::Justification::centredLeft, true);
+
+            if (deviceName.isNotEmpty())
+            {
+                g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 8.5f, juce::Font::plain));
+                g.setColour(text.withAlpha(enabled ? 0.58f : 0.36f));
+                g.drawText(fittedDeviceText(g, deviceName, getWidth() - 26),
+                           area.toNearestInt().reduced(22, 2).withTrimmedTop(16),
+                           juce::Justification::centredLeft, true);
+            }
+        }
+
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            if (event.mods.isPopupMenu() || event.mods.isRightButtonDown() || event.mods.isCtrlDown())
+            {
+                if (onSecondaryClick != nullptr)
+                    onSecondaryClick();
+                return;
+            }
+
+            if (onPrimaryClick != nullptr)
+                onPrimaryClick();
+        }
+
+    private:
+        static juce::String fittedDeviceText(juce::Graphics& g, juce::String text, int maxWidth)
+        {
+            while (text.length() > 4 && g.getCurrentFont().getStringWidth(text + "...") > maxWidth)
+                text = text.dropLastCharacters(1);
+            return text.length() > 4 ? text + "..." : text;
+        }
+
+        bool enabled = false;
+        bool previewing = false;
+        bool light = false;
+        juce::String deviceName;
+        juce::Colour text { juce::Colours::white };
+    };
+
+    class DimToggleButton final : public juce::Component
+    {
+    public:
+        DimToggleButton()
+        {
+            setInterceptsMouseClicks(true, false);
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            inactiveImage = trimTransparentPadding(makeNearBlackTransparent(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_dim_inactive_png,
+                BinaryData::audio_doctor_dim_inactive_pngSize)));
+            activeImage = trimTransparentPadding(makeNearBlackTransparent(juce::ImageCache::getFromMemory(
+                BinaryData::audio_doctor_dim_active_png,
+                BinaryData::audio_doctor_dim_active_pngSize)));
+        }
+
+        std::function<void(bool)> onChange;
+
+        void setPalette(juce::Colour textToUse, bool lightToUse)
+        {
+            text = textToUse;
+            light = lightToUse;
+            repaint();
+        }
+
+        void setDimmed(bool shouldBeDimmed)
+        {
+            dimmed = shouldBeDimmed;
+            repaint();
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            const auto area = getLocalBounds().toFloat();
+            const auto& image = dimmed ? activeImage : inactiveImage;
+
+            if (image.isValid())
+            {
+                const float alpha = dimmed ? 1.0f : (isHovering ? 0.92f : 0.76f);
+                g.setOpacity(alpha);
+                g.drawImage(image, area.reduced(dimmed ? 5.0f : 7.0f),
+                            juce::RectanglePlacement::centred
+                          | juce::RectanglePlacement::onlyReduceInSize);
+                g.setOpacity(1.0f);
+                return;
+            }
+
+            g.setColour(text.withAlpha(dimmed ? 0.92f : 0.56f));
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::bold));
+            g.drawText("DIM", getLocalBounds(), juce::Justification::centred, true);
+        }
+
+        void mouseMove(const juce::MouseEvent&) override
+        {
+            if (!isHovering)
+            {
+                isHovering = true;
+                repaint();
+            }
+        }
+
+        void mouseExit(const juce::MouseEvent&) override
+        {
+            if (isHovering)
+            {
+                isHovering = false;
+                repaint();
+            }
+        }
+
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            if (event.mods.isPopupMenu() || event.mods.isRightButtonDown())
+                return;
+
+            if (onChange != nullptr)
+                onChange(!dimmed);
+        }
+
+    private:
+        static juce::Image makeNearBlackTransparent(const juce::Image& source)
+        {
+            if (!source.isValid())
+                return {};
+
+            auto image = source.convertedToFormat(juce::Image::ARGB);
+            for (int y = 0; y < image.getHeight(); ++y)
+            {
+                for (int x = 0; x < image.getWidth(); ++x)
+                {
+                    auto pixel = image.getPixelAt(x, y);
+                    if (pixel.getAlpha() > 0
+                        && pixel.getRed() < 18
+                        && pixel.getGreen() < 18
+                        && pixel.getBlue() < 18)
+                    {
+                        image.setPixelAt(x, y, pixel.withAlpha(0.0f));
+                    }
+                }
+            }
+
+            return image;
+        }
+
+        static juce::Image trimTransparentPadding(const juce::Image& source)
+        {
+            if (!source.isValid())
+                return {};
+
+            auto bounds = juce::Rectangle<int>();
+            for (int y = 0; y < source.getHeight(); ++y)
+            {
+                for (int x = 0; x < source.getWidth(); ++x)
+                {
+                    if (source.getPixelAt(x, y).getAlpha() > 8)
+                    {
+                        const auto pixel = juce::Rectangle<int>(x, y, 1, 1);
+                        bounds = bounds.isEmpty() ? pixel : bounds.getUnion(pixel);
+                    }
+                }
+            }
+
+            if (bounds.isEmpty())
+                return source;
+
+            return source.getClippedImage(bounds);
+        }
+
+        juce::Image inactiveImage;
+        juce::Image activeImage;
+        juce::Colour text { juce::Colours::white };
+        bool light = false;
+        bool dimmed = false;
+        bool isHovering = false;
+    };
+
+    class AudioDoctorPreviewSource final : public juce::AudioSource
+    {
+    public:
+        void prepareToPlay(int, double sr) override
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            outputSampleRate = sr > 0.0 ? sr : sourceSampleRate;
+            dimCurrentGain = dimTargetGain.load(std::memory_order_relaxed);
+            finished.store(false);
+        }
+
+        void releaseResources() override {}
+
+        void loadAsset(const Asset& asset, bool shouldLoop, bool shouldReverse, double startSeconds)
+        {
+            auto stereoBuffer = goodmeter::audio_doctor::toStereoBuffer(asset.buffer);
+
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            buffer.makeCopyOf(stereoBuffer);
+            sourceSampleRate = asset.sampleRate > 0.0 ? asset.sampleRate : 48000.0;
+            loop = shouldLoop;
+            reverse = shouldReverse;
+            const auto maxIndex = juce::jmax(0, buffer.getNumSamples() - 1);
+            if (reverse)
+                position = juce::jlimit(0.0, static_cast<double>(maxIndex), startSeconds * sourceSampleRate);
+            else
+                position = juce::jlimit(0.0, static_cast<double>(maxIndex), startSeconds * sourceSampleRate);
+            if (reverse && position <= 0.5)
+                position = static_cast<double>(maxIndex);
+            gain = 0.0f;
+            dimCurrentGain = dimTargetGain.load(std::memory_order_relaxed);
+            stopping = false;
+            playing = buffer.getNumSamples() > 0;
+            finished.store(!playing);
+        }
+
+        void setDimGainDb(double gainDb)
+        {
+            dimTargetGain.store(juce::Decibels::decibelsToGain(static_cast<float>(gainDb)),
+                                std::memory_order_relaxed);
+        }
+
+        void setRealtimeProcessor(goodmeter::audio_doctor::PluginHost* host, double outputGainDb)
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            realtimeHost = host;
+            realtimeOutputGain = juce::Decibels::decibelsToGain(static_cast<float>(outputGainDb));
+        }
+
+        void setRealtimeOutputGainDb(double outputGainDb)
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            realtimeOutputGain = juce::Decibels::decibelsToGain(static_cast<float>(outputGainDb));
+        }
+
+        void clearRealtimeProcessor()
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            if (realtimeHost != nullptr)
+                realtimeHost->releaseRealtimePreview();
+
+            realtimeHost = nullptr;
+            realtimeBlock.setSize(0, 0);
+            realtimeGains.clear();
+            realtimeMidi.clear();
+        }
+
+        double getPositionSeconds()
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            return sourceSampleRate > 0.0 ? position / sourceSampleRate : 0.0;
+        }
+
+        void setPositionSeconds(double seconds)
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            if (buffer.getNumSamples() <= 0)
+                return;
+            const auto maxIndex = juce::jmax(0, buffer.getNumSamples() - 1);
+            position = juce::jlimit(0.0, static_cast<double>(maxIndex), seconds * sourceSampleRate);
+        }
+
+        void requestStop()
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            stopping = true;
+        }
+
+        void stopNow()
+        {
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            playing = false;
+            stopping = false;
+            finished.store(true);
+            buffer.setSize(0, 0);
+        }
+
+        bool isFinished() const
+        {
+            return finished.load(std::memory_order_relaxed);
+        }
+
+        void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override
+        {
+            bufferToFill.clearActiveBufferRegion();
+
+            const juce::SpinLock::ScopedLockType lock(bufferLock);
+            if (!playing || buffer.getNumSamples() <= 0 || buffer.getNumChannels() <= 0)
+                return;
+
+            const int outChannels = bufferToFill.buffer->getNumChannels();
+            const int sourceSamples = buffer.getNumSamples();
+            const double ratio = sourceSampleRate / juce::jmax(1.0, outputSampleRate);
+            const float fadeStep = 1.0f / static_cast<float>(juce::jmax(1, fadeSamplesForRate()));
+            const int naturalFadeSamples = fadeSamplesForRate();
+            auto* realtimePlugin = realtimeHost != nullptr ? realtimeHost->getRealtimePreviewInstance() : nullptr;
+
+            if (realtimePlugin != nullptr)
+            {
+                const int hostChannels = juce::jmax(1, juce::jmin(2, outChannels));
+                const int blockChannels = juce::jmax(hostChannels, realtimeHost->totalChannelsForRealtimePreview(hostChannels));
+                realtimeBlock.setSize(blockChannels, bufferToFill.numSamples, false, false, true);
+                realtimeBlock.clear();
+                realtimeGains.resize(static_cast<size_t>(bufferToFill.numSamples), 0.0f);
+
+                for (int s = 0; s < bufferToFill.numSamples; ++s)
+                {
+                    if (!playing)
+                        break;
+
+	                    if (!ensureReadablePosition(sourceSamples))
+	                        break;
+
+                    if (stopping)
+                        gain = juce::jmax(0.0f, gain - fadeStep);
+                    else
+                        gain = juce::jmin(1.0f, gain + fadeStep);
+
+                    float boundaryGain = 1.0f;
+                    if (!loop)
+                    {
+                        const double remaining = reverse ? position
+                                                         : static_cast<double>(sourceSamples - 1) - position;
+                        boundaryGain = juce::jlimit(0.0f, 1.0f,
+                                                    static_cast<float>(remaining / static_cast<double>(naturalFadeSamples)));
+                    }
+
+                    realtimeGains[static_cast<size_t>(s)] = gain * boundaryGain * realtimeOutputGain * nextDimGain();
+                    for (int ch = 0; ch < hostChannels; ++ch)
+                    {
+                        const int srcCh = juce::jmin(ch, buffer.getNumChannels() - 1);
+                        realtimeBlock.setSample(ch, s, readLinear(srcCh, position));
+                    }
+
+                    if (stopping && gain <= 0.0001f)
+                    {
+                        playing = false;
+                        finished.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+
+                    advancePosition(ratio, sourceSamples);
+                }
+
+                realtimeMidi.clear();
+                realtimePlugin->processBlock(realtimeBlock, realtimeMidi);
+
+                for (int ch = 0; ch < outChannels; ++ch)
+                {
+                    auto* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                    const int srcCh = juce::jmin(ch, realtimeBlock.getNumChannels() - 1);
+                    const auto* src = realtimeBlock.getReadPointer(srcCh);
+                    for (int s = 0; s < bufferToFill.numSamples; ++s)
+                        dst[s] = src[s] * realtimeGains[static_cast<size_t>(s)];
+                }
+
+                return;
+            }
+
+            for (int s = 0; s < bufferToFill.numSamples; ++s)
+            {
+                if (!playing)
+                    break;
+
+                if (!ensureReadablePosition(sourceSamples))
+                    break;
+
+                if (stopping)
+                    gain = juce::jmax(0.0f, gain - fadeStep);
+                else
+                    gain = juce::jmin(1.0f, gain + fadeStep);
+
+                float boundaryGain = 1.0f;
+                if (!loop)
+                {
+                    const double remaining = reverse ? position
+                                                     : static_cast<double>(sourceSamples - 1) - position;
+                    boundaryGain = juce::jlimit(0.0f, 1.0f,
+                                                static_cast<float>(remaining / static_cast<double>(naturalFadeSamples)));
+                }
+
+                const float sampleGain = gain * boundaryGain * nextDimGain();
+                for (int ch = 0; ch < outChannels; ++ch)
+                {
+                    auto* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                    const int srcCh = juce::jmin(ch, buffer.getNumChannels() - 1);
+                    dst[s] = readLinear(srcCh, position) * sampleGain;
+                }
+
+                if (stopping && gain <= 0.0001f)
+                {
+                    playing = false;
+                    finished.store(true, std::memory_order_relaxed);
+                    break;
+                }
+
+                advancePosition(ratio, sourceSamples);
+            }
+        }
+
+    private:
+        bool ensureReadablePosition(int sourceSamples)
+        {
+            if (position >= 0.0 && position <= static_cast<double>(sourceSamples - 1))
+                return true;
+
+            if (!loop)
+            {
+                playing = false;
+                finished.store(true, std::memory_order_relaxed);
+                return false;
+            }
+
+            wrapLoopPosition(sourceSamples);
+            return true;
+        }
+
+        void advancePosition(double ratio, int sourceSamples)
+        {
+            position += reverse ? -ratio : ratio;
+            if (loop && (position < 0.0 || position > static_cast<double>(sourceSamples - 1)))
+                wrapLoopPosition(sourceSamples);
+        }
+
+        void wrapLoopPosition(int sourceSamples)
+        {
+            position = reverse ? static_cast<double>(sourceSamples - 1) : 0.0;
+            gain = juce::jmin(gain, 0.12f);
+            finished.store(false, std::memory_order_relaxed);
+        }
+
+        int fadeSamplesForRate() const
+        {
+            return juce::jlimit(64, 4096, static_cast<int>((outputSampleRate > 0.0 ? outputSampleRate : sourceSampleRate) * 0.018));
+        }
+
+        float nextDimGain()
+        {
+            const float target = dimTargetGain.load(std::memory_order_relaxed);
+            const float delta = target - dimCurrentGain;
+            if (std::abs(delta) <= 0.0001f)
+            {
+                dimCurrentGain = target;
+                return dimCurrentGain;
+            }
+
+            const double rate = outputSampleRate > 0.0 ? outputSampleRate : sourceSampleRate;
+            const float rampStep = 1.0f / static_cast<float>(juce::jmax(1, static_cast<int>(rate * 0.018)));
+            dimCurrentGain += juce::jlimit(-rampStep, rampStep, delta);
+            return dimCurrentGain;
+        }
+
+        float readLinear(int channel, double samplePosition) const
+        {
+            const int maxIndex = buffer.getNumSamples() - 1;
+            const int i0 = juce::jlimit(0, maxIndex, static_cast<int>(std::floor(samplePosition)));
+            const int i1 = juce::jmin(maxIndex, i0 + 1);
+            const float frac = static_cast<float>(samplePosition - static_cast<double>(i0));
+            const auto* data = buffer.getReadPointer(channel);
+            return data[i0] + (data[i1] - data[i0]) * frac;
+        }
+
+        juce::AudioBuffer<float> buffer;
+        double sourceSampleRate = 48000.0;
+        double outputSampleRate = 48000.0;
+        double position = 0.0;
+        float gain = 0.0f;
+        bool loop = false;
+        bool reverse = false;
+        bool playing = false;
+        bool stopping = false;
+        goodmeter::audio_doctor::PluginHost* realtimeHost = nullptr;
+        float realtimeOutputGain = 1.0f;
+        std::atomic<float> dimTargetGain { 1.0f };
+        float dimCurrentGain = 1.0f;
+        juce::AudioBuffer<float> realtimeBlock;
+        juce::MidiBuffer realtimeMidi;
+        std::vector<float> realtimeGains;
+        std::atomic<bool> finished { true };
+        juce::SpinLock bufferLock;
+    };
+
     class AudioDoctorPopupLookAndFeel final : public GoodMeterLookAndFeel
     {
     public:
+        AudioDoctorPopupLookAndFeel()
+        {
+            setColour(juce::PopupMenu::backgroundColourId, juce::Colours::transparentBlack);
+        }
+
+        int getMenuWindowFlags() override
+        {
+            return 0;
+        }
+
+        void preparePopupMenuWindow(juce::Component& window) override
+        {
+            window.setOpaque(false);
+        }
+
+        int getPopupMenuBorderSize() override
+        {
+            return 0;
+        }
+
+        int getPopupMenuBorderSizeWithOptions(const juce::PopupMenu::Options&) override
+        {
+            return 0;
+        }
+
         void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
                           int, int, int, int, juce::ComboBox& box) override
         {
@@ -1142,14 +2110,21 @@ private:
             auto area = juce::Rectangle<float>(0.0f, 0.0f,
                                                static_cast<float>(width),
                                                static_cast<float>(height));
-            g.setColour(light ? juce::Colour(0xFFF5F7FA) : juce::Colour(0xFF07080B));
-            g.fillRect(area);
-            g.setColour(light ? juce::Colours::white.withAlpha(0.98f)
-                              : juce::Colour(0xFF0B1017).withAlpha(0.92f));
-            g.fillRoundedRectangle(area.reduced(0.5f), 12.0f);
-            g.setColour(light ? juce::Colour(0xFF1E2530).withAlpha(0.16f)
-                              : juce::Colour(0xFFF6EEE3).withAlpha(0.14f));
-            g.drawRoundedRectangle(area.reduced(0.5f), 12.0f, 1.0f);
+            const float radius = 12.0f;
+            auto panel = area.reduced(0.7f);
+
+            const auto shadow = juce::Colours::black.withAlpha(light ? 0.09f : 0.22f);
+            const auto fill = light ? juce::Colour(0xFFF7F8F4).withAlpha(0.985f)
+                                    : juce::Colour(0xFF10141B).withAlpha(0.985f);
+            const auto outline = light ? juce::Colour(0xFF1A1A24).withAlpha(0.16f)
+                                       : juce::Colour(0xFFF2EEE7).withAlpha(0.20f);
+
+            g.setColour(shadow);
+            g.fillRoundedRectangle(panel.translated(0.0f, 1.0f), radius);
+            g.setColour(fill);
+            g.fillRoundedRectangle(panel, radius);
+            g.setColour(outline);
+            g.drawRoundedRectangle(panel.reduced(0.5f), radius, 1.0f);
         }
 
         void drawPopupMenuItem(juce::Graphics& g, const juce::Rectangle<int>& area,
@@ -1197,24 +2172,52 @@ private:
     class PluginInsertSlotComponent final : public juce::Component
     {
     public:
+        static constexpr int maxInserts = 10;
+
+        struct InsertViewState
+        {
+            juce::String pluginName;
+            bool hasPlugin = false;
+            bool bypassed = false;
+        };
+
         explicit PluginInsertSlotComponent(juce::String slotText)
             : slotLabel(std::move(slotText))
         {
             setMouseCursor(juce::MouseCursor::PointingHandCursor);
         }
 
-        void setState(juce::String newPluginName, bool newHasPlugin, bool newCanRender, bool newLightTheme)
+        static int preferredHeightForRows(int rows)
+        {
+            return mainHeight + (rows > 0 ? expandedGap + rows * rowHeight : 0);
+        }
+
+        void setState(juce::String newPluginName,
+                      bool newHasPlugin,
+                      bool newCanRender,
+                      bool newLightTheme,
+                      std::array<InsertViewState, maxInserts> newInserts,
+                      bool newExpanded,
+                      int newVisibleRows,
+                      bool newChainRendered,
+                      int newChainCount)
         {
             pluginName = std::move(newPluginName);
             hasPlugin = newHasPlugin;
             canRender = newCanRender;
             lightTheme = newLightTheme;
+            inserts = std::move(newInserts);
+            expanded = newExpanded;
+            visibleRows = juce::jlimit(0, maxInserts, newVisibleRows);
+            chainRendered = newChainRendered;
+            chainCount = juce::jlimit(0, maxInserts, newChainCount);
             repaint();
         }
 
         void paint(juce::Graphics& g) override
         {
-            const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+            auto all = getLocalBounds().toFloat().reduced(0.5f);
+            auto bounds = all.removeFromTop(static_cast<float>(mainHeight));
             const auto accent = slotAccent();
             const auto fill = lightTheme ? juce::Colours::white.withAlpha(0.92f)
                                          : juce::Colour(0xFF0B1017).withAlpha(0.86f);
@@ -1232,7 +2235,10 @@ private:
             g.setColour(fill);
             g.fillRoundedRectangle(bounds, 10.0f);
 
-            if (hasPlugin)
+            if (chainRendered && chainCount > 1)
+                drawChainAsciiFill(g, bounds.reduced(4.0f), accent);
+
+            if (hasPlugin || chainRendered)
             {
                 g.setColour(accent.withAlpha(lightTheme ? 0.17f : 0.18f));
                 g.fillRoundedRectangle(bounds.reduced(3.0f), 8.0f);
@@ -1241,33 +2247,97 @@ private:
             }
 
             g.setColour(outline);
-            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 10.0f, 1.0f);
+            g.drawRoundedRectangle(bounds, 10.0f, 1.0f);
 
-            auto area = getLocalBounds().reduced(10, 5);
+            auto area = bounds.toNearestInt().reduced(10, 5);
             auto nameArea = area.removeFromTop(18);
             auto labelArea = area.removeFromBottom(13);
+            const auto renderArea = getMainRenderBounds();
+            nameArea.removeFromRight(38);
+            labelArea.removeFromRight(38);
 
             g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
-            g.setColour(hasPlugin ? text : muted);
-            const auto label = hasPlugin ? fittedText(g, pluginName, nameArea.getWidth())
-                                         : "Load";
+            g.setColour((hasPlugin || chainRendered) ? text : muted);
+            const auto label = chainRendered && chainCount > 1
+                ? "MIX" + juce::String(chainCount)
+                : (hasPlugin ? fittedText(g, pluginName, nameArea.getWidth()) : "Load");
             g.drawText(label, nameArea, juce::Justification::centredLeft, true);
 
             g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::bold));
-            g.setColour(hasPlugin ? accent.withAlpha(0.94f) : muted);
-            g.drawText("INSERT " + slotLabel, labelArea, juce::Justification::centredLeft, true);
+            g.setColour((hasPlugin || chainRendered) ? accent.withAlpha(0.94f) : muted);
+            g.drawText(chainRendered && chainCount > 1 ? "CHAIN " + slotLabel : "INSERT " + slotLabel,
+                       labelArea, juce::Justification::centredLeft, true);
+
+            drawRenderBadge(g, renderArea, canRender, "R");
+
+            if (!expanded || visibleRows <= 0)
+                return;
+
+            auto rows = getLocalBounds().withTrimmedTop(mainHeight + expandedGap);
+            for (int i = 0; i < visibleRows; ++i)
+            {
+                auto row = rows.removeFromTop(rowHeight).reduced(6, 3);
+                drawInsertRow(g, row.toFloat(), i, accent, text, muted, outline);
+            }
         }
 
         void mouseUp(const juce::MouseEvent& event) override
         {
-            juce::ignoreUnused(event);
-            if (onMain != nullptr)
+            const auto point = event.position;
+            const bool secondaryClick = event.mods.isRightButtonDown()
+                                     || event.mods.isPopupMenu()
+                                     || event.mods.isCtrlDown();
+
+            if (!secondaryClick && getMainRenderBounds().contains(point))
+            {
+                if (canRender && onChainRender != nullptr)
+                    onChainRender();
+                return;
+            }
+
+            if (!secondaryClick
+                && juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(getWidth()), static_cast<float>(mainHeight)).contains(point))
+            {
+                if (onMain != nullptr)
+                    onMain();
+                return;
+            }
+
+            if (expanded)
+            {
+                for (int i = 0; i < visibleRows; ++i)
+                {
+                    const auto row = getInsertRowBounds(i);
+                    if (!row.contains(point))
+                        continue;
+
+                    if (secondaryClick)
+                    {
+                        if (onInsertBypass != nullptr)
+                            onInsertBypass(i);
+                    }
+                    else if (onInsertMain != nullptr)
+                    {
+                        onInsertMain(i);
+                    }
+                    return;
+                }
+            }
+
+            if (!secondaryClick && onMain != nullptr)
                 onMain();
         }
 
         std::function<void()> onMain;
+        std::function<void()> onChainRender;
+        std::function<void(int)> onInsertMain;
+        std::function<void(int)> onInsertBypass;
 
     private:
+        static constexpr int mainHeight = 36;
+        static constexpr int expandedGap = 6;
+        static constexpr int rowHeight = 34;
+
         juce::Colour slotAccent() const
         {
             if (slotLabel == "B")
@@ -1275,6 +2345,100 @@ private:
             if (slotLabel == "C")
                 return GoodMeterLookAndFeel::accentBlue;
             return GoodMeterLookAndFeel::accentYellow;
+        }
+
+        static juce::String insertLetter(int index)
+        {
+            static const char* letters[] = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J" };
+            return juce::isPositiveAndBelow(index, maxInserts) ? juce::String(letters[index]) : juce::String(index + 1);
+        }
+
+        juce::Rectangle<float> getMainRenderBounds() const
+        {
+            return juce::Rectangle<float>(static_cast<float>(getWidth() - 34),
+                                          4.0f,
+                                          28.0f,
+                                          static_cast<float>(mainHeight - 8));
+        }
+
+        juce::Rectangle<float> getInsertRowBounds(int row) const
+        {
+            const int y = mainHeight + expandedGap + row * rowHeight;
+            return juce::Rectangle<float>(0.0f,
+                                          static_cast<float>(y),
+                                          static_cast<float>(getWidth()),
+                                          static_cast<float>(rowHeight));
+        }
+
+        void drawRenderBadge(juce::Graphics& g, juce::Rectangle<float> area, bool enabled, const juce::String& textToDraw)
+        {
+            const auto accent = slotAccent();
+            const auto separator = area.withX(area.getX() - 5.0f).withWidth(1.0f).reduced(0.0f, 3.0f);
+            g.setColour(lightTheme ? juce::Colour(0xFF17202D).withAlpha(0.14f)
+                                   : juce::Colours::white.withAlpha(0.10f));
+            g.fillRect(separator);
+
+            g.setColour(enabled ? accent.withAlpha(lightTheme ? 0.18f : 0.22f)
+                                : (lightTheme ? juce::Colour(0xFFE9EDF3).withAlpha(0.55f)
+                                              : juce::Colour(0xFF05080D).withAlpha(0.55f)));
+            g.fillRoundedRectangle(area, 5.0f);
+            g.setColour(enabled ? accent.withAlpha(0.86f)
+                                : (lightTheme ? juce::Colour(0xFF596272) : juce::Colour(0xFFEAF0F8)).withAlpha(0.30f));
+            g.drawRoundedRectangle(area, 5.0f, 0.85f);
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+            g.drawText(textToDraw.toUpperCase(), area.toNearestInt(), juce::Justification::centred, true);
+        }
+
+        void drawInsertRow(juce::Graphics& g,
+                           juce::Rectangle<float> row,
+                           int index,
+                           juce::Colour accent,
+                           juce::Colour text,
+                           juce::Colour muted,
+                           juce::Colour outline)
+        {
+            const auto& state = inserts[static_cast<size_t>(index)];
+            const bool bypassed = state.hasPlugin && state.bypassed;
+            const auto fill = lightTheme ? juce::Colour(0xFFF7F8FA).withAlpha(0.94f)
+                                         : juce::Colour(0xFF101318).withAlpha(0.96f);
+            g.setColour(fill);
+            g.fillRoundedRectangle(row, 5.5f);
+            g.setColour(outline.withAlpha(state.hasPlugin ? (bypassed ? 0.48f : 0.88f) : 0.56f));
+            g.drawRoundedRectangle(row, 5.5f, 0.8f);
+
+            g.setColour((state.hasPlugin && !bypassed) ? accent.withAlpha(0.92f) : muted.withAlpha(0.34f));
+            g.fillRoundedRectangle(row.withWidth(4.0f).reduced(0.0f, 2.0f), 2.0f);
+
+            auto body = row.toNearestInt().reduced(10, 4);
+
+            if (state.hasPlugin)
+            {
+                g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.8f, juce::Font::bold));
+                g.setColour(bypassed ? muted.withAlpha(0.52f) : text);
+                g.drawText(fittedText(g, state.pluginName, body.getWidth()), body, juce::Justification::centredLeft, true);
+                return;
+            }
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.4f, juce::Font::bold));
+            g.setColour(muted.withAlpha(0.58f));
+            g.drawText("INSERT " + juce::String(index + 1), body, juce::Justification::centredLeft, true);
+        }
+
+        void drawChainAsciiFill(juce::Graphics& g, juce::Rectangle<float> area, juce::Colour accent)
+        {
+            const auto centre = area.getCentre();
+            for (float y = area.getY() + 3.0f; y < area.getBottom(); y += 4.0f)
+            {
+                for (float x = area.getX() + 5.0f; x < area.getRight(); x += 5.0f)
+                {
+                    const float dx = std::abs(x - centre.x) / juce::jmax(1.0f, area.getWidth() * 0.5f);
+                    const float dy = std::abs(y - centre.y) / juce::jmax(1.0f, area.getHeight() * 0.5f);
+                    const float cross = juce::jmax(0.0f, 1.0f - juce::jmin(dx, dy) * 2.2f);
+                    const float alpha = 0.025f + cross * (lightTheme ? 0.11f : 0.16f);
+                    g.setColour(accent.withAlpha(alpha));
+                    g.fillRect(x, y, 1.4f, 1.4f);
+                }
+            }
         }
 
         static juce::String fittedText(juce::Graphics& g, const juce::String& text, int maxWidth)
@@ -1291,9 +2455,14 @@ private:
 
         juce::String slotLabel;
         juce::String pluginName;
+        std::array<InsertViewState, maxInserts> inserts;
         bool hasPlugin = false;
         bool canRender = false;
         bool lightTheme = false;
+        bool expanded = false;
+        bool chainRendered = false;
+        int visibleRows = 0;
+        int chainCount = 0;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginInsertSlotComponent)
     };
@@ -1301,28 +2470,32 @@ private:
     class PluginEditorChromeComponent final : public juce::Component
     {
     public:
-        PluginEditorChromeComponent(std::unique_ptr<juce::AudioProcessorEditor> editorToOwn,
-                                    bool useLightTheme,
-                                    double initialOutputGainDb,
-                                    std::function<void(double)> outputGainChangedCallback,
-                                    std::function<void()> renderCallback)
+	        PluginEditorChromeComponent(std::unique_ptr<juce::AudioProcessorEditor> editorToOwn,
+	                                    bool useLightTheme,
+	                                    double initialOutputGainDb,
+	                                    bool previewInitiallyActive,
+	                                    std::function<void(double)> outputGainChangedCallback,
+	                                    std::function<bool()> previewCallback,
+	                                    std::function<void()> renderCallback)
             : editor(std::move(editorToOwn)),
               lightTheme(useLightTheme),
               outputGainDb(clampOutputGainDb(initialOutputGainDb)),
               onOutputGainChanged(std::move(outputGainChangedCallback)),
+              onPreview(std::move(previewCallback)),
               onRender(std::move(renderCallback))
         {
             jassert(editor != nullptr);
             addAndMakeVisible(*editor);
 
-            gainValue.setEditable(true, true, false);
-            gainValue.setJustificationType(juce::Justification::centred);
-            gainValue.setText(formatOutputGainText(outputGainDb), juce::dontSendNotification);
-            gainValue.onTextChange = [this] { commitGainText(); };
-            GoodMeterLookAndFeel::markAsIOSEnglishMono(gainValue);
-            addAndMakeVisible(gainValue);
+            juce::ignoreUnused(outputGainDb, onOutputGainChanged);
+            previewButton.onTrigger = [this]
+            {
+                return onPreview != nullptr && onPreview();
+	            };
+	            addAndMakeVisible(previewButton);
+	            previewButton.setActive(previewInitiallyActive);
 
-            renderButton.setButtonText("Render");
+	            renderButton.setButtonText("Render");
             renderButton.onClick = [this]
             {
                 if (onRender != nullptr)
@@ -1343,9 +2516,8 @@ private:
             auto bar = area.removeFromBottom(bottomBarHeight);
             editor->setBounds(area);
 
-            auto left = bar.removeFromLeft(210).reduced(10, 7);
-            gainLabelBounds = left.removeFromLeft(48).toFloat();
-            gainValue.setBounds(left.removeFromLeft(118));
+            auto left = bar.removeFromLeft(76).reduced(12, 6);
+            previewButton.setBounds(left.withSizeKeepingCentre(34, 34));
             renderButton.setBounds(bar.removeFromRight(118).reduced(10, 7));
         }
 
@@ -1364,16 +2536,7 @@ private:
             const auto muted = lightTheme ? juce::Colour(0xFF596272)
                                           : juce::Colour(0xFFEAF0F8).withAlpha(0.72f);
 
-            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
-            g.setColour(muted);
-            g.drawText("Gain", gainLabelBounds.toNearestInt(), juce::Justification::centredRight, true);
-
-            const auto gainBox = gainValue.getBounds().toFloat();
-            g.setColour(lightTheme ? juce::Colours::white : juce::Colour(0xFF111A24));
-            g.fillRoundedRectangle(gainBox, 6.0f);
-            g.setColour(lightTheme ? juce::Colour(0xFF17202D).withAlpha(0.18f)
-                                   : juce::Colours::white.withAlpha(0.14f));
-            g.drawRoundedRectangle(gainBox.reduced(0.5f), 6.0f, 1.0f);
+            juce::ignoreUnused(muted);
         }
 
     private:
@@ -1405,34 +2568,11 @@ private:
             return (clamped > 0.0 ? "+" : "") + juce::String(clamped, 1) + " dB";
         }
 
-        void commitGainText()
-        {
-            if (updatingGainText)
-                return;
-
-            const auto parsed = parseOutputGainText(gainValue.getText(), outputGainDb);
-            outputGainDb = parsed;
-
-            juce::ScopedValueSetter<bool> guard(updatingGainText, true);
-            gainValue.setText(formatOutputGainText(outputGainDb), juce::dontSendNotification);
-
-            if (onOutputGainChanged != nullptr)
-                onOutputGainChanged(outputGainDb);
-        }
-
         void refreshColours()
         {
             const auto text = lightTheme ? juce::Colour(0xFF17202D)
                                          : juce::Colour(0xFFF3EEE4);
-            const auto boxBackground = lightTheme ? juce::Colours::white
-                                                  : juce::Colour(0xFF111A24);
-
-            gainValue.setColour(juce::Label::textColourId, text);
-            gainValue.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
-            gainValue.setColour(juce::Label::outlineColourId, juce::Colours::transparentBlack);
-            gainValue.setColour(juce::Label::textWhenEditingColourId, text);
-            gainValue.setColour(juce::Label::backgroundWhenEditingColourId, boxBackground);
-            gainValue.setColour(juce::Label::outlineWhenEditingColourId, GoodMeterLookAndFeel::accentBlue.withAlpha(0.55f));
+            previewButton.setPalette(GoodMeterLookAndFeel::accentCyan, text, lightTheme);
 
             renderButton.setColour(juce::TextButton::textColourOffId, text);
             renderButton.setColour(juce::TextButton::textColourOnId, text);
@@ -1445,13 +2585,13 @@ private:
 
         static constexpr int bottomBarHeight = 46;
         std::unique_ptr<juce::AudioProcessorEditor> editor;
-        juce::Label gainValue;
+        SpeakerPreviewButton previewButton;
         juce::TextButton renderButton;
-        juce::Rectangle<float> gainLabelBounds;
         bool lightTheme = false;
         bool updatingGainText = false;
         double outputGainDb = 0.0;
         std::function<void(double)> onOutputGainChanged;
+        std::function<bool()> onPreview;
         std::function<void()> onRender;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorChromeComponent)
@@ -1462,10 +2602,12 @@ private:
     public:
         PluginEditorWindow(const juce::String& pluginName,
                            std::unique_ptr<juce::AudioProcessorEditor> editorToOwn,
-                           bool lightTheme,
-                           double initialOutputGainDb,
-                           std::function<void(double)> outputGainChangedCallback,
-                           std::function<void()> renderCallback,
+	                           bool lightTheme,
+	                           double initialOutputGainDb,
+	                           bool previewInitiallyActive,
+	                           std::function<void(double)> outputGainChangedCallback,
+	                           std::function<bool()> previewCallback,
+	                           std::function<void()> renderCallback,
                            std::function<void()> closeCallback)
             : juce::DocumentWindow(pluginName,
                                    lightTheme ? juce::Colour(0xFFF5F7FA) : juce::Colour(0xFF20242B),
@@ -1481,11 +2623,13 @@ private:
             const auto editorW = editorToOwn->getWidth();
             const auto editorH = editorToOwn->getHeight();
             auto chrome = std::make_unique<PluginEditorChromeComponent>(
-                std::move(editorToOwn),
-                lightTheme,
-                initialOutputGainDb,
-                std::move(outputGainChangedCallback),
-                std::move(renderCallback));
+	                std::move(editorToOwn),
+	                lightTheme,
+	                initialOutputGainDb,
+	                previewInitiallyActive,
+	                std::move(outputGainChangedCallback),
+	                std::move(previewCallback),
+	                std::move(renderCallback));
             setContentOwned(chrome.release(), true);
             centreWithSize(editorW, editorH + 46);
             setVisible(true);
@@ -3059,6 +4203,11 @@ private:
 
         statusLabel.setColour(juce::Label::textColourId, text.withAlpha(light ? 0.86f : 0.88f));
         pluginSlotLabel.setColour(juce::Label::textColourId, muted);
+        outputButton.setState(previewOutputEnabled, previewCallbackAttached,
+                              previewOutputName, text, light);
+        previewDimButton.setPalette(text, light);
+        previewDimButton.setDimmed(previewDimEnabled);
+        figureLoopPreviewBtn.setPalette(GoodMeterLookAndFeel::accentCyan, text, light);
         refreshPluginInsertSlots();
     }
 
@@ -3138,6 +4287,75 @@ private:
                                                  juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
         }
+    }
+
+    void drawSeniorCornerPortrait(juce::Graphics& g, juce::Rectangle<float> figureBounds) const
+    {
+        const bool light = isLightThemeSelected();
+        const auto& portrait = seniorCornerLeftImage;
+        if (!portrait.isValid() || figureBounds.isEmpty())
+            return;
+
+        const auto target = getSeniorCornerPortraitBounds(figureBounds);
+        if (target.isEmpty())
+            return;
+
+        g.setOpacity(light ? 0.96f : 0.88f);
+        g.drawImage(portrait, target, juce::RectanglePlacement::centred
+                                    | juce::RectanglePlacement::onlyReduceInSize);
+        g.setOpacity(1.0f);
+    }
+
+    juce::Rectangle<float> getToolbarPreviewButtonBounds() const
+    {
+        auto toolbar = getLocalBounds().reduced(contentPadding).removeFromTop(toolbarHeight).toFloat().reduced(0.0f, 1.0f);
+        const auto& portrait = seniorCornerLeftImage;
+        if (!portrait.isValid() || toolbar.isEmpty())
+            return {};
+
+        const float targetH = juce::jlimit(74.0f, 82.0f, toolbar.getHeight() + 6.0f);
+        const float targetW = targetH * static_cast<float>(portrait.getWidth()) / static_cast<float>(portrait.getHeight());
+        const float insetX = isLightThemeSelected() ? 30.0f : 32.0f;
+        const float x = toolbar.getRight() - targetW - insetX;
+        const float y = toolbar.getY() + (toolbar.getHeight() - targetH) * 0.5f;
+        return { std::round(x), std::round(y), std::round(targetW), std::round(targetH) };
+    }
+
+    juce::Rectangle<float> getSeniorCornerPortraitBounds(juce::Rectangle<float> figureBounds) const
+    {
+        const bool light = isLightThemeSelected();
+        const auto& portrait = seniorCornerLeftImage;
+        if (!portrait.isValid() || figureBounds.isEmpty())
+            return {};
+
+        const float targetH = juce::jlimit(58.0f, 86.0f, figureBounds.getHeight() * 0.12f);
+        const float targetW = targetH * static_cast<float>(portrait.getWidth()) / static_cast<float>(portrait.getHeight());
+        const float insetX = light ? 22.0f : 24.0f;
+        const float insetY = light ? 18.0f : 20.0f;
+        const float x = figureBounds.getRight() - targetW - insetX;
+        const float y = figureBounds.getBottom() - targetH - insetY;
+        return { std::round(x), std::round(y), std::round(targetW), std::round(targetH) };
+    }
+
+    static juce::Image trimTransparentPadding(const juce::Image& source)
+    {
+        if (!source.isValid())
+            return {};
+
+        auto bounds = juce::Rectangle<int>();
+        for (int y = 0; y < source.getHeight(); ++y)
+        {
+            for (int x = 0; x < source.getWidth(); ++x)
+            {
+                if (source.getPixelAt(x, y).getAlpha() > 8)
+                {
+                    const auto pixel = juce::Rectangle<int>(x, y, 1, 1);
+                    bounds = bounds.isEmpty() ? pixel : bounds.getUnion(pixel);
+                }
+            }
+        }
+
+        return bounds.isEmpty() ? source : source.getClippedImage(bounds);
     }
 
     juce::Rectangle<int> getFigureBounds() const
@@ -3727,6 +4945,13 @@ private:
         }
     }
 
+    static juce::String insertLetter(int index)
+    {
+        static const char* letters[] = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J" };
+        return juce::isPositiveAndBelow(index, PluginInsertSlotComponent::maxInserts) ? juce::String(letters[index])
+                                                                                      : juce::String(index + 1);
+    }
+
     static int pluginIndex(PluginSlot slot)
     {
         switch (slot)
@@ -3775,6 +5000,83 @@ private:
             case PluginSlot::C: return pluginHostC;
             default: return pluginHostA;
         }
+    }
+
+    goodmeter::audio_doctor::PluginHost* getPluginHostIfAllocated(PluginSlot slot, int insertIndex) const
+    {
+        if (insertIndex <= 0)
+            return const_cast<goodmeter::audio_doctor::PluginHost*>(&const_cast<AudioDoctorContent*>(this)->getPluginHost(slot));
+
+        if (!juce::isPositiveAndBelow(insertIndex, PluginInsertSlotComponent::maxInserts))
+            return nullptr;
+
+        return extraPluginHosts[static_cast<size_t>(pluginIndex(slot))][static_cast<size_t>(insertIndex - 1)].get();
+    }
+
+    goodmeter::audio_doctor::PluginHost& getPluginHost(PluginSlot slot, int insertIndex)
+    {
+        if (insertIndex <= 0)
+            return getPluginHost(slot);
+
+        jassert(juce::isPositiveAndBelow(insertIndex, PluginInsertSlotComponent::maxInserts));
+        auto& host = extraPluginHosts[static_cast<size_t>(pluginIndex(slot))][static_cast<size_t>(insertIndex - 1)];
+        if (host == nullptr)
+            host = std::make_unique<goodmeter::audio_doctor::PluginHost>();
+        return *host;
+    }
+
+    bool hasPluginAtInsert(PluginSlot slot, int insertIndex) const
+    {
+        if (auto* host = getPluginHostIfAllocated(slot, insertIndex))
+            return host->getCurrentPlugin() != nullptr;
+        return false;
+    }
+
+    bool isPluginInsertBypassed(PluginSlot slot, int insertIndex) const
+    {
+        if (!juce::isPositiveAndBelow(insertIndex, PluginInsertSlotComponent::maxInserts))
+            return false;
+
+        return pluginInsertBypassed[static_cast<size_t>(pluginIndex(slot))][static_cast<size_t>(insertIndex)];
+    }
+
+    int loadedPluginCount(PluginSlot slot) const
+    {
+        int count = 0;
+        for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+            if (hasPluginAtInsert(slot, i))
+                ++count;
+        return count;
+    }
+
+    int firstLoadedInsertIndex(PluginSlot slot) const
+    {
+        for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+            if (hasPluginAtInsert(slot, i))
+                return i;
+        return 0;
+    }
+
+    int visiblePluginInsertRows(PluginSlot slot) const
+    {
+        if (!pluginChainExpanded[static_cast<size_t>(pluginIndex(slot))])
+            return 0;
+
+        const int count = loadedPluginCount(slot);
+        return juce::jlimit(3, PluginInsertSlotComponent::maxInserts, count >= PluginInsertSlotComponent::maxInserts ? count : count + 1);
+    }
+
+    juce::String primaryPluginDisplayName(PluginSlot slot) const
+    {
+        if (lastRenderWasChain[static_cast<size_t>(pluginIndex(slot))]
+            && lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))] > 1)
+            return "MIX" + juce::String(lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))]);
+
+        if (auto* host = getPluginHostIfAllocated(slot, firstLoadedInsertIndex(slot)))
+            if (host->getCurrentPlugin() != nullptr)
+                return host->getCurrentPluginName();
+
+        return {};
     }
 
     std::unique_ptr<PluginEditorWindow>& getPluginEditorWindow(PluginSlot slot)
@@ -4067,6 +5369,10 @@ private:
 
     void invalidateWetForPlugin(PluginSlot slot)
     {
+        lastRenderWasChain[static_cast<size_t>(pluginIndex(slot))] = false;
+        lastRenderedInsertIndex[static_cast<size_t>(pluginIndex(slot))] = -1;
+        lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))] = 0;
+
         if (slot == PluginSlot::A)
         {
             wetAsset.reset();
@@ -4119,24 +5425,24 @@ private:
     void refreshPluginSlotLabel()
     {
         juce::String text = "Plugins: ";
-        const bool hasA = pluginHostA.getCurrentPlugin() != nullptr;
-        const bool hasB = pluginHostB.getCurrentPlugin() != nullptr;
-        const bool hasC = pluginHostC.getCurrentPlugin() != nullptr;
+        const bool hasA = loadedPluginCount(PluginSlot::A) > 0;
+        const bool hasB = loadedPluginCount(PluginSlot::B) > 0;
+        const bool hasC = loadedPluginCount(PluginSlot::C) > 0;
 
         if (!hasA && !hasB && !hasC)
             text += "none";
         else
         {
             if (hasA)
-                text += "A " + pluginHostA.getCurrentPluginName();
+                text += "A " + primaryPluginDisplayName(PluginSlot::A);
             if (hasA && hasB)
                 text += "    ";
             if (hasB)
-                text += "B " + pluginHostB.getCurrentPluginName();
+                text += "B " + primaryPluginDisplayName(PluginSlot::B);
             if ((hasA || hasB) && hasC)
                 text += "    ";
             if (hasC)
-                text += "C " + pluginHostC.getCurrentPluginName();
+                text += "C " + primaryPluginDisplayName(PluginSlot::C);
         }
 
         pluginSlotLabel.setText(text, juce::dontSendNotification);
@@ -4145,10 +5451,36 @@ private:
 
     void handlePluginInsertMainClick(PluginSlot slot)
     {
-        if (getPluginHost(slot).getCurrentPlugin() != nullptr)
-            showPluginEditor(slot);
+        auto& expanded = pluginChainExpanded[static_cast<size_t>(pluginIndex(slot))];
+        expanded = !expanded;
+        refreshPluginInsertSlots();
+        resized();
+        repaint();
+    }
+
+    void handlePluginInsertMainClick(PluginSlot slot, int insertIndex)
+    {
+        if (hasPluginAtInsert(slot, insertIndex))
+            showPluginEditor(slot, insertIndex);
         else
-            choosePlugin(slot);
+            choosePlugin(slot, insertIndex);
+    }
+
+    void togglePluginInsertBypass(PluginSlot slot, int insertIndex)
+    {
+        if (!hasPluginAtInsert(slot, insertIndex))
+            return;
+
+        auto& bypassed = pluginInsertBypassed[static_cast<size_t>(pluginIndex(slot))][static_cast<size_t>(insertIndex)];
+        bypassed = !bypassed;
+
+        invalidateWetForPlugin(slot);
+        setStatus("Plugin " + juce::String(slotName(slot)) + " insert " + juce::String(insertIndex + 1)
+                  + (bypassed ? " bypassed." : " enabled."));
+        refreshPluginSlotLabel();
+        updateButtonStates();
+        resized();
+        repaint();
     }
 
     void refreshPluginInsertSlots()
@@ -4158,13 +5490,36 @@ private:
 
         auto refresh = [this, busy, light] (PluginInsertSlotComponent& insert, PluginSlot slot)
         {
-            auto& host = getPluginHost(slot);
-            const bool hasPlugin = host.getCurrentPlugin() != nullptr;
-            const bool canRender = hasPlugin && hasRenderInputAsset(slot) && !busy;
-            insert.setState(hasPlugin ? host.getCurrentPluginName() : juce::String(),
-                            hasPlugin,
-                            canRender,
-                            light);
+            std::array<PluginInsertSlotComponent::InsertViewState, PluginInsertSlotComponent::maxInserts> states;
+            const bool canRenderSlot = !busy;
+            for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+            {
+                auto& state = states[static_cast<size_t>(i)];
+                if (auto* host = getPluginHostIfAllocated(slot, i))
+                {
+                    if (host->getCurrentPlugin() != nullptr)
+                    {
+                        state.pluginName = host->getCurrentPluginName();
+                        state.hasPlugin = true;
+                        state.bypassed = isPluginInsertBypassed(slot, i);
+                    }
+                }
+            }
+
+            const int count = loadedPluginCount(slot);
+            const bool hasAny = count > 0;
+            const bool chainRendered = lastRenderWasChain[static_cast<size_t>(pluginIndex(slot))]
+                                    && lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))] > 1
+                                    && getHasPluginRender(slot);
+            insert.setState(primaryPluginDisplayName(slot),
+                            hasAny,
+                            canRenderSlot && hasAny,
+                            light,
+                            states,
+                            pluginChainExpanded[static_cast<size_t>(pluginIndex(slot))],
+                            visiblePluginInsertRows(slot),
+                            chainRendered,
+                            lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))]);
         };
 
         refresh(pluginInsertA, PluginSlot::A);
@@ -4174,15 +5529,20 @@ private:
 
     void choosePlugin(PluginSlot slot)
     {
+        choosePlugin(slot, firstLoadedInsertIndex(slot));
+    }
+
+    void choosePlugin(PluginSlot slot, int insertIndex)
+    {
         pluginChooser = std::make_unique<juce::FileChooser>(
-            "Choose AU/VST3 Plugin " + juce::String(slotName(slot)),
+            "Choose AU/VST3 Plugin " + juce::String(slotName(slot)) + " Insert " + insertLetter(insertIndex),
             lastPluginDirectory,
             "*.vst3;*.component");
 
         pluginChooser->launchAsync(juce::FileBrowserComponent::openMode
                                  | juce::FileBrowserComponent::canSelectFiles
                                  | juce::FileBrowserComponent::canSelectDirectories,
-            [this, slot](const juce::FileChooser& fc)
+            [this, slot, insertIndex](const juce::FileChooser& fc)
             {
                 const auto selected = fc.getResult();
                 if (selected == juce::File{})
@@ -4198,7 +5558,7 @@ private:
                 }
 
                 lastPluginDirectory = pluginBundle.getParentDirectory();
-                showPluginLoadConfirmation(slot, pluginBundle);
+                showPluginLoadConfirmation(slot, insertIndex, pluginBundle);
             });
     }
 
@@ -4210,18 +5570,23 @@ private:
 
     void showPluginLoadConfirmation(PluginSlot slot, const juce::File& file)
     {
+        showPluginLoadConfirmation(slot, firstLoadedInsertIndex(slot), file);
+    }
+
+    void showPluginLoadConfirmation(PluginSlot slot, int insertIndex, const juce::File& file)
+    {
         pluginLoadConfirmWindow.reset();
 
         auto content = std::make_unique<PluginLoadConfirmComponent>(
-            juce::String(slotName(slot)),
+            juce::String(slotName(slot)) + " / " + insertLetter(insertIndex),
             file,
             loadPluginConfirmBackgroundImage(),
             isLightThemeSelected(),
-            [this, slot, file] (bool shouldLoad)
+            [this, slot, insertIndex, file] (bool shouldLoad)
             {
                 pluginLoadConfirmWindow.reset();
                 if (shouldLoad)
-                    loadPluginFromFile(slot, file);
+                    loadPluginFromFile(slot, insertIndex, file);
             });
 
         pluginLoadConfirmWindow = std::make_unique<PluginLoadConfirmWindow>(
@@ -4234,6 +5599,11 @@ private:
 
     void loadPluginFromFile(PluginSlot slot, const juce::File& file)
     {
+        loadPluginFromFile(slot, firstLoadedInsertIndex(slot), file);
+    }
+
+    void loadPluginFromFile(PluginSlot slot, int insertIndex, const juce::File& file)
+    {
         if (rendering.load())
             return;
 
@@ -4241,10 +5611,10 @@ private:
         closePluginEditorWindow(slot);
 
         juce::String error;
-        auto& host = getPluginHost(slot);
+        auto& host = getPluginHost(slot, insertIndex);
         if (!host.loadPluginFromFile(file, error))
         {
-            setStatus("Plugin " + juce::String(slotName(slot)) + " load failed: " + error);
+            setStatus("Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " load failed: " + error);
             refreshPluginSlotLabel();
             updateButtonStates();
             repaint();
@@ -4252,20 +5622,28 @@ private:
         }
 
         getOutputGainDb(slot) = 0.0;
+        pluginInsertBypassed[static_cast<size_t>(pluginIndex(slot))][static_cast<size_t>(insertIndex)] = false;
         invalidateWetForPlugin(slot);
-        setStatus("Plugin " + juce::String(slotName(slot)) + " loaded: " + host.getCurrentPluginName());
+        pluginChainExpanded[static_cast<size_t>(pluginIndex(slot))] = true;
+        setStatus("Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " loaded: " + host.getCurrentPluginName());
         refreshPluginSlotLabel();
         updateButtonStates();
-        showPluginEditor(slot);
+        resized();
+        showPluginEditor(slot, insertIndex);
         repaint();
     }
 
     void showPluginEditor(PluginSlot slot)
     {
-        auto& host = getPluginHost(slot);
+        showPluginEditor(slot, firstLoadedInsertIndex(slot));
+    }
+
+    void showPluginEditor(PluginSlot slot, int insertIndex)
+    {
+        auto& host = getPluginHost(slot, insertIndex);
         if (host.getCurrentPlugin() == nullptr)
         {
-            setStatus("Choose Plugin " + juce::String(slotName(slot)) + " first.");
+            setStatus("Choose Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " first.");
             return;
         }
 
@@ -4283,29 +5661,45 @@ private:
         if (editor->getWidth() <= 0 || editor->getHeight() <= 0)
             editor->setSize(620, 360);
 
-        auto& editorWindow = getPluginEditorWindow(slot);
-        editorWindow = std::make_unique<PluginEditorWindow>(
-            "Plugin " + juce::String(slotName(slot)) + ": " + host.getCurrentPluginName(),
-            std::move(editor),
-            isLightThemeSelected(),
-            getOutputGainDb(slot),
-            [this, slot](double outputGainDb)
-            {
+	        auto& editorWindow = getPluginEditorWindow(slot);
+	        const bool previewInitiallyActive = previewMode == PreviewMode::plugin
+	                                         && previewPluginSlot == slot
+                                             && previewPluginInsertIndex.has_value()
+                                             && *previewPluginInsertIndex == insertIndex
+	                                         && previewCallbackAttached;
+	        editorWindow = std::make_unique<PluginEditorWindow>(
+	            "Plugin " + juce::String(slotName(slot)) + " Insert " + insertLetter(insertIndex) + ": " + host.getCurrentPluginName(),
+	            std::move(editor),
+	            isLightThemeSelected(),
+	            getOutputGainDb(slot),
+	            previewInitiallyActive,
+	            [this, slot](double outputGainDb)
+	            {
                 const auto clamped = clampOutputGainDb(outputGainDb);
                 if (std::abs(getOutputGainDb(slot) - clamped) < 0.001)
                     return;
 
                 getOutputGainDb(slot) = clamped;
                 invalidateWetForPlugin(slot);
-                setStatus("Plugin " + juce::String(slotName(slot)) + " output gain set to "
-                          + formatOutputGainDb(clamped) + ". Render " + juce::String(slotName(slot)) + " to apply.");
+                if (previewMode == PreviewMode::plugin && previewPluginSlot == slot && previewCallbackAttached)
+                {
+                    previewSource.setRealtimeOutputGainDb(clamped);
+                    setStatus("Plugin " + juce::String(slotName(slot)) + " output gain set to "
+                              + formatOutputGainDb(clamped) + ". Live preview updated.");
+                }
+                else
+                {
+                    setStatus("Plugin " + juce::String(slotName(slot)) + " output gain set to "
+                              + formatOutputGainDb(clamped) + ". Render " + juce::String(slotName(slot)) + " to apply.");
+                }
                 updateButtonStates();
                 repaint();
-            },
-            [this, slot] { renderWetWithPlugin(slot); },
+	            },
+            [this, slot, insertIndex] { return togglePluginEffectPreview(slot, insertIndex); },
+            [this, slot, insertIndex] { renderWetWithPlugin(slot, insertIndex); },
             [this, slot] { closePluginEditorWindow(slot); });
 
-        setStatus("Editing Plugin " + juce::String(slotName(slot)) + ": " + host.getCurrentPluginName());
+        setStatus("Editing Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + ": " + host.getCurrentPluginName());
     }
 
     void closePluginEditorWindow()
@@ -4317,7 +5711,39 @@ private:
 
     void closePluginEditorWindow(PluginSlot slot)
     {
+        const bool resumePreview = detachRealtimePreviewForPluginEditorClose(slot);
         getPluginEditorWindow(slot).reset();
+        resumeRealtimePreviewAfterPluginEditorClose(slot, resumePreview);
+    }
+
+    bool detachRealtimePreviewForPluginEditorClose(PluginSlot slot)
+    {
+        if (deviceMgr == nullptr
+            || !previewCallbackAttached
+            || previewMode != PreviewMode::plugin
+            || previewPluginSlot != slot)
+            return false;
+
+        deviceMgr->removeAudioCallback(&audioSourcePlayer);
+        previewCallbackAttached = false;
+        return true;
+    }
+
+    void resumeRealtimePreviewAfterPluginEditorClose(PluginSlot slot, bool shouldResume)
+    {
+        if (!shouldResume
+            || deviceMgr == nullptr
+            || previewCallbackAttached
+            || previewMode != PreviewMode::plugin
+            || previewPluginSlot != slot)
+            return;
+
+        deviceMgr->addAudioCallback(&audioSourcePlayer);
+        previewCallbackAttached = true;
+        outputButton.setState(previewOutputEnabled, true, previewOutputName,
+                              isLightThemeSelected() ? lightUiText() : uiText(),
+                              isLightThemeSelected());
+        startTimerHz(30);
     }
 
     void suspendPluginSlot(PluginSlot slot)
@@ -4325,7 +5751,9 @@ private:
         closePluginEditorWindow(slot);
 
         juce::String ignoredError;
-        getPluginHost(slot).suspendEditableInstance(ignoredError);
+        for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+            if (auto* host = getPluginHostIfAllocated(slot, i))
+                host->suspendEditableInstance(ignoredError);
     }
 
     void suspendOtherPluginSlots(PluginSlot activeSlot)
@@ -4337,13 +5765,20 @@ private:
 
     void renderWetWithPlugin(PluginSlot slot)
     {
-        auto& host = getPluginHost(slot);
+        renderWetWithPlugin(slot, firstLoadedInsertIndex(slot));
+    }
+
+    void renderWetWithPlugin(PluginSlot slot, int insertIndex)
+    {
+        auto& host = getPluginHost(slot, insertIndex);
         juce::String inputError;
         auto inputAsset = makeRenderInputAsset(slot, inputError);
         if (rendering.load() || inputAsset == nullptr || host.getCurrentPlugin() == nullptr)
         {
             if (inputAsset == nullptr)
                 setStatus(inputError.isNotEmpty() ? inputError : "Choose a routed DRY source before Render " + juce::String(slotName(slot)) + ".");
+            else if (host.getCurrentPlugin() == nullptr)
+                setStatus("Choose Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " before Render.");
             return;
         }
 
@@ -4364,7 +5799,7 @@ private:
         rendering.store(true);
         updateButtonStates();
         const auto inputLabel = renderInputLabel(slot);
-        setStatus("Rendering Plugin " + juce::String(slotName(slot)) + " from " + inputLabel + "...");
+        setStatus("Rendering Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " from " + inputLabel + "...");
 
         auto dryCopy = std::move(*inputAsset);
         auto reference = std::make_shared<Asset>(dryCopy);
@@ -4374,6 +5809,7 @@ private:
 
         renderThread = std::thread([this,
                                      slot,
+                                     insertIndex,
                                      inputLabel,
                                      dryCopy = std::move(dryCopy),
                                      reference,
@@ -4387,7 +5823,7 @@ private:
             auto result = std::make_shared<goodmeter::audio_doctor::OfflineRenderResult>(
                 goodmeter::audio_doctor::PluginHost::renderOfflineWithMessageThreadPreparedDescription(pluginDescription, dryCopy, stateToApply, 512, fallbackTailSeconds));
 
-            juce::MessageManager::callAsync([this, slot, inputLabel, reference, safeFlag, result, outputGainDb]()
+            juce::MessageManager::callAsync([this, slot, insertIndex, inputLabel, reference, safeFlag, result, outputGainDb]()
             {
                 if (!safeFlag->load())
                     return;
@@ -4415,6 +5851,9 @@ private:
                     getLastTailSeconds(slot) = result->tailSeconds;
                     getLastPluginDescription(slot) = result->pluginDescription;
                     getHasPluginRender(slot) = true;
+                    lastRenderWasChain[static_cast<size_t>(pluginIndex(slot))] = false;
+                    lastRenderedInsertIndex[static_cast<size_t>(pluginIndex(slot))] = insertIndex;
+                    lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))] = 0;
 
                     setStatus("Rendered Wet " + juce::String(slotName(slot)) + " from " + inputLabel + ": "
                               + getLastPluginDescription(slot).name
@@ -4423,6 +5862,194 @@ private:
                               + juce::String(getLastLatencySamples(slot)) + " samples");
                 }
 
+                updateButtonStates();
+                updateTerrainCameraControls();
+                repaint();
+            });
+        });
+    }
+
+    struct PluginRenderStep
+    {
+        juce::PluginDescription description;
+        juce::MemoryBlock state;
+        double fallbackTailSeconds = 1.0;
+        int insertIndex = 0;
+    };
+
+    void renderWetWithPluginChain(PluginSlot slot)
+    {
+        juce::String inputError;
+        auto inputAsset = makeRenderInputAsset(slot, inputError);
+        if (rendering.load() || inputAsset == nullptr)
+        {
+            if (inputAsset == nullptr)
+                setStatus(inputError.isNotEmpty() ? inputError : "Choose a routed DRY source before Render " + juce::String(slotName(slot)) + ".");
+            return;
+        }
+
+        std::vector<PluginRenderStep> steps;
+        for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+        {
+            auto* host = getPluginHostIfAllocated(slot, i);
+            if (host == nullptr || host->getCurrentPlugin() == nullptr)
+                continue;
+            if (isPluginInsertBypassed(slot, i))
+                continue;
+
+            juce::String stateError;
+            PluginRenderStep step;
+            step.description = host->getCurrentPluginDescriptionCopy();
+            step.fallbackTailSeconds = uiFallbackTailSecondsFor(step.description);
+            step.insertIndex = i;
+            if (!host->captureCurrentState(step.state, stateError))
+            {
+                setStatus("Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(i) + " state failed: " + stateError);
+                return;
+            }
+            steps.push_back(std::move(step));
+        }
+
+        if (steps.empty())
+        {
+            setStatus(loadedPluginCount(slot) > 0
+                ? "Un-bypass at least one insert before chain render " + juce::String(slotName(slot)) + "."
+                : "Load at least one insert before chain render " + juce::String(slotName(slot)) + ".");
+            return;
+        }
+
+        if (renderThread.joinable())
+            renderThread.join();
+
+        suspendOtherPluginSlots(slot);
+
+        rendering.store(true);
+        updateButtonStates();
+        const auto inputLabel = renderInputLabel(slot);
+        const auto renderLabel = steps.size() > 1 ? "MIX" + juce::String(static_cast<int>(steps.size()))
+                                                  : steps.front().description.name;
+        setStatus("Rendering Plugin " + juce::String(slotName(slot)) + " chain " + renderLabel
+                  + " from " + inputLabel + "...");
+
+        auto dryCopy = std::move(*inputAsset);
+        auto reference = std::make_shared<Asset>(dryCopy);
+        auto safeFlag = aliveFlag;
+        const double outputGainDb = getOutputGainDb(slot);
+
+        renderThread = std::thread([this,
+                                     slot,
+                                     inputLabel,
+                                     dryCopy = std::move(dryCopy),
+                                     reference,
+                                     steps = std::move(steps),
+                                     outputGainDb,
+                                     safeFlag]() mutable
+        {
+            auto wetResult = std::make_shared<Asset>();
+            auto errorText = std::make_shared<juce::String>();
+            int totalLatencySamples = 0;
+            double totalTailSeconds = 0.0;
+            Asset current = std::move(dryCopy);
+
+            for (const auto& step : steps)
+            {
+                const auto* stateToApply = step.state.getSize() > 0 ? &step.state : nullptr;
+                auto result = goodmeter::audio_doctor::PluginHost::renderOfflineWithMessageThreadPreparedDescription(
+                    step.description,
+                    current,
+                    stateToApply,
+                    512,
+                    step.fallbackTailSeconds);
+
+                if (result.error.isNotEmpty())
+                {
+                    *errorText = "Insert " + insertLetter(step.insertIndex) + " " + step.description.name + ": " + result.error;
+                    break;
+                }
+
+                totalLatencySamples += result.latencySamples;
+                totalTailSeconds += result.tailSeconds;
+                current = std::move(result.wet);
+            }
+
+            if (errorText->isEmpty())
+            {
+                const int activeCount = static_cast<int>(steps.size());
+                const auto renderName = activeCount > 1 ? "MIX" + juce::String(activeCount)
+                                                        : steps.front().description.name;
+                current.name = reference->name + " -> " + renderName;
+                *wetResult = std::move(current);
+            }
+
+            const int chainCount = static_cast<int>(steps.size());
+            const int firstStepIndex = chainCount > 0 ? steps.front().insertIndex : -1;
+            const auto firstStepDescription = chainCount > 0 ? steps.front().description : juce::PluginDescription();
+            juce::MessageManager::callAsync([this,
+                                             slot,
+                                             inputLabel,
+                                             reference,
+                                             safeFlag,
+                                             wetResult,
+                                             errorText,
+                                             totalLatencySamples,
+                                             totalTailSeconds,
+                                             outputGainDb,
+                                             chainCount,
+                                             firstStepIndex,
+                                             firstStepDescription]()
+            {
+                if (!safeFlag->load())
+                    return;
+
+                rendering.store(false);
+
+                if (errorText->isNotEmpty())
+                {
+                    setStatus(*errorText);
+                }
+                else
+                {
+                    applyOutputGainToAsset(*wetResult, outputGainDb);
+
+                    if (slot == PluginSlot::A)
+                        wetAsset = std::make_unique<Asset>(std::move(*wetResult));
+                    else if (slot == PluginSlot::B)
+                        wetBAsset = std::make_unique<Asset>(std::move(*wetResult));
+                    else
+                        wetCAsset = std::make_unique<Asset>(std::move(*wetResult));
+
+                    juce::PluginDescription renderedDescription;
+                    if (chainCount > 1)
+                    {
+                        renderedDescription.name = "MIX" + juce::String(chainCount);
+                        renderedDescription.manufacturerName = "GOODMETER";
+                        renderedDescription.pluginFormatName = "FX Chain";
+                    }
+                    else
+                    {
+                        renderedDescription = firstStepDescription;
+                    }
+
+                    getLastPluginDescription(slot) = renderedDescription;
+                    getRenderReference(slot) = std::make_unique<Asset>(*reference);
+                    refreshTransferAnalysis();
+                    getLastLatencySamples(slot) = totalLatencySamples;
+                    getLastTailSeconds(slot) = totalTailSeconds;
+                    getHasPluginRender(slot) = true;
+                    lastRenderWasChain[static_cast<size_t>(pluginIndex(slot))] = chainCount > 1;
+                    lastRenderedInsertIndex[static_cast<size_t>(pluginIndex(slot))] = chainCount > 1 ? -1 : firstStepIndex;
+                    lastRenderedChainCount[static_cast<size_t>(pluginIndex(slot))] = chainCount > 1 ? chainCount : 0;
+
+                    const auto renderedName = chainCount > 1 ? "MIX" + juce::String(chainCount)
+                                                             : firstStepDescription.name;
+                    setStatus("Rendered Wet " + juce::String(slotName(slot)) + " chain from " + inputLabel + ": "
+                              + renderedName
+                              + (std::abs(outputGainDb) >= 0.001 ? " | output gain " + formatOutputGainDb(outputGainDb) : "")
+                              + " | latency compensated "
+                              + juce::String(totalLatencySamples) + " samples");
+                }
+
+                refreshPluginSlotLabel();
                 updateButtonStates();
                 updateTerrainCameraControls();
                 repaint();
@@ -5220,6 +6847,7 @@ private:
 
     void resetAll()
     {
+        stopAudioPreview(true);
         dryAsset.reset();
         dryBAsset.reset();
         dryCAsset.reset();
@@ -5234,6 +6862,15 @@ private:
         pluginHostA.clearPlugin();
         pluginHostB.clearPlugin();
         pluginHostC.clearPlugin();
+        for (auto& chain : extraPluginHosts)
+            for (auto& host : chain)
+                host.reset();
+        for (auto& chain : pluginInsertBypassed)
+            chain.fill(false);
+        pluginChainExpanded = {{ false, false, false }};
+        lastRenderWasChain = {{ false, false, false }};
+        lastRenderedInsertIndex = {{ -1, -1, -1 }};
+        lastRenderedChainCount = {{ 0, 0, 0 }};
         refreshPluginSlotLabel();
         hasPluginRenderA = false;
         hasPluginRenderB = false;
@@ -5431,9 +7068,9 @@ private:
     {
         const bool hasDry = dryAsset != nullptr || dryBAsset != nullptr || dryCAsset != nullptr;
         const bool hasWet = wetAsset != nullptr || wetBAsset != nullptr || wetCAsset != nullptr;
-        const bool hasPluginA = pluginHostA.getCurrentPlugin() != nullptr;
-        const bool hasPluginB = pluginHostB.getCurrentPlugin() != nullptr;
-        const bool hasPluginC = pluginHostC.getCurrentPlugin() != nullptr;
+        const bool hasPluginA = loadedPluginCount(PluginSlot::A) > 0;
+        const bool hasPluginB = loadedPluginCount(PluginSlot::B) > 0;
+        const bool hasPluginC = loadedPluginCount(PluginSlot::C) > 0;
         const bool hasRenderInputA = hasRenderInputAsset(PluginSlot::A);
         const bool hasRenderInputB = hasRenderInputAsset(PluginSlot::B);
         const bool hasRenderInputC = hasRenderInputAsset(PluginSlot::C);
@@ -5460,6 +7097,354 @@ private:
     void setStatus(const juce::String& text)
     {
         statusLabel.setText(text, juce::dontSendNotification);
+    }
+
+    void showOutputMenu()
+    {
+        juce::PopupMenu menu;
+        menu.setLookAndFeel(&audioDoctorPopupLookAndFeel);
+        menu.addSectionHeader("Audio Doctor Output");
+        menu.addItem(1, "Disabled", true, !previewOutputEnabled);
+        menu.addSeparator();
+
+        auto choices = std::make_shared<std::vector<juce::String>>();
+        auto currentSetup = deviceMgr != nullptr ? deviceMgr->getAudioDeviceSetup()
+                                                 : juce::AudioDeviceManager::AudioDeviceSetup();
+        int itemId = 100;
+
+        if (deviceMgr != nullptr)
+        {
+            auto& deviceTypes = deviceMgr->getAvailableDeviceTypes();
+            for (auto* deviceType : deviceTypes)
+            {
+                if (deviceType == nullptr)
+                    continue;
+
+                auto outputNames = deviceType->getDeviceNames(false);
+                for (const auto& name : outputNames)
+                {
+                    choices->push_back(name);
+                    const bool current = previewOutputEnabled
+                                      && (currentSetup.outputDeviceName == name
+                                          || (currentSetup.outputDeviceName.isEmpty() && previewOutputName == name));
+                    menu.addItem(itemId++, name, true, current);
+                }
+            }
+        }
+
+        if (choices->empty())
+            menu.addItem(2, "(No output device found)", false);
+
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&outputButton),
+                           [this, choices](int result)
+                           {
+                               if (result == 0)
+                                   return;
+
+                               if (result == 1)
+                               {
+                                   disablePreviewOutput();
+                                   return;
+                               }
+
+                               const int index = result - 100;
+                               if (!juce::isPositiveAndBelow(index, static_cast<int>(choices->size()))
+                                   || deviceMgr == nullptr)
+                                   return;
+
+                               auto setup = deviceMgr->getAudioDeviceSetup();
+                               setup.outputDeviceName = (*choices)[static_cast<size_t>(index)];
+                               setup.useDefaultOutputChannels = true;
+                               const auto error = deviceMgr->setAudioDeviceSetup(setup, true);
+                               if (error.isNotEmpty())
+                               {
+                                   previewOutputEnabled = false;
+                                   setStatus("Audio Doctor output failed: " + error);
+                               }
+                               else
+                               {
+                                   previewOutputEnabled = true;
+                                   previewOutputName = setup.outputDeviceName;
+                                   setStatus("Audio Doctor output -> " + previewOutputName);
+                               }
+                               refreshThemeColours();
+                               updateTerrainCameraControls();
+                           });
+    }
+
+    void disablePreviewOutput()
+    {
+        stopAudioPreview(false);
+        previewOutputEnabled = false;
+        previewOutputName = {};
+        setStatus("Audio Doctor output disabled.");
+        refreshThemeColours();
+    }
+
+    void setPreviewDimEnabled(bool shouldEnable)
+    {
+        previewDimEnabled = shouldEnable;
+        previewSource.setDimGainDb(previewDimEnabled ? -8.0 : 0.0);
+        previewDimButton.setDimmed(previewDimEnabled);
+        setStatus(previewDimEnabled ? "Audio Doctor DIM enabled (-8 dB)."
+                                    : "Audio Doctor DIM disabled.");
+        refreshThemeColours();
+    }
+
+    bool toggleFigureLoopPreview()
+    {
+        if (previewMode == PreviewMode::loop && previewCallbackAttached)
+        {
+            stopAudioPreview(false);
+            return false;
+        }
+
+        auto previewAsset = makeDisplayPreviewAsset();
+        if (previewAsset == nullptr)
+        {
+            setStatus("Load or render an asset before preview.");
+            return false;
+        }
+
+        return startAssetPreview(*previewAsset, true, false, 0.0,
+                                 "Loop preview: " + previewAsset->name,
+                                 PreviewMode::loop, {}, {});
+    }
+
+    bool togglePluginEffectPreview(PluginSlot slot)
+    {
+        return togglePluginEffectPreview(slot, firstLoadedInsertIndex(slot));
+    }
+
+    bool togglePluginEffectPreview(PluginSlot slot, int insertIndex)
+    {
+        if (previewMode == PreviewMode::plugin
+            && previewPluginSlot == slot
+            && previewPluginInsertIndex.has_value()
+            && *previewPluginInsertIndex == insertIndex
+            && previewCallbackAttached)
+        {
+            stopAudioPreview(false);
+            return false;
+        }
+
+        if (!previewOutputEnabled)
+        {
+            setStatus("Choose Audio Doctor Output before plugin preview.");
+            return false;
+        }
+
+        auto& host = getPluginHost(slot, insertIndex);
+        juce::String inputError;
+        auto inputAsset = makeRenderInputAsset(slot, inputError);
+        if (inputAsset == nullptr || host.getCurrentPlugin() == nullptr)
+        {
+            setStatus(inputError.isNotEmpty() ? inputError : "Choose Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + " and a routed DRY source first.");
+            return false;
+        }
+
+        juce::String pluginError;
+        if (!host.ensureEditableInstance(pluginError))
+        {
+            setStatus(pluginError);
+            return false;
+        }
+
+        return startAssetPreview(*inputAsset, true, false, 0.0,
+                                 "Live preview Plugin " + juce::String(slotName(slot)) + " insert " + insertLetter(insertIndex) + ": " + host.getCurrentPluginDescriptionCopy().name,
+                                 PreviewMode::plugin, slot, insertIndex, &host, getOutputGainDb(slot));
+    }
+
+    void startTimelineAudioPreview(bool reverse)
+    {
+        auto previewAsset = makeDisplayPreviewAsset();
+        if (previewAsset == nullptr)
+            return;
+
+        const double startSeconds = juce::jlimit(0.0,
+                                                 static_cast<double>(getSpatialImpressionDurationSeconds()),
+                                                 static_cast<double>(spatialTimePositionSeconds));
+        startAssetPreview(*previewAsset, false, reverse, startSeconds,
+                          reverse ? "Reverse timeline preview." : "Timeline preview.",
+                          PreviewMode::timeline, {}, {});
+    }
+
+    bool startAssetPreview(const Asset& asset, bool loop, bool reverse, double startSeconds,
+                           const juce::String& statusText, PreviewMode mode, std::optional<PluginSlot> pluginSlot,
+                           std::optional<int> pluginInsertIndex,
+                           goodmeter::audio_doctor::PluginHost* realtimeHost = nullptr,
+                           double realtimeOutputGainDb = 0.0)
+    {
+        if (!previewOutputEnabled)
+        {
+            setStatus("Choose Audio Doctor Output before preview.");
+            return false;
+        }
+
+        if (deviceMgr == nullptr)
+        {
+            setStatus("Audio Doctor output device is unavailable.");
+            return false;
+        }
+
+        stopAudioPreview(true);
+        if (realtimeHost != nullptr)
+        {
+            auto* device = deviceMgr->getCurrentAudioDevice();
+            const double sampleRate = device != nullptr ? device->getCurrentSampleRate()
+                                                        : (asset.sampleRate > 0.0 ? asset.sampleRate : 48000.0);
+            const int blockSize = device != nullptr ? device->getCurrentBufferSizeSamples() : 512;
+            juce::String realtimeError;
+            if (!realtimeHost->prepareRealtimePreview(sampleRate, blockSize, realtimeError))
+            {
+                setStatus(realtimeError.isNotEmpty() ? realtimeError : "Plugin live preview could not start.");
+                return false;
+            }
+
+            previewSource.setRealtimeProcessor(realtimeHost, realtimeOutputGainDb);
+        }
+        else
+        {
+            previewSource.clearRealtimeProcessor();
+        }
+
+        previewSource.loadAsset(asset, loop, reverse, startSeconds);
+        deviceMgr->addAudioCallback(&audioSourcePlayer);
+        previewCallbackAttached = true;
+        previewMode = mode;
+        previewPluginSlot = pluginSlot;
+        previewPluginInsertIndex = pluginInsertIndex;
+        outputButton.setState(previewOutputEnabled, true, previewOutputName, isLightThemeSelected() ? lightUiText() : uiText(), isLightThemeSelected());
+        figureLoopPreviewBtn.setActive(mode == PreviewMode::loop);
+        setStatus(statusText);
+        startTimerHz(30);
+        return true;
+    }
+
+    void stopAudioPreview(bool immediate)
+    {
+        figureLoopPreviewBtn.setActive(false);
+        if (!previewCallbackAttached)
+        {
+            previewSource.stopNow();
+            previewSource.clearRealtimeProcessor();
+            previewMode = PreviewMode::none;
+            previewPluginSlot.reset();
+            previewPluginInsertIndex.reset();
+            refreshThemeColours();
+            return;
+        }
+
+        if (immediate)
+        {
+            if (deviceMgr != nullptr)
+                deviceMgr->removeAudioCallback(&audioSourcePlayer);
+            previewCallbackAttached = false;
+            previewSource.stopNow();
+            previewSource.clearRealtimeProcessor();
+            previewMode = PreviewMode::none;
+            previewPluginSlot.reset();
+            previewPluginInsertIndex.reset();
+            refreshThemeColours();
+            return;
+        }
+
+        previewSource.requestStop();
+        startTimerHz(30);
+    }
+
+    void serviceAudioPreview()
+    {
+        if (!previewCallbackAttached)
+            return;
+
+        if (!previewSource.isFinished())
+            return;
+
+        if (deviceMgr != nullptr)
+            deviceMgr->removeAudioCallback(&audioSourcePlayer);
+        previewCallbackAttached = false;
+        previewSource.clearRealtimeProcessor();
+        previewMode = PreviewMode::none;
+        previewPluginSlot.reset();
+        previewPluginInsertIndex.reset();
+        figureLoopPreviewBtn.setActive(false);
+        refreshThemeColours();
+    }
+
+    void stopTimerIfIdle()
+    {
+        if (!spatialTimelinePlaying && !previewCallbackAttached)
+            stopTimer();
+    }
+
+    std::unique_ptr<Asset> makeDisplayPreviewAsset() const
+    {
+        std::vector<const Asset*> sources;
+        if (isLayerFitFusionView())
+        {
+            for (auto* asset : makeLayerFitSources())
+                if (asset != nullptr && asset->buffer.getNumSamples() > 0)
+                    sources.push_back(asset);
+            if (auto* bounce = layerFitBounceAsset(); bounce != nullptr && bounce->buffer.getNumSamples() > 0)
+                sources.push_back(bounce);
+        }
+        else
+        {
+            for (int i = 0; i < 3; ++i)
+                if (auto* asset = displayAsset(i); asset != nullptr && asset->buffer.getNumSamples() > 0)
+                    sources.push_back(asset);
+        }
+
+        if (sources.empty())
+            return {};
+
+        double targetSampleRate = sources.front()->sampleRate > 0.0 ? sources.front()->sampleRate : 48000.0;
+        double durationSeconds = 0.0;
+        for (auto* asset : sources)
+            durationSeconds = juce::jmax(durationSeconds,
+                                         static_cast<double>(asset->buffer.getNumSamples())
+                                         / juce::jmax(1.0, asset->sampleRate));
+
+        const int totalSamples = juce::jmax(1, static_cast<int>(std::ceil(durationSeconds * targetSampleRate)));
+        auto mixed = std::make_unique<Asset>();
+        mixed->name = sources.size() == 1 ? sources.front()->name : "Display Slots Mix";
+        mixed->sourcePath = sources.front()->sourcePath;
+        mixed->sampleRate = targetSampleRate;
+        mixed->buffer.setSize(2, totalSamples);
+        mixed->buffer.clear();
+
+        const float gain = 1.0f / static_cast<float>(sources.size());
+        for (auto* asset : sources)
+        {
+            const auto stereo = goodmeter::audio_doctor::toStereoBuffer(asset->buffer);
+            const double srcRate = asset->sampleRate > 0.0 ? asset->sampleRate : targetSampleRate;
+            for (int i = 0; i < totalSamples; ++i)
+            {
+                const double srcPos = static_cast<double>(i) * srcRate / targetSampleRate;
+                if (srcPos > static_cast<double>(stereo.getNumSamples() - 1))
+                    break;
+
+                for (int ch = 0; ch < 2; ++ch)
+                    mixed->buffer.addSample(ch, i, readLinear(stereo, ch, srcPos) * gain);
+            }
+        }
+
+        return mixed;
+    }
+
+    static float readLinear(const juce::AudioBuffer<float>& buffer, int channel, double samplePosition)
+    {
+        if (buffer.getNumSamples() <= 0 || buffer.getNumChannels() <= 0)
+            return 0.0f;
+
+        const int srcCh = juce::jlimit(0, buffer.getNumChannels() - 1, channel);
+        const int maxIndex = buffer.getNumSamples() - 1;
+        const int i0 = juce::jlimit(0, maxIndex, static_cast<int>(std::floor(samplePosition)));
+        const int i1 = juce::jmin(maxIndex, i0 + 1);
+        const float frac = static_cast<float>(samplePosition - static_cast<double>(i0));
+        const auto* data = buffer.getReadPointer(srcCh);
+        return data[i0] + (data[i1] - data[i0]) * frac;
     }
 
     void refreshTransferAnalysis()
@@ -7211,6 +9196,8 @@ private:
     PluginInsertSlotComponent pluginInsertA { "A" };
     PluginInsertSlotComponent pluginInsertB { "B" };
     PluginInsertSlotComponent pluginInsertC { "C" };
+    OutputSelectorButton outputButton;
+    DimToggleButton previewDimButton;
     juce::TextButton exportBtn    { "Export" };
     juce::TextButton resetBtn     { "Reset" };
     juce::ComboBox viewMode;
@@ -7232,11 +9219,17 @@ private:
     juce::TextButton terrainProjectionBtn { "2.5D" };
     juce::TextButton terrainTimeFlipBtn { "Flip Time" };
     juce::Label spatialTimeLabel;
+    AudioDoctorTimelineSliderLookAndFeel spatialTimeSliderLookAndFeel;
     juce::Slider spatialTimeSlider;
+    bool spatialTimeSliderDragging = false;
+    double lastSpatialTimeDragValue = 0.0;
     TimePyramidPlayButton spatialTimePlayBtn { GoodMeterLookAndFeel::accentCyan };
+    SpeakerPreviewButton figureLoopPreviewBtn;
     juce::Label statusLabel;
     juce::Label pluginSlotLabel;
     AudioDoctorPopupLookAndFeel audioDoctorPopupLookAndFeel;
+    juce::Image seniorCornerLeftImage;
+    juce::Image seniorCornerRightImage;
 
     std::unique_ptr<juce::FileChooser> audioChooser;
     std::unique_ptr<juce::FileChooser> pluginChooser;
@@ -7253,6 +9246,12 @@ private:
     goodmeter::audio_doctor::PluginHost pluginHostA;
     goodmeter::audio_doctor::PluginHost pluginHostB;
     goodmeter::audio_doctor::PluginHost pluginHostC;
+    std::array<std::array<std::unique_ptr<goodmeter::audio_doctor::PluginHost>, PluginInsertSlotComponent::maxInserts - 1>, 3> extraPluginHosts;
+    std::array<std::array<bool, PluginInsertSlotComponent::maxInserts>, 3> pluginInsertBypassed {};
+    std::array<bool, 3> pluginChainExpanded {{ false, false, false }};
+    std::array<bool, 3> lastRenderWasChain {{ false, false, false }};
+    std::array<int, 3> lastRenderedInsertIndex {{ -1, -1, -1 }};
+    std::array<int, 3> lastRenderedChainCount {{ 0, 0, 0 }};
     std::unique_ptr<PluginEditorWindow> pluginEditorWindowA;
     std::unique_ptr<PluginEditorWindow> pluginEditorWindowB;
     std::unique_ptr<PluginEditorWindow> pluginEditorWindowC;
@@ -7271,11 +9270,22 @@ private:
     std::unique_ptr<Asset> renderReferenceB;
     std::unique_ptr<Asset> renderReferenceC;
 
-    juce::File exportDirectory;
-    std::thread renderThread;
-    std::shared_ptr<std::atomic<bool>> aliveFlag { std::make_shared<std::atomic<bool>>(true) };
-    std::atomic<bool> rendering { false };
-    float frequencyMinHz = 20.0f;
+	    juce::File exportDirectory;
+	    std::thread renderThread;
+	    std::shared_ptr<std::atomic<bool>> aliveFlag { std::make_shared<std::atomic<bool>>(true) };
+	    std::atomic<bool> rendering { false };
+	    juce::AudioDeviceManager* deviceMgr = nullptr;
+	    std::unique_ptr<juce::AudioDeviceManager> ownPreviewDeviceManager;
+	    AudioDoctorPreviewSource previewSource;
+	    juce::AudioSourcePlayer audioSourcePlayer;
+	    bool previewOutputEnabled = false;
+	    bool previewDimEnabled = false;
+	    bool previewCallbackAttached = false;
+	    juce::String previewOutputName;
+	    PreviewMode previewMode = PreviewMode::none;
+	    std::optional<PluginSlot> previewPluginSlot;
+	    std::optional<int> previewPluginInsertIndex;
+	    float frequencyMinHz = 20.0f;
     float frequencyMaxHz = 20000.0f;
     float timeMinSeconds = 0.0f;
     float timeMaxSeconds = 0.0f;

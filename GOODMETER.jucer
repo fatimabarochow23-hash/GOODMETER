@@ -35,6 +35,26 @@
           file="AAADOCTOR.PNG"/>
     <FILE id="AudioDoctorConfirmBg1" name="audio_doctor_plugin_confirm_bg.jpg"
           compile="0" resource="1" file="Assets/audio_doctor_plugin_confirm_bg.jpg"/>
+    <FILE id="AudioDoctorPreviewOn1" name="audio_doctor_live_preview_active.png"
+          compile="0" resource="1" file="Assets/audio_doctor_live_preview_active.png"/>
+    <FILE id="AudioDoctorPreviewOff1" name="audio_doctor_live_preview_inactive.png"
+          compile="0" resource="1" file="Assets/audio_doctor_live_preview_inactive.png"/>
+    <FILE id="AudioDoctorCursorRightDown1" name="audio_doctor_cursor_right_down.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_right_down.png"/>
+    <FILE id="AudioDoctorCursorRightUp1" name="audio_doctor_cursor_right_up.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_right_up.png"/>
+    <FILE id="AudioDoctorCursorLeftDown1" name="audio_doctor_cursor_left_down.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_left_down.png"/>
+    <FILE id="AudioDoctorCursorLeftUp1" name="audio_doctor_cursor_left_up.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_left_up.png"/>
+    <FILE id="AudioDoctorCursorSeniorLeft1" name="audio_doctor_cursor_senior_left.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_senior_left.png"/>
+    <FILE id="AudioDoctorCursorSeniorRight1" name="audio_doctor_cursor_senior_right.png"
+          compile="0" resource="1" file="Assets/audio_doctor_cursor_senior_right.png"/>
+    <FILE id="AudioDoctorDimInactive1" name="audio_doctor_dim_inactive.png"
+          compile="0" resource="1" file="Assets/audio_doctor_dim_inactive.png"/>
+    <FILE id="AudioDoctorDimActive1" name="audio_doctor_dim_active.png"
+          compile="0" resource="1" file="Assets/audio_doctor_dim_active.png"/>
     <FILE id="BtnSettings1" name="btn_settings.png" compile="0" resource="1"
           file="Assets/btn_settings.png"/>
     <FILE id="BtnRecord1" name="btn_record.png" compile="0" resource="1"

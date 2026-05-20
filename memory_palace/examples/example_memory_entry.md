@@ -9,10 +9,10 @@
 v1 不做真实 masked threshold，只做基于临界带近似、时间/频率重叠和局部电平差的遮蔽风险代理。论文只能写“遮蔽风险”“融合趋势”，不能写“人耳已经听不见”。
 
 改动文件：
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorAnalysis.h`
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorFigureRenderer.h`
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorJobRunner.h`
-- `/Users/caiyiyang/Desktop/GOODMETER/Source/AudioDoctorComponent.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorAnalysis.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorFigureRenderer.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorJobRunner.h`
+- `/Users/MediaStorm/Desktop/GOODMETER/Source/AudioDoctorComponent.h`
 
 验证：
 - `./build.sh standalone`

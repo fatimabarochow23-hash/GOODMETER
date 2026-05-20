@@ -9,6 +9,7 @@
 
 #include <JuceHeader.h>
 #include <array>
+#include <vector>
 #include "AudioDoctorPluginHost.h"
 #include "AudioDoctorFigureRenderer.h"
 
@@ -73,6 +74,12 @@ private:
         juce::String stateHash;
         juce::int64 stateBytes = 0;
         juce::String stateLabel;
+        int insertIndex = 0;
+        bool bypassed = false;
+        bool chainRender = false;
+        int chainCount = 0;
+        int activeChainCount = 0;
+        juce::String chainLabel;
     };
 
     struct PluginStateLoadResult
@@ -85,6 +92,15 @@ private:
         juce::int64 bytes = 0;
         juce::String label;
         juce::MemoryBlock state;
+    };
+
+    struct ChainInsertRuntime
+    {
+        std::unique_ptr<PluginHost> host;
+        RenderInfo renderInfo;
+        juce::MemoryBlock state;
+        int insertIndex = 0;
+        bool bypassed = false;
     };
 
     enum class MetricsKind
@@ -847,10 +863,19 @@ private:
     bool loadPluginsAndRender()
     {
         bool ok = true;
-        ok = loadPluginAndMaybeRender("pluginA", hostA, wetA, renderInfoA) && ok;
-        ok = loadPluginAndMaybeRender("pluginB", hostB, wetB, renderInfoB) && ok;
-        ok = loadPluginAndMaybeRender("pluginC", hostC, wetC, renderInfoC) && ok;
+        ok = loadPluginChainOrSingleAndMaybeRender("pluginA", hostA, wetA, renderInfoA) && ok;
+        ok = loadPluginChainOrSingleAndMaybeRender("pluginB", hostB, wetB, renderInfoB) && ok;
+        ok = loadPluginChainOrSingleAndMaybeRender("pluginC", hostC, wetC, renderInfoC) && ok;
         return ok;
+    }
+
+    bool loadPluginChainOrSingleAndMaybeRender(const juce::String& key, PluginHost& host, AssetPtr& wet, RenderInfo& renderInfo)
+    {
+        auto chainSpecs = getPluginChainSpecs(key);
+        if (chainSpecs.isEmpty())
+            return loadPluginAndMaybeRender(key, host, wet, renderInfo);
+
+        return loadPluginChainAndMaybeRender(key, chainSpecs, wet, renderInfo);
     }
 
     bool loadPluginAndMaybeRender(const juce::String& key, PluginHost& host, AssetPtr& wet, RenderInfo& renderInfo)
@@ -860,69 +885,19 @@ private:
             return true;
 
         juce::String error;
-        const auto path = getString(pluginSpec, "path", getString(pluginSpec, "plugin_id_or_path"));
-        if (path.isEmpty())
-            return true;
-
-        if (!host.loadPluginFromFile(juce::File(path), error))
-        {
-            response->setProperty("error", "Load " + key + " failed: " + error);
-            return false;
-        }
-
-        PluginStateLoadResult stateLoad;
-        if (!loadPluginState(pluginSpec, stateLoad, error))
-        {
-            response->setProperty("error", "Load " + key + " state failed: " + error);
-            return false;
-        }
-
-        if (stateLoad.loaded)
-        {
-            if (!host.applyState(stateLoad.state, error))
-            {
-                response->setProperty("error", "Apply " + key + " state failed: " + error);
-                return false;
-            }
-        }
-
-        if (auto* params = getObject(pluginSpec, "params").getArray())
-        {
-            for (const auto& p : *params)
-            {
-                const auto paramKey = getString(p, "id", getString(p, "name", getString(p, "index")));
-                const float value = static_cast<float>(getDouble(p, "value", 0.0));
-                if (!host.setParameterValue(paramKey, value, error))
-                {
-                    response->setProperty("error", "Set " + key + " parameter failed: " + error);
-                    return false;
-                }
-            }
-        }
-
         juce::MemoryBlock state;
-        if (!host.captureCurrentState(state, error))
+        if (!preparePluginFromSpec(key, pluginSpec, host, renderInfo, state, error))
         {
-            response->setProperty("error", "Capture " + key + " state failed: " + error);
+            response->setProperty("error", error);
             return false;
         }
-        if (const auto* desc = host.getCurrentPlugin())
-            renderInfo.plugin = *desc;
-        renderInfo.stateLoaded = stateLoad.loaded;
-        renderInfo.stateSource = stateLoad.source;
-        renderInfo.statePath = stateLoad.path;
-        renderInfo.stateHash = stateLoad.hash;
-        renderInfo.stateBytes = stateLoad.bytes;
-        renderInfo.stateLabel = stateLoad.label;
+
+        if (host.getCurrentPlugin() == nullptr)
+            return true;
 
         const auto renderSpec = getObject(job, "render");
         const auto wetId = wetIdForPluginKey(key);
-        const auto requestedSlot = getString(renderSpec, "slot");
-        const bool shouldRender = !renderSpec.isObject()
-                               || requestedSlot.isEmpty()
-                               || requestedSlot.equalsIgnoreCase(key.fromLastOccurrenceOf("plugin", false, false))
-                               || normaliseSourceId(requestedSlot) == wetId;
-        if (!shouldRender)
+        if (!shouldRenderPluginKey(key, wetId, renderSpec))
             return true;
 
         AssetPtr renderInput;
@@ -943,24 +918,215 @@ private:
         wet = std::make_unique<Asset>(std::move(result.wet));
         wet->name = labelForSourceId(wetId) + " " + wet->name;
         wet->groupDelay = computeTransferGroupDelay(renderInput->buffer, wet->buffer, renderInput->sampleRate);
-        if (wetId == "wetA")
-            renderReferenceA = std::move(renderInput);
-        else if (wetId == "wetB")
-            renderReferenceB = std::move(renderInput);
-        else if (wetId == "wetC")
-            renderReferenceC = std::move(renderInput);
+        setRenderReference(wetId, std::move(renderInput));
 
         renderInfo.plugin = result.pluginDescription;
         renderInfo.latencySamples = result.latencySamples;
         renderInfo.tailSeconds = result.tailSeconds;
+        renderInfo.valid = true;
+        return true;
+    }
+
+    bool preparePluginFromSpec(const juce::String& key,
+                               const juce::var& pluginSpec,
+                               PluginHost& host,
+                               RenderInfo& renderInfo,
+                               juce::MemoryBlock& state,
+                               juce::String& error)
+    {
+        renderInfo = {};
+
+        const auto path = getString(pluginSpec, "path", getString(pluginSpec, "plugin_id_or_path"));
+        if (path.isEmpty())
+        {
+            error.clear();
+            return true;
+        }
+
+        if (!host.loadPluginFromFile(juce::File(path), error))
+        {
+            error = "Load " + key + " failed: " + error;
+            return false;
+        }
+
+        if (const auto* desc = host.getCurrentPlugin())
+            renderInfo.plugin = *desc;
+
+        PluginStateLoadResult stateLoad;
+        if (!loadPluginState(pluginSpec, stateLoad, error))
+        {
+            error = "Load " + key + " state failed: " + error;
+            return false;
+        }
+
+        if (stateLoad.loaded && !host.applyState(stateLoad.state, error))
+        {
+            error = "Apply " + key + " state failed: " + error;
+            return false;
+        }
+
+        if (auto* params = getObject(pluginSpec, "params").getArray())
+        {
+            for (const auto& p : *params)
+            {
+                const auto paramKey = getString(p, "id", getString(p, "name", getString(p, "index")));
+                const float value = static_cast<float>(getDouble(p, "value", 0.0));
+                if (!host.setParameterValue(paramKey, value, error))
+                {
+                    error = "Set " + key + " parameter failed: " + error;
+                    return false;
+                }
+            }
+        }
+
+        if (!host.captureCurrentState(state, error))
+        {
+            error = "Capture " + key + " state failed: " + error;
+            return false;
+        }
+
+        if (const auto* desc = host.getCurrentPlugin())
+            renderInfo.plugin = *desc;
         renderInfo.stateLoaded = stateLoad.loaded;
         renderInfo.stateSource = stateLoad.source;
         renderInfo.statePath = stateLoad.path;
         renderInfo.stateHash = stateLoad.hash;
         renderInfo.stateBytes = stateLoad.bytes;
         renderInfo.stateLabel = stateLoad.label;
+        renderInfo.valid = host.getCurrentPlugin() != nullptr;
+        error.clear();
+        return true;
+    }
+
+    bool loadPluginChainAndMaybeRender(const juce::String& key,
+                                       const juce::Array<juce::var>& chainSpecs,
+                                       AssetPtr& wet,
+                                       RenderInfo& renderInfo)
+    {
+        const auto slotIndex = pluginIndexForPluginKey(key);
+        auto& chain = pluginChains[static_cast<size_t>(slotIndex)];
+        chain.clear();
+
+        juce::String error;
+        for (int i = 0; i < chainSpecs.size() && i < 10; ++i)
+        {
+            const auto& spec = chainSpecs.getReference(i);
+            if (!spec.isObject())
+                continue;
+
+            ChainInsertRuntime step;
+            step.host = std::make_unique<PluginHost>();
+            step.insertIndex = i;
+            step.bypassed = isPluginSpecBypassed(spec);
+            if (!preparePluginFromSpec(key + ".insert" + juce::String(i + 1), spec, *step.host, step.renderInfo, step.state, error))
+            {
+                response->setProperty("error", error);
+                return false;
+            }
+
+            if (step.host->getCurrentPlugin() == nullptr)
+                continue;
+
+            step.renderInfo.insertIndex = i;
+            step.renderInfo.bypassed = step.bypassed;
+            chain.push_back(std::move(step));
+        }
+
+        if (chain.empty())
+            return true;
+
+        const auto renderSpec = getObject(job, "render");
+        const auto wetId = wetIdForPluginKey(key);
+        if (!shouldRenderPluginKey(key, wetId, renderSpec))
+            return true;
+
+        AssetPtr renderInput;
+        if (!makeRenderInputAsset(wetId, renderInput, error))
+        {
+            response->setProperty("error", "Render " + key + " input failed: " + error);
+            return false;
+        }
+
+        const double tailSeconds = getTailSeconds(renderSpec);
+        Asset current = *renderInput;
+        int activeCount = 0;
+        int totalLatencySamples = 0;
+        double totalTailSeconds = 0.0;
+        juce::PluginDescription firstActivePlugin;
+
+        for (auto& step : chain)
+        {
+            if (step.bypassed)
+                continue;
+
+            auto result = step.host->renderOffline(current, &step.state, 512, tailSeconds);
+            if (result.error.isNotEmpty())
+            {
+                response->setProperty("error", "Render " + key + " insert " + juce::String(step.insertIndex + 1) + " failed: " + result.error);
+                return false;
+            }
+
+            if (activeCount == 0)
+                firstActivePlugin = result.pluginDescription;
+
+            step.renderInfo.plugin = result.pluginDescription;
+            step.renderInfo.latencySamples = result.latencySamples;
+            step.renderInfo.tailSeconds = result.tailSeconds;
+            step.renderInfo.valid = true;
+            totalLatencySamples += result.latencySamples;
+            totalTailSeconds += result.tailSeconds;
+            current = std::move(result.wet);
+            ++activeCount;
+        }
+
+        if (activeCount == 0)
+        {
+            response->setProperty("error", "Render " + key + " failed: every chain insert is bypassed.");
+            return false;
+        }
+
+        const auto chainLabel = activeCount > 1 ? "MIX" + juce::String(activeCount)
+                                                : firstActivePlugin.name;
+        current.name = labelForSourceId(wetId) + " " + chainLabel;
+        wet = std::make_unique<Asset>(std::move(current));
+        wet->groupDelay = computeTransferGroupDelay(renderInput->buffer, wet->buffer, renderInput->sampleRate);
+        setRenderReference(wetId, std::move(renderInput));
+
+        renderInfo = {};
+        renderInfo.plugin = firstActivePlugin;
+        if (activeCount > 1)
+        {
+            renderInfo.plugin.name = chainLabel;
+            renderInfo.plugin.manufacturerName = "GOODMETER";
+            renderInfo.plugin.pluginFormatName = "FX Chain";
+        }
+        renderInfo.latencySamples = totalLatencySamples;
+        renderInfo.tailSeconds = totalTailSeconds;
+        renderInfo.chainRender = activeCount > 1;
+        renderInfo.chainCount = static_cast<int>(chain.size());
+        renderInfo.activeChainCount = activeCount;
+        renderInfo.chainLabel = chainLabel;
         renderInfo.valid = true;
         return true;
+    }
+
+    static bool shouldRenderPluginKey(const juce::String& key, const juce::String& wetId, const juce::var& renderSpec)
+    {
+        const auto requestedSlot = getString(renderSpec, "slot");
+        return !renderSpec.isObject()
+            || requestedSlot.isEmpty()
+            || requestedSlot.equalsIgnoreCase(key.fromLastOccurrenceOf("plugin", false, false))
+            || normaliseSourceId(requestedSlot) == wetId;
+    }
+
+    void setRenderReference(const juce::String& wetId, AssetPtr reference)
+    {
+        if (wetId == "wetA")
+            renderReferenceA = std::move(reference);
+        else if (wetId == "wetB")
+            renderReferenceB = std::move(reference);
+        else if (wetId == "wetC")
+            renderReferenceC = std::move(reference);
     }
 
     bool loadPluginState(const juce::var& pluginSpec, PluginStateLoadResult& result, juce::String& error) const
@@ -1060,6 +1226,90 @@ private:
         if (key.equalsIgnoreCase("pluginC"))
             return "wetC";
         return "wetA";
+    }
+
+    static int pluginIndexForPluginKey(const juce::String& key)
+    {
+        if (key.equalsIgnoreCase("pluginB"))
+            return 1;
+        if (key.equalsIgnoreCase("pluginC"))
+            return 2;
+        return 0;
+    }
+
+    static juce::String chainKeyForPluginKey(const juce::String& key)
+    {
+        if (key.equalsIgnoreCase("pluginB"))
+            return "pluginChainB";
+        if (key.equalsIgnoreCase("pluginC"))
+            return "pluginChainC";
+        return "pluginChainA";
+    }
+
+    static juce::String slotLetterForPluginIndex(int index)
+    {
+        switch (index)
+        {
+            case 1: return "B";
+            case 2: return "C";
+            default: return "A";
+        }
+    }
+
+    static bool isPluginSpecBypassed(const juce::var& spec)
+    {
+        return getBool(spec, "bypass",
+               getBool(spec, "bypassed",
+               getBool(spec, "disabled", false)));
+    }
+
+    juce::Array<juce::var> getPluginChainSpecs(const juce::String& key) const
+    {
+        juce::Array<juce::var> specs;
+        const auto chainKey = chainKeyForPluginKey(key);
+        const auto slotLetter = slotLetterForPluginIndex(pluginIndexForPluginKey(key));
+
+        auto appendSpecs = [&specs](const juce::var& source)
+        {
+            if (auto* arr = source.getArray())
+            {
+                for (const auto& item : *arr)
+                    specs.add(item);
+                return;
+            }
+
+            if (!source.isObject())
+                return;
+
+            if (auto* inserts = getObject(source, "inserts").getArray())
+            {
+                for (const auto& item : *inserts)
+                    specs.add(item);
+                return;
+            }
+
+            if (auto* plugins = getObject(source, "plugins").getArray())
+            {
+                for (const auto& item : *plugins)
+                    specs.add(item);
+                return;
+            }
+
+            if (getString(source, "path", getString(source, "plugin_id_or_path")).isNotEmpty())
+                specs.add(source);
+        };
+
+        appendSpecs(getObject(job, chainKey));
+
+        const auto chains = getObject(job, "pluginChains");
+        if (chains.isObject())
+        {
+            appendSpecs(getObject(chains, chainKey));
+            appendSpecs(getObject(chains, slotLetter));
+            appendSpecs(getObject(chains, slotLetter.toLowerCase()));
+        }
+
+        return specs;
     }
 
     juce::StringArray getRenderInputIds(const juce::String& wetId) const
@@ -2213,12 +2463,22 @@ private:
     {
         FigurePluginInfo info;
         if (host.getCurrentPlugin() == nullptr)
+        {
+            if (!renderInfo.valid || renderInfo.plugin.name.isEmpty())
+                return info;
+
+            info.valid = true;
+            info.name = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel : renderInfo.plugin.name;
+            info.format = renderInfo.plugin.pluginFormatName;
+            info.latencySamples = renderInfo.latencySamples;
+            info.tailSeconds = renderInfo.tailSeconds;
             return info;
+        }
 
         const auto* desc = host.getCurrentPlugin();
         info.valid = true;
-        info.name = desc->name;
-        info.format = desc->pluginFormatName;
+        info.name = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel : desc->name;
+        info.format = renderInfo.plugin.pluginFormatName.isNotEmpty() ? renderInfo.plugin.pluginFormatName : desc->pluginFormatName;
         info.latencySamples = renderInfo.latencySamples;
         info.tailSeconds = renderInfo.tailSeconds;
 
@@ -2594,15 +2854,21 @@ private:
         auto drawPlugin = [&](PluginHost& host, const RenderInfo& renderInfo,
                               const juce::String& label, juce::Colour colour)
         {
-            if (host.getCurrentPlugin() == nullptr)
+            const auto* desc = host.getCurrentPlugin();
+            if (desc == nullptr && !renderInfo.valid)
                 return;
 
             auto block = area.removeFromTop(98.0f);
             g.setColour(colour);
             g.fillRect(block.removeFromLeft(14.0f).reduced(0.0f, 6.0f));
 
-            const auto* desc = host.getCurrentPlugin();
-            const auto title = label + " params | " + desc->name + " (" + desc->pluginFormatName + ")";
+            const auto pluginName = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel
+                                  : desc != nullptr ? desc->name
+                                                     : renderInfo.plugin.name;
+            const auto pluginFormat = renderInfo.plugin.pluginFormatName.isNotEmpty() ? renderInfo.plugin.pluginFormatName
+                                   : desc != nullptr ? desc->pluginFormatName
+                                                     : "Plugin";
+            const auto title = label + " params | " + pluginName + " (" + pluginFormat + ")";
             const auto renderLine = "latency " + juce::String(renderInfo.latencySamples)
                 + " samples | tail " + juce::String(renderInfo.tailSeconds, 2) + " s";
 
@@ -2614,7 +2880,8 @@ private:
             g.drawText(renderLine, block.removeFromTop(22.0f), juce::Justification::centredLeft, true);
 
             juce::String paramsText;
-            const auto& params = host.getChangedParameters();
+            const auto params = desc != nullptr ? host.getChangedParameters()
+                                                : std::vector<PluginParameterSnapshot>();
             if (params.empty())
             {
                 paramsText = "default/no changed parameter";
@@ -2724,6 +2991,32 @@ private:
     juce::String pluginChainSummary() const
     {
         juce::StringArray parts;
+        bool usedInsertChains = false;
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            const auto& chain = pluginChains[static_cast<size_t>(slot)];
+            if (chain.empty())
+                continue;
+
+            usedInsertChains = true;
+            juce::StringArray inserts;
+            for (const auto& step : chain)
+            {
+                if (step.host == nullptr || step.host->getCurrentPlugin() == nullptr)
+                    continue;
+
+                const auto* desc = step.host->getCurrentPlugin();
+                inserts.add("Insert " + juce::String(step.insertIndex + 1) + ": "
+                            + desc->name + " (" + desc->pluginFormatName + ")"
+                            + (step.bypassed ? " [bypassed]" : ""));
+            }
+
+            parts.add(slotLetterForPluginIndex(slot) + ": " + inserts.joinIntoString(" -> "));
+        }
+
+        if (usedInsertChains)
+            return parts.isEmpty() ? "none" : parts.joinIntoString(" | ");
+
         auto append = [&](const juce::String& label, const PluginHost& host)
         {
             if (host.getCurrentPlugin() != nullptr)
@@ -2838,6 +3131,9 @@ private:
         root->setProperty("pluginA", writePluginManifest(hostA, renderInfoA));
         root->setProperty("pluginB", writePluginManifest(hostB, renderInfoB));
         root->setProperty("pluginC", writePluginManifest(hostC, renderInfoC));
+        root->setProperty("pluginChainA", writePluginChainManifest(0));
+        root->setProperty("pluginChainB", writePluginChainManifest(1));
+        root->setProperty("pluginChainC", writePluginChainManifest(2));
         manifestFile.replaceWithText(juce::JSON::toString(juce::var(root.release()), true));
     }
 
@@ -2953,6 +3249,10 @@ private:
         obj->setProperty("rendered", wetAsset != nullptr);
         obj->setProperty("latencySamples", renderInfo.latencySamples);
         obj->setProperty("tailSeconds", renderInfo.tailSeconds);
+        obj->setProperty("chainRender", renderInfo.chainRender);
+        obj->setProperty("chainCount", renderInfo.chainCount);
+        obj->setProperty("activeChainCount", renderInfo.activeChainCount);
+        obj->setProperty("chainLabel", renderInfo.chainLabel);
         const AssetPtr& reference = wetId == "wetB" ? renderReferenceB
                                  : wetId == "wetC" ? renderReferenceC
                                                     : renderReferenceA;
@@ -3162,6 +3462,31 @@ private:
         return juce::var(obj.release());
     }
 
+    juce::var writePluginChainManifest(int slotIndex)
+    {
+        juce::Array<juce::var> items;
+        if (!juce::isPositiveAndBelow(slotIndex, 3))
+            return juce::var(items);
+
+        for (const auto& step : pluginChains[static_cast<size_t>(slotIndex)])
+        {
+            if (step.host == nullptr)
+                continue;
+
+            auto item = writePluginManifest(*step.host, step.renderInfo);
+            if (auto* obj = item.getDynamicObject())
+            {
+                obj->setProperty("slot", slotLetterForPluginIndex(slotIndex));
+                obj->setProperty("insertIndex", step.insertIndex);
+                obj->setProperty("insertNumber", step.insertIndex + 1);
+                obj->setProperty("bypassed", step.bypassed);
+            }
+            items.add(item);
+        }
+
+        return juce::var(items);
+    }
+
     static juce::var writePluginManifest(PluginHost& host, const RenderInfo& renderInfo)
     {
         auto obj = std::make_unique<juce::DynamicObject>();
@@ -3169,6 +3494,13 @@ private:
             return juce::var(obj.release());
 
         const auto* desc = host.getCurrentPlugin();
+        obj->setProperty("insertIndex", renderInfo.insertIndex);
+        obj->setProperty("insertNumber", renderInfo.insertIndex + 1);
+        obj->setProperty("bypassed", renderInfo.bypassed);
+        obj->setProperty("chainRender", renderInfo.chainRender);
+        obj->setProperty("chainCount", renderInfo.chainCount);
+        obj->setProperty("activeChainCount", renderInfo.activeChainCount);
+        obj->setProperty("chainLabel", renderInfo.chainLabel);
         obj->setProperty("name", desc->name);
         obj->setProperty("manufacturer", desc->manufacturerName);
         obj->setProperty("format", desc->pluginFormatName);
@@ -3252,6 +3584,7 @@ private:
     PluginHost hostA;
     PluginHost hostB;
     PluginHost hostC;
+    std::array<std::vector<ChainInsertRuntime>, 3> pluginChains;
     RenderInfo renderInfoA;
     RenderInfo renderInfoB;
     RenderInfo renderInfoC;

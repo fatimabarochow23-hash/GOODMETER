@@ -6,7 +6,7 @@ Lunacy Audio BEAM 在 REAPER 和 Pro Tools 中可以正常使用，但 Audio Doc
 
 相关需求单：
 
-- `/Users/caiyiyang/Desktop/GOODMETER/AUDIO_DOCTOR_BEAM_RENDER_BUG_2026-05-07.md`
+- `/Users/MediaStorm/Desktop/GOODMETER/AUDIO_DOCTOR_BEAM_RENDER_BUG_2026-05-07.md`
 
 ## 判断
 

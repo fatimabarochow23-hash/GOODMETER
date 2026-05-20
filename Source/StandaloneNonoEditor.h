@@ -155,6 +155,11 @@ public:
             repaint();
         };
 
+        holoNono->onDragActiveChanged = [this](bool isDragging)
+        {
+            nonoDragActive = isDragging;
+        };
+
         // Wire hover button callbacks
         holoNono->onBodyHoverEnter = [this]()
         {
@@ -173,9 +178,25 @@ public:
             juce::ignoreUnused(dx, dy);
             if (phase == AnimPhase::floating)
             {
-                nonoFloatingX = holoNono->getX();
-                nonoFloatingY = holoNono->getY();
-                layoutFloating();
+                const int newX = holoNono->getX();
+                const int newY = holoNono->getY();
+                const int deltaX = newX - nonoFloatingX;
+                const int deltaY = newY - nonoFloatingY;
+                nonoFloatingX = newX;
+                nonoFloatingY = newY;
+
+                if (deltaX == 0 && deltaY == 0)
+                    return;
+
+                for (int i = 0; i < numCards; ++i)
+                {
+                    if (cardFloatState[i].isFloating || cardStowed[i])
+                        continue;
+
+                    if (auto* card = getCard(i))
+                        card->setTopLeftPosition(card->getX() + deltaX,
+                                                 card->getY() + deltaY);
+                }
             }
         };
 
@@ -489,6 +510,9 @@ public:
     //==========================================================================
     void timerCallback() override
     {
+        if (nonoDragActive)
+            return;
+
         // 60Hz meter data feed
         float peakL     = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
         float peakR     = audioProcessor.peakLevelR.load(std::memory_order_relaxed);
@@ -566,6 +590,7 @@ public:
     {
     public:
         AudioDoctorWindow(const juce::File& exportDir,
+                          juce::AudioDeviceManager* sharedDevMgr,
                           juce::LookAndFeel& lookAndFeel,
                           juce::Component& centreAround,
                           std::function<void()> closeCallback)
@@ -582,6 +607,8 @@ public:
             setDropShadowEnabled(true);
             setLookAndFeel(&lookAndFeel);
 
+            juce::ignoreUnused(sharedDevMgr);
+            // Keep plugin live preview off GOODMETER's metering device callback.
             auto* content = new AudioDoctorContent(exportDir);
             content->setSize(1080, 820);
             content->setOpaque(false);
@@ -663,6 +690,7 @@ public:
 
         audioDoctorWindow = std::make_unique<AudioDoctorWindow>(
             getRecordingDirectory(),
+            audioProcessor.sharedDeviceManager,
             customLookAndFeel,
             *this,
             [this] { audioDoctorWindow.reset(); });
@@ -689,6 +717,7 @@ private:
     std::unique_ptr<AudioDoctorWindow> audioDoctorWindow;
     std::unique_ptr<HoloNonoComponent> holoNono;
     int lraFrameCounter = 0;
+    bool nonoDragActive = false;
 
     // Meter components (raw pointers — owned by MeterCardComponents)
     LevelsMeterComponent*       levelsMeter       = nullptr;

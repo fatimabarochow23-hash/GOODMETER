@@ -304,6 +304,7 @@ public:
     // Callback: local drag in floating phase (instead of moving the window)
     // dx, dy are screen-space deltas from drag start
     std::function<void(int dx, int dy)> onLocalDrag;
+    std::function<void(bool isDragging)> onDragActiveChanged;
 
     // Flag: when true, dragging Nono moves its local bounds (not the window)
     bool useLocalDrag = false;
@@ -797,6 +798,8 @@ public:
         if (!isDraggingWindow && delta.getDistanceFromOrigin() > 4)
         {
             isDraggingWindow = true;
+            if (onDragActiveChanged)
+                onDragActiveChanged(true);
             // Cancel pending smile since this is a drag, not a click
             pendingSmileClick = false;
             pendingTubeLongPress = false;
@@ -838,9 +841,12 @@ public:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        const bool wasDragging = isDraggingWindow;
         isDraggingWindow = false;
         pendingTubeLongPress = false;
         tubeLongPressTriggered = false;
+        if (wasDragging && onDragActiveChanged)
+            onDragActiveChanged(false);
     }
 
     void mouseMove(const juce::MouseEvent& e) override

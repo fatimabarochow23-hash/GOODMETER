@@ -1,6 +1,6 @@
 # GOODMETER 记忆宫殿总索引
 
-更新时间：2026-05-08
+更新时间：2026-05-16
 
 ## 一句话定位
 
@@ -11,6 +11,7 @@ GOODMETER 现在同时是桌面端音频测量软件、Audio Doctor 论文分析
 | 区域 | 文件 | 用途 |
 |---|---|---|
 | 时间线 | `timeline/2026-05-01_to_2026-05-08_key_timeline.md` | 恢复 5 月 1 日至 5 月 8 日的关键进展 |
+| 时间线 | `timeline/2026-05-09_to_2026-05-16_key_timeline.md` | 恢复 5 月 9 日至 5 月 16 日的关键进展 |
 | 功能房 | `feature_rooms/01_AudioDoctor_overview.md` | Audio Doctor 总览和论文定位 |
 | 功能房 | `feature_rooms/02_JobRunner_and_Manifest.md` | JSON job、manifest、CSV、AI 复现链路 |
 | 功能房 | `feature_rooms/03_SpatialImage_and_2_5D.md` | Spatial Image、2.5D Terrain、空间图组 |
@@ -25,11 +26,15 @@ GOODMETER 现在同时是桌面端音频测量软件、Audio Doctor 论文分析
 
 ## 当前最该记住的边界
 
+- 当前主要工作区已经迁到 `/Volumes/solari/Codex_Work/GOODMETER`；旧 Desktop 路径可能是 iCloud/迁移残留，操作前先 `pwd` 和 `git status`。
+- 最新论文工具链在 GitHub 分支 `codex/thesis-audio-doctor-20260505`，远端 HEAD 已确认到 `3442e2d Add main computer Audio Doctor handoff`；`main` 当时仍停在 `d023690c`，主线大电脑只拉 `main` 会拿不到 Audio Doctor 最新内容。
+- 本地工作树常有 `Signing/`、`dist/`、`releases/`、`tmp/`、`._*`、DMG、zip、Word 临时文件等噪音；交接提交必须 explicit allowlist staging，不能 `git add .`。
+- `MAIN_COMPUTER_CODEX_AUDIO_DOCTOR_HANDOFF_2026-05-15.md` 已推到远端分支；如果本地缺失，可从 `origin/codex/thesis-audio-doctor-20260505` 恢复，恢复前先确认不是用户有意删除。
 - 不要把 Audio Doctor 当普通 UI 功能，它是论文图例和可复核实验记录工具。
 - 不要把 JobRunner 理解成“自动点 UI”，它是可复现 JSON 任务系统。
+- `.clz` 是 Audio Doctor 工程文件，目标是跨 Mac/Windows 打开；工程内音频必须优先用工程包内相对路径，原始绝对路径只做 provenance。
 - `Dynamics Response` 目前不是插件内部真实 GR / sidechain meter，只能写动态响应或表观让位。
 - Reverb / Space 的 `RT60 est.` 是估算值，主要由 RT30 或 RT20 外推，不是完整混响室测量。
 - Spatial Image 是 stereo-derived spatial impression，不是真实 5.1 / Atmos 定位测量。
 - Masking / Fusion v1 是遮蔽风险代理，不是真实人耳 masked threshold。
 - BEAM / Enrage 等复杂插件要优先用 `pluginStateBase64` 或 host state 复现，不要把厂商私有 preset 当 native state。
-

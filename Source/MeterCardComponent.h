@@ -199,6 +199,75 @@ public:
         auto dotY = headerBounds.getCentreY() - dd * 0.5f;
         GoodMeterLookAndFeel::drawStatusDot(g, dotX, dotY, dd, statusColour);
 
+        auto getTitleTextX = [&] (float localPad, float localDd)
+        {
+            return static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f));
+        };
+
+        // Position header widget before drawing text so title clipping uses current bounds.
+        if (headerWidget != nullptr)
+        {
+            auto cr = getCardRect();
+            const float localPad = isMiniMode ? 4.0f : GoodMeterLookAndFeel::cardPadding;
+            const float localDd = isMiniMode ? 8.0f : dotDiameter;
+            const float titleFontSize = GoodMeterLookAndFeel::chartFont(isMiniMode ? 10.0f : 15.0f);
+            const auto titleFont = useMonospacedTitleFont
+                                       ? GoodMeterLookAndFeel::iosEnglishMonoFont(titleFontSize, juce::Font::bold)
+                                       : juce::Font(titleFontSize, juce::Font::bold);
+            const int rightControlW = static_cast<int>(isMiniMode ? 20.0f : 40.0f);
+            const int titleGap = static_cast<int>(isMiniMode ? 4.0f : 8.0f);
+            const int titleX = getTitleTextX(localPad, localDd);
+            const int titleReserve = static_cast<int>(std::ceil(titleFont.getStringWidthFloat(cardTitle.toUpperCase())
+                                                                + static_cast<float>(titleGap)));
+
+            int widgetW = juce::jlimit(90, 168, static_cast<int>(cr.getWidth() * 0.38f));
+            int maxAllowed = juce::jmax(isMiniMode ? 72 : 108,
+                                        static_cast<int>(cr.getWidth() * (isMiniMode ? 0.42f : 0.46f)));
+            const int titleSafeMax = static_cast<int>(cr.getWidth()) - titleX - titleReserve - rightControlW - titleGap;
+            if (titleSafeMax > 0)
+                maxAllowed = juce::jmin(maxAllowed, titleSafeMax);
+
+            maxAllowed = juce::jmax(48, maxAllowed);
+
+            if (auto* combo = dynamic_cast<juce::ComboBox*>(headerWidget))
+            {
+                auto comboFont = combo->getLookAndFeel().getComboBoxFont(*combo);
+                int preferredW = isMiniMode ? 76 : 108;
+
+                if (isMiniMode)
+                {
+                    auto selectedText = combo->getText().trim();
+                    if (selectedText.isEmpty() && combo->getNumItems() > 0)
+                        selectedText = combo->getItemText(0);
+
+                    preferredW = juce::jmax(preferredW,
+                                            static_cast<int>(std::ceil(comboFont.getStringWidthFloat(selectedText) + 30.0f)));
+                }
+                else
+                {
+                    for (int i = 0; i < combo->getNumItems(); ++i)
+                        preferredW = juce::jmax(preferredW,
+                                                static_cast<int>(std::ceil(comboFont.getStringWidthFloat(combo->getItemText(i)) + 42.0f)));
+                }
+
+                const int minAllowed = juce::jmin(isMiniMode ? 72 : 108, maxAllowed);
+                widgetW = juce::jlimit(minAllowed, maxAllowed, preferredW);
+            }
+            else
+            {
+                const int minAllowed = juce::jmin(isMiniMode ? 72 : 90, maxAllowed);
+                widgetW = juce::jlimit(minAllowed, maxAllowed, widgetW);
+            }
+
+            const int widgetH = isMiniMode ? 18 : 26;
+            headerWidget->setBounds(
+                static_cast<int>(cr.getRight()) - widgetW - rightControlW,
+                static_cast<int>(cr.getY()) + (hh - widgetH) / 2,
+                widgetW,
+                widgetH
+            );
+        }
+
         // Title + arrow
         {
             int cacheW = static_cast<int>(headerBounds.getWidth());
@@ -206,7 +275,7 @@ public:
 
             auto makeTitleTextArea = [&](float localPad, float localDd)
             {
-                const int textX = static_cast<int>(localPad + localDd + (isMiniMode ? 4.0f : 12.0f));
+                const int textX = getTitleTextX(localPad, localDd);
                 int textRight = cacheW;
 
                 if (headerWidget != nullptr)
@@ -410,32 +479,6 @@ public:
             resizeGripRect = {};
         }
 
-        // Position header widget inside card body
-        if (headerWidget != nullptr)
-        {
-            auto cr = getCardRect();
-            int widgetW = juce::jlimit(90, 168, static_cast<int>(cr.getWidth() * 0.38f));
-
-            if (auto* combo = dynamic_cast<juce::ComboBox*>(headerWidget))
-            {
-                auto comboFont = combo->getLookAndFeel().getComboBoxFont(*combo);
-                int preferredW = 108;
-                for (int i = 0; i < combo->getNumItems(); ++i)
-                    preferredW = juce::jmax(preferredW,
-                                            static_cast<int>(std::ceil(comboFont.getStringWidthFloat(combo->getItemText(i)) + 42.0f)));
-
-                const int maxAllowed = juce::jmax(108, static_cast<int>(cr.getWidth() * 0.46f));
-                widgetW = juce::jlimit(108, maxAllowed, preferredW);
-            }
-
-            const int widgetH = isMiniMode ? 18 : 26;
-            headerWidget->setBounds(
-                static_cast<int>(cr.getRight()) - widgetW - static_cast<int>(isMiniMode ? 20.0f : 40.0f),
-                static_cast<int>(cr.getY()) + (hh - widgetH) / 2,
-                widgetW,
-                widgetH
-            );
-        }
     }
 
     void resized() override
