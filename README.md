@@ -15,6 +15,12 @@ analysis workflow.
 > `codex/thesis-audio-doctor-20260505` at commit
 > `d1c269aa4caef17741afd89349e5e73ccd3a3496`.
 
+## Author Thesis
+
+The author's undergraduate thesis PDF is available in:
+
+[作者毕业论文电子版](./作者毕业论文电子版/)
+
 ## What GOODMETER Does
 
 GOODMETER has several connected surfaces:
