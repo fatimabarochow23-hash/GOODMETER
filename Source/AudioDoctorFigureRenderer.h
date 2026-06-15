@@ -87,6 +87,10 @@ struct FigurePluginInfo
     juce::String format;
     int latencySamples = 0;
     double tailSeconds = 0.0;
+    bool chainRender = false;
+    int chainCount = 0;
+    juce::String chainOrderText;
+    juce::String chainParameterText;
     std::vector<FigurePluginParam> changedParameters;
 };
 
@@ -95,6 +99,7 @@ struct FigureData
     const Asset* dry = nullptr;
     const Asset* wetA = nullptr;
     const Asset* wetB = nullptr;
+    const Asset* wetC = nullptr;
     FigurePluginInfo pluginA;
     FigurePluginInfo pluginB;
     FigurePluginInfo pluginC;
@@ -103,6 +108,7 @@ struct FigureData
     juce::String label1 = "Dry";
     juce::String label2 = "Wet A";
     juce::String label3 = "Wet B";
+    juce::String label4 = "Wet C";
     juce::String processingNote;
     TerrainCamera terrainCamera = TerrainCamera::diagonal;
     bool terrainTimeReversed = false;
@@ -403,6 +409,12 @@ private:
         return dark ? juce::Colour(0xFFE6335F) : juce::Colour(0xFFC2185B);
     }
 
+    static juce::Colour wetCColour(bool dark)
+    {
+        if (academicLight() && !dark) return juce::Colour(0xFF5B4ABF);
+        return dark ? juce::Colour(0xFFB77DFF) : juce::Colour(0xFF6D4ACF);
+    }
+
     static juce::Colour layerFitBounceColour(bool dark)
     {
         if (academicLight() && !dark) return juce::Colour(0xFF4F7D36);
@@ -420,6 +432,7 @@ private:
         drawCurve(g, plot, data.dry, curve, dryColour(dark), false, maxTime, minY, maxY);
         drawCurve(g, plot, data.wetA, curve, wetAColour(dark), false, maxTime, minY, maxY);
         drawCurve(g, plot, data.wetB, curve, wetBColour(dark), false, maxTime, minY, maxY);
+        drawCurve(g, plot, data.wetC, curve, wetCColour(dark), false, maxTime, minY, maxY);
         drawFigureMetrics(g, metricsArea, data, dark, metricsKind);
     }
 
@@ -430,9 +443,12 @@ private:
         auto metricsArea = area.removeFromBottom(getMetricsHeight(data, metricsKind));
         drawPlotBackground(g, area, title, xLabel, yLabel, dark, true, 20000.0f, minY, maxY);
         const auto plot = getPlotArea(area);
+        if (curve == &Asset::groupDelay)
+            drawYReferenceLine(g, plot, 0.0f, minY, maxY, dark);
         drawCurve(g, plot, data.dry, curve, dryColour(dark), true, 20000.0f, minY, maxY);
         drawCurve(g, plot, data.wetA, curve, wetAColour(dark), true, 20000.0f, minY, maxY);
         drawCurve(g, plot, data.wetB, curve, wetBColour(dark), true, 20000.0f, minY, maxY);
+        drawCurve(g, plot, data.wetC, curve, wetCColour(dark), true, 20000.0f, minY, maxY);
         if (curve == &Asset::spectrum)
             drawHarmonicPeakOverlay(g, plot, data, dark, minY, maxY);
         drawFigureMetrics(g, metricsArea, data, dark, metricsKind);
@@ -448,6 +464,7 @@ private:
         drawCurve(g, plot, data.dry, &Asset::energyDecay, dryColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, plot, data.wetA, &Asset::energyDecay, wetAColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, plot, data.wetB, &Asset::energyDecay, wetBColour(dark), false, maxTime, -80.0f, 0.0f);
+        drawCurve(g, plot, data.wetC, &Asset::energyDecay, wetCColour(dark), false, maxTime, -80.0f, 0.0f);
 
         drawReverbMetrics(g, metricsArea, data, dark);
     }
@@ -461,6 +478,7 @@ private:
         drawCurve(g, plot, data.dry, &Asset::spectrum, dryColour(dark), true, 20000.0f, -90.0f, 0.0f);
         drawCurve(g, plot, data.wetA, &Asset::spectrum, wetAColour(dark), true, 20000.0f, -90.0f, 0.0f);
         drawCurve(g, plot, data.wetB, &Asset::spectrum, wetBColour(dark), true, 20000.0f, -90.0f, 0.0f);
+        drawCurve(g, plot, data.wetC, &Asset::spectrum, wetCColour(dark), true, 20000.0f, -90.0f, 0.0f);
         drawHarmonicPeakOverlay(g, plot, data, dark, -90.0f, 0.0f);
         drawBandEnergyTable(g, metricsArea, data, dark);
     }
@@ -2332,13 +2350,16 @@ private:
         drawCurve(g, envPlot, data.dry, &Asset::envelope, dryColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, envPlot, data.wetA, &Asset::envelope, wetAColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, envPlot, data.wetB, &Asset::envelope, wetBColour(dark), false, maxTime, -80.0f, 0.0f);
+        drawCurve(g, envPlot, data.wetC, &Asset::envelope, wetCColour(dark), false, maxTime, -80.0f, 0.0f);
 
         drawPlotBackground(g, delayArea, "Frequency-dependent Delay", "Hz", "ms", dark,
                            true, 20000.0f, -20.0f, 80.0f);
         auto delayPlot = getPlotArea(delayArea);
+        drawYReferenceLine(g, delayPlot, 0.0f, -20.0f, 80.0f, dark);
         drawCurve(g, delayPlot, data.dry, &Asset::groupDelay, dryColour(dark), true, 20000.0f, -20.0f, 80.0f);
         drawCurve(g, delayPlot, data.wetA, &Asset::groupDelay, wetAColour(dark), true, 20000.0f, -20.0f, 80.0f);
         drawCurve(g, delayPlot, data.wetB, &Asset::groupDelay, wetBColour(dark), true, 20000.0f, -20.0f, 80.0f);
+        drawCurve(g, delayPlot, data.wetC, &Asset::groupDelay, wetCColour(dark), true, 20000.0f, -20.0f, 80.0f);
 
         drawFigureMetrics(g, metricsArea, data, dark, MetricsKind::groupDelay);
     }
@@ -2372,6 +2393,7 @@ private:
         drawCurve(g, rmsPlot, data.dry, &Asset::dynamicsRms, dryColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, rmsPlot, data.wetA, &Asset::dynamicsRms, wetAColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, rmsPlot, data.wetB, &Asset::dynamicsRms, wetBColour(dark), false, maxTime, -80.0f, 0.0f);
+        drawCurve(g, rmsPlot, data.wetC, &Asset::dynamicsRms, wetCColour(dark), false, maxTime, -80.0f, 0.0f);
 
         drawPlotBackground(g, deltaArea, "Apparent Attenuation Delta", "seconds", "delta dB", dark,
                            false, maxTime, -30.0f, 30.0f);
@@ -2382,6 +2404,8 @@ private:
         drawApparentDeltaCurve(g, deltaPlot, data.dry, data.wetA, wetAColour(dark),
                                false, maxTime, -30.0f, 30.0f);
         drawApparentDeltaCurve(g, deltaPlot, data.dry, data.wetB, wetBColour(dark),
+                               false, maxTime, -30.0f, 30.0f);
+        drawApparentDeltaCurve(g, deltaPlot, data.dry, data.wetC, wetCColour(dark),
                                false, maxTime, -30.0f, 30.0f);
 
         g.setColour(secondaryText(dark));
@@ -2422,6 +2446,7 @@ private:
         drawCurve(g, edcPlot, data.dry, &Asset::energyDecay, dryColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, edcPlot, data.wetA, &Asset::energyDecay, wetAColour(dark), false, maxTime, -80.0f, 0.0f);
         drawCurve(g, edcPlot, data.wetB, &Asset::energyDecay, wetBColour(dark), false, maxTime, -80.0f, 0.0f);
+        drawCurve(g, edcPlot, data.wetC, &Asset::energyDecay, wetCColour(dark), false, maxTime, -80.0f, 0.0f);
 
         drawSpectrogramTracksOnly(g, spectrogramArea, data, dark, true);
         drawReverbMetrics(g, metricsArea, data, dark);
@@ -4251,6 +4276,9 @@ private:
         if (data.wetB != nullptr && !data.wetB->spectrogramPink.isNull())
             tracks.push_back({ data.wetB, &data.wetB->spectrogramPink, data.wetB->sampleRate,
                                static_cast<float>(data.wetB->metrics.durationSeconds), data.label3, wetBColour(dark) });
+        if (data.wetC != nullptr && !data.wetC->spectrogramPink.isNull())
+            tracks.push_back({ data.wetC, &data.wetC->spectrogramPink, data.wetC->sampleRate,
+                               static_cast<float>(data.wetC->metrics.durationSeconds), data.label4, wetCColour(dark) });
         return tracks;
     }
 
@@ -4466,6 +4494,7 @@ private:
         drawBandRow(data.dry, data.label1, dryColour(dark));
         drawBandRow(data.wetA, data.label2, wetAColour(dark));
         drawBandRow(data.wetB, data.label3, wetBColour(dark));
+        drawBandRow(data.wetC, data.label4, wetCColour(dark));
 
         drawPluginParameterPanel(g, right, data, dark);
     }
@@ -4485,6 +4514,7 @@ private:
         if (data.dry != nullptr)  ++assetCount;
         if (data.wetA != nullptr) ++assetCount;
         if (data.wetB != nullptr) ++assetCount;
+        if (data.wetC != nullptr) ++assetCount;
 
         int pluginCount = 0;
         if (data.pluginA.valid) ++pluginCount;
@@ -4599,6 +4629,18 @@ private:
             return juce::String(khz, 1).trimCharactersAtEnd("0").trimCharactersAtEnd(".") + "k";
         }
         return juce::String(static_cast<int>(hz));
+    }
+
+    static void drawYReferenceLine(juce::Graphics& g, juce::Rectangle<float> plot,
+                                   float value, float minY, float maxY, bool dark)
+    {
+        if (maxY <= minY)
+            return;
+
+        const float normalised = (juce::jlimit(minY, maxY, value) - minY) / (maxY - minY);
+        const float y = plot.getBottom() - plot.getHeight() * normalised;
+        g.setColour(secondaryText(dark).withAlpha(dark ? 0.42f : 0.36f));
+        g.drawLine(plot.getX(), y, plot.getRight(), y, 1.6f);
     }
 
     static void drawCurve(juce::Graphics& g, juce::Rectangle<float> plot, const Asset* asset, CurveMember member,
@@ -4778,6 +4820,7 @@ private:
         drawPeakSet(data.dry, dryColour(dark), 0);
         drawPeakSet(data.wetA, wetAColour(dark), 1);
         drawPeakSet(data.wetB, wetBColour(dark), 2);
+        drawPeakSet(data.wetC, wetCColour(dark), 3);
     }
 
     static float getMaxCurveX(const FigureData& data, CurveMember member, bool frequency)
@@ -4786,7 +4829,7 @@ private:
             return 20000.0f;
 
         float maxX = 0.001f;
-        for (const auto* asset : { data.dry, data.wetA, data.wetB })
+        for (const auto* asset : { data.dry, data.wetA, data.wetB, data.wetC })
             if (asset != nullptr)
                 for (const auto& p : asset->*member)
                     maxX = juce::jmax(maxX, p.x);
@@ -4837,6 +4880,7 @@ private:
         drawAsset(data.dry, data.label1, dryColour(dark));
         drawAsset(data.wetA, data.label2, wetAColour(dark));
         drawAsset(data.wetB, data.label3, wetBColour(dark));
+        drawAsset(data.wetC, data.label4, wetCColour(dark));
         drawPluginParameterPanel(g, pluginArea, data, dark);
     }
 
@@ -4932,6 +4976,7 @@ private:
         drawAsset(data.dry, data.label1);
         drawAsset(data.wetA, data.label2);
         drawAsset(data.wetB, data.label3);
+        drawAsset(data.wetC, data.label4);
         drawPluginParameterPanel(g, pluginArea, data, dark);
     }
 
@@ -4944,7 +4989,14 @@ private:
                 return;
 
             juce::String paramsText;
-            if (plugin.changedParameters.empty())
+            if (plugin.chainRender && plugin.chainOrderText.isNotEmpty())
+            {
+                paramsText = "Order: " + plugin.chainOrderText;
+                paramsText += plugin.chainParameterText.isNotEmpty()
+                    ? " | Params: " + plugin.chainParameterText
+                    : " | Chain params default/no changed parameter";
+            }
+            else if (plugin.changedParameters.empty())
             {
                 paramsText = "default/no changed parameter";
             }
@@ -4964,15 +5016,15 @@ private:
                     paramsText += " | +" + juce::String(static_cast<int>(plugin.changedParameters.size()) - count);
             }
 
-            auto row = area.removeFromTop(34.0f);
+            auto row = area.removeFromTop(38.0f);
             g.setColour(colour);
-            g.fillRect(row.removeFromLeft(16.0f).withSizeKeepingCentre(16.0f, 22.0f));
+            g.fillRect(row.removeFromLeft(22.0f).withSizeKeepingCentre(22.0f, 26.0f));
 
-            const auto title = label + " params";
+            const auto title = (plugin.chainRender ? label.replace("Plugin", "Chain", false) : label) + " params";
             const auto pluginText = paramsText;
 
             row.removeFromLeft(5.0f);
-            auto titleArea = row.removeFromLeft(juce::jmin(178.0f, row.getWidth() * 0.34f));
+            auto titleArea = row.removeFromLeft(juce::jmin(220.0f, row.getWidth() * 0.38f));
             g.setColour(primaryText(dark));
             g.setFont(juce::Font(21.0f, juce::Font::bold));
             g.drawText(title, titleArea, juce::Justification::centredLeft, true);
@@ -4984,7 +5036,7 @@ private:
 
         drawPlugin(data.pluginA, "Plugin A", wetAColour(dark));
         drawPlugin(data.pluginB, "Plugin B", wetBColour(dark));
-        drawPlugin(data.pluginC, "Plugin C", dryColour(dark));
+        drawPlugin(data.pluginC, "Plugin C", wetCColour(dark));
     }
 
     static juce::String formatSeconds(float seconds)

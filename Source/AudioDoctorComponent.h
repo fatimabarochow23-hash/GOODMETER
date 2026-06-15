@@ -44,6 +44,54 @@ public:
         plugin
     };
 
+    class PreviewSoloButton : public juce::Button
+    {
+    public:
+        PreviewSoloButton() : juce::Button("previewSolo") {}
+
+        void setPalette(juce::Colour accentToUse, bool availableToUse, bool lightToUse)
+        {
+            accent = accentToUse;
+            available = availableToUse;
+            light = lightToUse;
+            repaint();
+        }
+
+        void paintButton(juce::Graphics& g, bool isMouseOverButton, bool isButtonDown) override
+        {
+            auto r = getLocalBounds().toFloat().reduced(1.0f);
+            const bool active = getToggleState();
+            const auto outline = active ? accent.brighter(light ? 0.10f : 0.28f)
+                                        : accent.withAlpha(available ? (isMouseOverButton ? 0.72f : 0.42f) : 0.14f);
+            const auto fill = active ? accent.withAlpha(available ? 0.92f : 0.24f)
+                                     : (light ? juce::Colours::white.withAlpha(available ? 0.62f : 0.25f)
+                                              : juce::Colour(0xFF071017).withAlpha(available ? 0.82f : 0.36f));
+            g.setColour(fill);
+            g.fillRoundedRectangle(r, 3.0f);
+
+            if (isButtonDown)
+                r = r.reduced(1.0f);
+
+            if (active)
+            {
+                const auto inner = r.reduced(4.0f);
+                g.setColour((light ? juce::Colours::white : juce::Colour(0xFF02070A)).withAlpha(0.22f));
+                g.fillRoundedRectangle(inner, 2.0f);
+                g.setColour((light ? juce::Colour(0xFF071017) : juce::Colours::white).withAlpha(0.42f));
+                g.drawLine(r.getX() + 4.0f, r.getY() + 4.0f, r.getRight() - 4.0f, r.getBottom() - 4.0f, 1.2f);
+                g.drawLine(r.getX() + 4.0f, r.getBottom() - 4.0f, r.getRight() - 4.0f, r.getY() + 4.0f, 1.2f);
+            }
+
+            g.setColour(outline);
+            g.drawRoundedRectangle(r, 3.0f, active ? 1.6f : 1.1f);
+        }
+
+    private:
+        juce::Colour accent { GoodMeterLookAndFeel::accentCyan };
+        bool available = false;
+        bool light = false;
+    };
+
     explicit AudioDoctorContent(const juce::File& exportDir = {},
                                 juce::AudioDeviceManager* sharedDevMgr = nullptr)
         : exportDirectory(exportDir.exists() ? exportDir : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)),
@@ -93,6 +141,19 @@ public:
 
         figureLoopPreviewBtn.onTrigger = [this] { return toggleFigureLoopPreview(); };
         addAndMakeVisible(figureLoopPreviewBtn);
+
+        for (int i = 0; i < static_cast<int>(previewSoloButtons.size()); ++i)
+        {
+            auto& button = previewSoloButtons[static_cast<size_t>(i)];
+            button.setClickingTogglesState(true);
+            button.onClick = [this, i]
+            {
+                previewSoloSlots[static_cast<size_t>(i)] = previewSoloButtons[static_cast<size_t>(i)].getToggleState();
+                refreshPreviewSoloButtons();
+            };
+            button.setTooltip("Preview solo " + sourceSlotLabel(previewSoloSourceSlot(i)));
+            addAndMakeVisible(button);
+        }
 
         for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
                               &pluginBBtn, &editPluginBBtn, &renderBBtn,
@@ -378,7 +439,9 @@ public:
         importDryBtn.setBounds(row1.removeFromLeft(82).reduced(2));
         generateBtn.setBounds(row1.removeFromLeft(88).reduced(2));
         row1.removeFromLeft(8);
-        const auto insertWidth = juce::jlimit(124, 164, (row1.getWidth() - 12) / 3);
+        constexpr int previewSoloWidth = 156;
+        constexpr int fixedAfterInserts = 8 + 104 + 4 + 36 + 4 + previewSoloWidth;
+        const auto insertWidth = juce::jlimit(112, 164, (row1.getWidth() - fixedAfterInserts - 12) / 3);
         auto placeInsert = [this, insertWidth] (PluginInsertSlotComponent& insert, PluginSlot slot, juce::Rectangle<int> area)
         {
             auto bounds = area.reduced(2);
@@ -397,6 +460,8 @@ public:
         outputButton.setBounds(row1.removeFromLeft(104).reduced(2));
         row1.removeFromLeft(4);
         previewDimButton.setBounds(row1.removeFromLeft(36).reduced(2));
+        row1.removeFromLeft(4);
+        layoutPreviewSoloButtons(row1.removeFromLeft(previewSoloWidth).reduced(1));
 
         for (auto* button : { &pluginBtn, &editPluginBtn, &renderBtn,
                               &pluginBBtn, &editPluginBBtn, &renderBBtn,
@@ -965,6 +1030,7 @@ private:
         figureLoopPreviewBtn.setPalette(GoodMeterLookAndFeel::accentCyan, idleText, light);
         if (!loopPreviewVisible && previewMode == PreviewMode::loop)
             stopAudioPreview(false);
+        refreshPreviewSoloButtons();
 
         for (auto* combo : { &fitStem1Source, &fitStem2Source, &fitStem3Source, &fitBounceSource, &fitFigureType })
         {
@@ -1073,6 +1139,31 @@ private:
             return;
 
         terrainTimeFlipBtn.setBounds(row.removeFromRight(104).reduced(2));
+    }
+
+    void layoutPreviewSoloButtons(juce::Rectangle<int> area)
+    {
+        area.reduce(2, 1);
+        constexpr int cols = 3;
+        constexpr int rows = 2;
+        constexpr int gapX = 8;
+        constexpr int gapY = 3;
+        const int square = juce::jlimit(14, 18, juce::jmin((area.getWidth() - gapX * (cols - 1)) / cols,
+                                                           (area.getHeight() - gapY * (rows - 1)) / rows));
+        const int gridW = square * cols + gapX * (cols - 1);
+        const int gridH = square * rows + gapY * (rows - 1);
+        const int startX = area.getCentreX() - gridW / 2;
+        const int startY = area.getCentreY() - gridH / 2;
+        for (int i = 0; i < 6; ++i)
+        {
+            const int row = i >= 3 ? 1 : 0;
+            const int col = i % 3;
+            auto cell = juce::Rectangle<int>(startX + col * (square + gapX),
+                                             startY + row * (square + gapY),
+                                             square,
+                                             square);
+            previewSoloButtons[static_cast<size_t>(i)].setBounds(cell);
+        }
     }
 
     class TimePyramidPlayButton final : public juce::Component,
@@ -4159,12 +4250,19 @@ private:
                                          : GoodMeterLookAndFeel::accentPink;
     }
 
+    static juce::Colour wetCColour(bool exportMode)
+    {
+        juce::ignoreUnused(exportMode);
+        return isLightFigure(exportMode) ? juce::Colour(0xFF4F7D36)
+                                         : juce::Colour(0xFFBEEA8A);
+    }
+
     static juce::Colour pluginSlotColour(PluginSlot slot, bool exportMode)
     {
         switch (slot)
         {
             case PluginSlot::B: return wetBColour(exportMode);
-            case PluginSlot::C: return dryColour(exportMode);
+            case PluginSlot::C: return wetCColour(exportMode);
             default: return wetColour(exportMode);
         }
     }
@@ -4208,6 +4306,7 @@ private:
         previewDimButton.setPalette(text, light);
         previewDimButton.setDimmed(previewDimEnabled);
         figureLoopPreviewBtn.setPalette(GoodMeterLookAndFeel::accentCyan, text, light);
+        refreshPreviewSoloButtons();
         refreshPluginInsertSlots();
     }
 
@@ -4457,6 +4556,75 @@ private:
         return juce::isPositiveAndBelow(index, static_cast<int>(displaySlots.size()))
             ? assetFor(displaySlots[static_cast<size_t>(index)])
             : nullptr;
+    }
+
+    static SourceSlot previewSoloSourceSlot(int index)
+    {
+        static constexpr std::array<SourceSlot, 6> slots {
+            SourceSlot::dryA, SourceSlot::dryB, SourceSlot::dryC,
+            SourceSlot::wetA, SourceSlot::wetB, SourceSlot::wetC
+        };
+
+        return slots[static_cast<size_t>(juce::jlimit(0, 5, index))];
+    }
+
+    static juce::Colour sourceSlotColour(SourceSlot slot, bool exportMode)
+    {
+        const bool light = isLightFigure(exportMode);
+        switch (slot)
+        {
+            case SourceSlot::dryB: return light ? juce::Colour(0xFFB7791F) : juce::Colour(0xFFFFD166);
+            case SourceSlot::dryC: return light ? juce::Colour(0xFFC2185B) : juce::Colour(0xFFFF6EA9);
+            case SourceSlot::wetA: return light ? juce::Colour(0xFF2E7D32) : juce::Colour(0xFF8CE99A);
+            case SourceSlot::wetB: return light ? juce::Colour(0xFF4C51BF) : juce::Colour(0xFF9DB4FF);
+            case SourceSlot::wetC: return wetCColour(exportMode);
+            default: return dryColour(exportMode);
+        }
+    }
+
+    bool canPreviewSoloSlot(SourceSlot slot) const
+    {
+        const auto* asset = assetFor(slot);
+        return asset != nullptr && asset->buffer.getNumSamples() > 0;
+    }
+
+    bool hasAnyPreviewSoloEnabled() const
+    {
+        for (size_t i = 0; i < previewSoloSlots.size(); ++i)
+            if (previewSoloSlots[i] && canPreviewSoloSlot(previewSoloSourceSlot(static_cast<int>(i))))
+                return true;
+        return false;
+    }
+
+    std::vector<const Asset*> makePreviewSoloSources() const
+    {
+        std::vector<const Asset*> sources;
+        for (size_t i = 0; i < previewSoloSlots.size(); ++i)
+        {
+            if (!previewSoloSlots[i])
+                continue;
+
+            if (auto* asset = assetFor(previewSoloSourceSlot(static_cast<int>(i)));
+                asset != nullptr && asset->buffer.getNumSamples() > 0)
+                sources.push_back(asset);
+        }
+        return sources;
+    }
+
+    void refreshPreviewSoloButtons()
+    {
+        const bool light = isLightThemeSelected();
+        const bool visible = true;
+        for (int i = 0; i < static_cast<int>(previewSoloButtons.size()); ++i)
+        {
+            auto slot = previewSoloSourceSlot(i);
+            auto& button = previewSoloButtons[static_cast<size_t>(i)];
+            const bool enabled = canPreviewSoloSlot(slot);
+            button.setVisible(visible);
+            button.setEnabled(visible && enabled);
+            button.setToggleState(enabled && previewSoloSlots[static_cast<size_t>(i)], juce::dontSendNotification);
+            button.setPalette(sourceSlotColour(slot, false), enabled, light);
+        }
     }
 
     bool hasAnySourceAsset() const
@@ -6335,6 +6503,7 @@ private:
             displayArray.add(juce::var(item.release()));
         }
         root->setProperty("displaySlots", juce::var(displayArray));
+        root->setProperty("previewSolo", makeProjectPreviewSoloSnapshot());
 
         root->setProperty("pluginA", makeProjectPluginSnapshot(PluginSlot::A));
         root->setProperty("pluginB", makeProjectPluginSnapshot(PluginSlot::B));
@@ -6426,6 +6595,7 @@ private:
             return false;
 
         loadProjectDisplaySlots(root);
+        loadProjectPreviewSolo(root);
         loadProjectRouting(root);
 
         juce::StringArray warnings;
@@ -6526,6 +6696,41 @@ private:
             if (sourceSlotFromId(projectString(item, "slot", projectString(item, "source")), slot))
                 displaySlots[static_cast<size_t>(i)] = slot;
         }
+    }
+
+    juce::var makeProjectPreviewSoloSnapshot() const
+    {
+        auto solo = std::make_unique<juce::DynamicObject>();
+        juce::Array<juce::var> enabledSlots;
+        for (int i = 0; i < static_cast<int>(previewSoloSlots.size()); ++i)
+        {
+            const auto slot = previewSoloSourceSlot(i);
+            if (previewSoloSlots[static_cast<size_t>(i)] && canPreviewSoloSlot(slot))
+                enabledSlots.add(sourceSlotId(slot));
+        }
+        solo->setProperty("enabledSlots", juce::var(enabledSlots));
+        solo->setProperty("fallbackToDisplaySlotsWhenEmpty", true);
+        return juce::var(solo.release());
+    }
+
+    void loadProjectPreviewSolo(const juce::var& root)
+    {
+        previewSoloSlots.fill(false);
+        const auto solo = projectProperty(root, "previewSolo");
+        if (auto* array = projectProperty(solo, "enabledSlots").getArray())
+        {
+            for (const auto& item : *array)
+            {
+                SourceSlot slot = SourceSlot::dryA;
+                if (!sourceSlotFromId(item.toString(), slot))
+                    continue;
+
+                for (int i = 0; i < static_cast<int>(previewSoloSlots.size()); ++i)
+                    if (previewSoloSourceSlot(i) == slot)
+                        previewSoloSlots[static_cast<size_t>(i)] = true;
+            }
+        }
+        refreshPreviewSoloButtons();
     }
 
     void loadProjectRouting(const juce::var& root)
@@ -6900,9 +7105,11 @@ private:
         fitFigureType.setSelectedId(1, juce::dontSendNotification);
         setDefaultRenderRoutes(SourceSlot::dryA);
         displaySlots = { SourceSlot::dryA, SourceSlot::wetA, SourceSlot::wetB };
+        previewSoloSlots.fill(false);
         setStatus("Reset. Load Dry audio, generate a signal, or choose Plugin A/B/C.");
         updateButtonStates();
         updateTerrainCameraControls();
+        refreshPreviewSoloButtons();
         repaint();
     }
 
@@ -6972,12 +7179,26 @@ private:
     goodmeter::audio_doctor::FigureData makeFigureDataForExport()
     {
         goodmeter::audio_doctor::FigureData data;
-        data.dry = displayAsset(0);
-        data.wetA = displayAsset(1);
-        data.wetB = displayAsset(2);
-        data.label1 = displayLabel(0);
-        data.label2 = displayLabel(1);
-        data.label3 = displayLabel(2);
+        if (viewMode.getSelectedId() == 3)
+        {
+            data.dry = dryAsset != nullptr ? dryAsset.get() : displayAsset(0);
+            data.wetA = wetAsset.get();
+            data.wetB = wetBAsset.get();
+            data.wetC = wetCAsset.get();
+            data.label1 = "Dry reference";
+            data.label2 = "WET A";
+            data.label3 = "WET B";
+            data.label4 = "WET C";
+        }
+        else
+        {
+            data.dry = displayAsset(0);
+            data.wetA = displayAsset(1);
+            data.wetB = displayAsset(2);
+            data.label1 = displayLabel(0);
+            data.label2 = displayLabel(1);
+            data.label3 = displayLabel(2);
+        }
         data.pluginA = makeFigurePluginInfo(PluginSlot::A);
         data.pluginB = makeFigurePluginInfo(PluginSlot::B);
         data.pluginC = makeFigurePluginInfo(PluginSlot::C);
@@ -7036,6 +7257,98 @@ private:
         }
     }
 
+    static juce::String compactFigurePluginName(juce::String name)
+    {
+        name = name.replace("Kilohearts ", "", true)
+                   .replace("kHs ", "", true)
+                   .replace("kHs", "", true)
+                   .trim();
+        return name.isNotEmpty() ? name : "Plugin";
+    }
+
+    static juce::String compactFigurePluginAlias(const juce::String& pluginName)
+    {
+        if (pluginName.containsIgnoreCase("transient"))
+            return "TS";
+        if (pluginName.containsIgnoreCase("distortion"))
+            return "Dist";
+        if (pluginName.containsIgnoreCase("reverb"))
+            return "Rev";
+        if (pluginName.containsIgnoreCase("compressor"))
+            return "Comp";
+
+        auto alias = compactFigurePluginName(pluginName).upToFirstOccurrenceOf(" ", false, false);
+        return alias.isNotEmpty() ? alias : "Ins";
+    }
+
+    static juce::String compactFigurePluginOrderName(const juce::String& pluginName)
+    {
+        if (pluginName.containsIgnoreCase("transient"))
+            return "Transient";
+        if (pluginName.containsIgnoreCase("distortion"))
+            return "Dist";
+        if (pluginName.containsIgnoreCase("reverb"))
+            return "Rev";
+        if (pluginName.containsIgnoreCase("compressor"))
+            return "Comp";
+
+        return compactFigurePluginAlias(pluginName);
+    }
+
+    template <typename Param>
+    static juce::String formatCompactFigureParameter(const Param& param)
+    {
+        return param.name + " " + param.valueText;
+    }
+
+    void appendFigureChainSummary(PluginSlot slot, goodmeter::audio_doctor::FigurePluginInfo& info) const
+    {
+        const int slotIndex = pluginIndex(slot);
+        if (!lastRenderWasChain[static_cast<size_t>(slotIndex)]
+            || lastRenderedChainCount[static_cast<size_t>(slotIndex)] <= 1)
+            return;
+
+        juce::StringArray orderParts;
+        juce::StringArray paramParts;
+        int omittedParams = 0;
+
+        for (int i = 0; i < PluginInsertSlotComponent::maxInserts; ++i)
+        {
+            auto* host = getPluginHostIfAllocated(slot, i);
+            if (host == nullptr || host->getCurrentPlugin() == nullptr || isPluginInsertBypassed(slot, i))
+                continue;
+
+            host->refreshChangedParameterSnapshot();
+            const auto pluginName = compactFigurePluginName(host->getCurrentPlugin()->name);
+            orderParts.add(compactFigurePluginOrderName(pluginName));
+
+            const auto& params = host->getChangedParameters();
+            if (params.empty())
+                continue;
+
+            juce::String piece = compactFigurePluginAlias(pluginName);
+            const int count = juce::jmin(2, static_cast<int>(params.size()));
+            for (int paramIndex = 0; paramIndex < count; ++paramIndex)
+                piece += (paramIndex == 0 ? " " : ", ") + formatCompactFigureParameter(params[static_cast<size_t>(paramIndex)]);
+
+            omittedParams += static_cast<int>(params.size()) - count;
+            paramParts.add(piece);
+        }
+
+        if (orderParts.isEmpty())
+            return;
+
+        info.valid = true;
+        info.chainRender = true;
+        info.chainCount = lastRenderedChainCount[static_cast<size_t>(slotIndex)];
+        info.name = "MIX" + juce::String(info.chainCount);
+        info.format = "FX Chain";
+        info.chainOrderText = orderParts.joinIntoString(" -> ");
+        info.chainParameterText = paramParts.joinIntoString(" | ");
+        if (omittedParams > 0)
+            info.chainParameterText += (info.chainParameterText.isNotEmpty() ? " | +" : "+") + juce::String(omittedParams);
+    }
+
     goodmeter::audio_doctor::FigurePluginInfo makeFigurePluginInfo(PluginSlot slot)
     {
         auto& host = getPluginHost(slot);
@@ -7043,7 +7356,10 @@ private:
 
         goodmeter::audio_doctor::FigurePluginInfo info;
         if (host.getCurrentPlugin() == nullptr)
+        {
+            appendFigureChainSummary(slot, info);
             return info;
+        }
 
         const auto* desc = host.getCurrentPlugin();
         info.valid = true;
@@ -7061,6 +7377,7 @@ private:
                                                formatOutputGainDb(outputGainDb),
                                                normaliseOutputGainDb(outputGainDb) });
 
+        appendFigureChainSummary(slot, info);
         return info;
     }
 
@@ -7091,6 +7408,7 @@ private:
         pluginCBtn.setEnabled(!busy);
         importDryBtn.setEnabled(!busy);
         generateBtn.setEnabled(!busy);
+        refreshPreviewSoloButtons();
         refreshPluginInsertSlots();
     }
 
@@ -7381,7 +7699,12 @@ private:
     std::unique_ptr<Asset> makeDisplayPreviewAsset() const
     {
         std::vector<const Asset*> sources;
-        if (isLayerFitFusionView())
+        const bool soloMode = hasAnyPreviewSoloEnabled();
+        if (soloMode)
+        {
+            sources = makePreviewSoloSources();
+        }
+        else if (isLayerFitFusionView())
         {
             for (auto* asset : makeLayerFitSources())
                 if (asset != nullptr && asset->buffer.getNumSamples() > 0)
@@ -7408,7 +7731,7 @@ private:
 
         const int totalSamples = juce::jmax(1, static_cast<int>(std::ceil(durationSeconds * targetSampleRate)));
         auto mixed = std::make_unique<Asset>();
-        mixed->name = sources.size() == 1 ? sources.front()->name : "Display Slots Mix";
+        mixed->name = sources.size() == 1 ? sources.front()->name : (soloMode ? "Preview Solo Mix" : "Display Slots Mix");
         mixed->sourcePath = sources.front()->sourcePath;
         mixed->sampleRate = targetSampleRate;
         mixed->buffer.setSize(2, totalSamples);
@@ -7565,13 +7888,30 @@ private:
         g.setColour(secondaryDetailText(isLightFigure(exportMode)));
 
         juce::String subtitle;
-        for (int i = 0; i < 3; ++i)
-            if (auto* asset = displayAsset(i))
-            {
-                if (subtitle.isNotEmpty())
-                    subtitle += "    ";
-                subtitle += displayLabel(i) + ": " + asset->name;
-            }
+        auto appendSubtitleAsset = [&subtitle](const juce::String& label, const Asset* asset)
+        {
+            if (asset == nullptr)
+                return;
+
+            if (subtitle.isNotEmpty())
+                subtitle += "    ";
+            subtitle += label + ": " + asset->name;
+        };
+
+        if (viewMode.getSelectedId() == 3)
+        {
+            appendSubtitleAsset("DRY reference", dryAsset.get());
+            appendSubtitleAsset("WET A", wetAsset.get());
+            appendSubtitleAsset("WET B", wetBAsset.get());
+            appendSubtitleAsset("WET C", wetCAsset.get());
+        }
+        else
+        {
+            for (int i = 0; i < 3; ++i)
+                if (auto* asset = displayAsset(i))
+                    appendSubtitleAsset(displayLabel(i), asset);
+        }
+
         if (subtitle.isEmpty())
             subtitle = "Dry: none";
         if (pluginHostA.getCurrentPlugin() != nullptr)
@@ -7610,9 +7950,10 @@ private:
         drawSpectrumGrid(g, plot, exportMode);
         drawGroupDelayGrid(g, plot, exportMode);
 
-        const bool hasWetA = displayAsset(1) != nullptr && !displayAsset(1)->groupDelay.empty();
-        const bool hasWetB = displayAsset(2) != nullptr && !displayAsset(2)->groupDelay.empty();
-        if (!hasWetA && !hasWetB)
+        const bool hasWetA = wetAsset != nullptr && !wetAsset->groupDelay.empty();
+        const bool hasWetB = wetBAsset != nullptr && !wetBAsset->groupDelay.empty();
+        const bool hasWetC = wetCAsset != nullptr && !wetCAsset->groupDelay.empty();
+        if (!hasWetA && !hasWetB && !hasWetC)
         {
             drawPlotHint(g, plot, "Load matching Dry/Wet or render a plugin to show group delay.");
             return;
@@ -7620,10 +7961,12 @@ private:
 
         drawGroupDelayReference(g, plot, exportMode);
         if (hasWetA)
-            drawGroupDelayPath(g, plot, displayAsset(1)->groupDelay, wetColour(exportMode), exportMode);
+            drawGroupDelayPath(g, plot, wetAsset->groupDelay, wetColour(exportMode), exportMode);
         if (hasWetB)
-            drawGroupDelayPath(g, plot, displayAsset(2)->groupDelay, wetBColour(exportMode), exportMode);
-        drawLegend(g, plot, exportMode);
+            drawGroupDelayPath(g, plot, wetBAsset->groupDelay, wetBColour(exportMode), exportMode);
+        if (hasWetC)
+            drawGroupDelayPath(g, plot, wetCAsset->groupDelay, wetCColour(exportMode), exportMode);
+        drawGroupDelayLegend(g, plot, exportMode);
     }
 
     void drawEnvelopePlot(juce::Graphics& g, juce::Rectangle<float> plot, bool exportMode)
@@ -8494,6 +8837,37 @@ private:
             drawLegendItem(g, legend.removeFromTop(rowHeight), wetBColour(exportMode), displayLabel(2), !exportMode);
     }
 
+    void drawGroupDelayLegend(juce::Graphics& g, juce::Rectangle<float> plot, bool exportMode)
+    {
+        const int rowCount = (dryAsset != nullptr ? 1 : 0)
+                           + (wetAsset != nullptr && !wetAsset->groupDelay.empty() ? 1 : 0)
+                           + (wetBAsset != nullptr && !wetBAsset->groupDelay.empty() ? 1 : 0)
+                           + (wetCAsset != nullptr && !wetCAsset->groupDelay.empty() ? 1 : 0);
+        const float rowHeight = exportMode ? 34.0f : 22.0f;
+        auto legend = juce::Rectangle<float>(plot.getRight() - (exportMode ? 286.0f : 176.0f),
+                                             plot.getY() + 12.0f,
+                                             exportMode ? 262.0f : 160.0f,
+                                             juce::jmax(exportMode ? 58.0f : 34.0f,
+                                                        rowHeight * static_cast<float>(rowCount) + (exportMode ? 10.0f : 4.0f)));
+        if (exportMode)
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.85f));
+            g.fillRect(legend);
+            g.setColour(juce::Colour(0x22000000));
+            g.drawRect(legend);
+        }
+
+        g.setFont(juce::Font(juce::FontOptions(exportMode ? 16.0f : 10.0f)));
+        if (dryAsset != nullptr)
+            drawLegendItem(g, legend.removeFromTop(rowHeight), dryColour(exportMode), "DRY reference", !exportMode);
+        if (wetAsset != nullptr && !wetAsset->groupDelay.empty())
+            drawLegendItem(g, legend.removeFromTop(rowHeight), wetColour(exportMode), "WET A", !exportMode);
+        if (wetBAsset != nullptr && !wetBAsset->groupDelay.empty())
+            drawLegendItem(g, legend.removeFromTop(rowHeight), wetBColour(exportMode), "WET B", !exportMode);
+        if (wetCAsset != nullptr && !wetCAsset->groupDelay.empty())
+            drawLegendItem(g, legend.removeFromTop(rowHeight), wetCColour(exportMode), "WET C", !exportMode);
+    }
+
     static void drawLegendItem(juce::Graphics& g, juce::Rectangle<float> row,
                                juce::Colour colour, const juce::String& label,
                                bool darkUi = false)
@@ -8677,9 +9051,19 @@ private:
             }
         };
 
-        drawAssetMetrics(displayAsset(0), displayLabel(0), dryColour(exportMode));
-        drawAssetMetrics(displayAsset(1), displayLabel(1), wetColour(exportMode));
-        drawAssetMetrics(displayAsset(2), displayLabel(2), wetBColour(exportMode));
+        if (isGroupDelayView)
+        {
+            drawAssetMetrics(dryAsset.get(), "DRY reference", dryColour(exportMode));
+            drawAssetMetrics(wetAsset.get(), "WET A", wetColour(exportMode));
+            drawAssetMetrics(wetBAsset.get(), "WET B", wetBColour(exportMode));
+            drawAssetMetrics(wetCAsset.get(), "WET C", wetCColour(exportMode));
+        }
+        else
+        {
+            drawAssetMetrics(displayAsset(0), displayLabel(0), dryColour(exportMode));
+            drawAssetMetrics(displayAsset(1), displayLabel(1), wetColour(exportMode));
+            drawAssetMetrics(displayAsset(2), displayLabel(2), wetBColour(exportMode));
+        }
 
         auto drawPluginRenderInfo = [&](PluginSlot slot)
         {
@@ -8702,7 +9086,7 @@ private:
 
     void drawPluginParameterPanel(juce::Graphics& g, juce::Rectangle<float> area, bool exportMode)
     {
-        const float rowHeight = exportMode ? 25.0f : 16.0f;
+        const float rowHeight = exportMode ? 28.0f : 18.0f;
         const int maxParamsPerPlugin = 8;
 
         auto drawPlugin = [&](PluginSlot slot, juce::Rectangle<float> row)
@@ -8711,9 +9095,11 @@ private:
             if (host.getCurrentPlugin() == nullptr)
                 return;
 
-            const auto titleWidth = exportMode ? 138.0f : 82.0f;
+            const auto titleWidth = exportMode ? 166.0f : 104.0f;
+            const auto swatchWidth = exportMode ? 22.0f : 18.0f;
             g.setColour(pluginSlotColour(slot, exportMode));
-            g.fillRect(row.removeFromLeft(exportMode ? 12.0f : 8.0f).reduced(0.0f, 3.5f));
+            g.fillRoundedRectangle(row.removeFromLeft(swatchWidth).reduced(0.0f, exportMode ? 4.0f : 3.0f),
+                                   exportMode ? 3.5f : 2.5f);
 
             g.setColour(detailText(isLightFigure(exportMode)));
             g.drawText("Plugin " + juce::String(slotName(slot)) + " params",
@@ -9225,6 +9611,8 @@ private:
     double lastSpatialTimeDragValue = 0.0;
     TimePyramidPlayButton spatialTimePlayBtn { GoodMeterLookAndFeel::accentCyan };
     SpeakerPreviewButton figureLoopPreviewBtn;
+    std::array<PreviewSoloButton, 6> previewSoloButtons;
+    std::array<bool, 6> previewSoloSlots {};
     juce::Label statusLabel;
     juce::Label pluginSlotLabel;
     AudioDoctorPopupLookAndFeel audioDoctorPopupLookAndFeel;

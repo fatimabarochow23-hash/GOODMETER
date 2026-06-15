@@ -13,4 +13,4 @@
 | `/Users/MediaStorm/Desktop/GOODMETER/AUDIO_DOCTOR_BEAM_RENDER_BUG_2026-05-07.md` | 2026-05-07 | 论文组 | 当前有效 | 已修核心路径，需持续测复杂 preset |
 | `/Users/MediaStorm/Desktop/GOODMETER/AUDIO_DOCTOR_MASKING_AND_BAND_HIGHLIGHT_HANDOFF_2026-05-08.md` | 2026-05-08 | 论文组 | 当前有效 | 已做 v1 |
 | `/Users/MediaStorm/Desktop/GOODMETER/GOODMETER_MEMORY_PALACE_REQUIREMENTS_2026-05-08.md` | 2026-05-08 | 论文组 / GOODMETER 协作线 | 当前有效 | 本目录第一版 |
-
+| `/Volumes/solari 1/Codex_Work/GOODMETER/AUDIO_DOCTOR_CHAIN_FIGURE_PARAMS_TICKET_2026-05-26.md` | 2026-05-26 | 论文组 / Codex | 当前有效 | 待施工队修复 |

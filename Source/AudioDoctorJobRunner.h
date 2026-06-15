@@ -320,6 +320,45 @@ private:
                     break;
             }
         }
+
+        loadPreviewSolo();
+    }
+
+    static juce::String previewSoloSourceId(int index)
+    {
+        static const std::array<const char*, 6> ids {{ "dryA", "dryB", "dryC", "wetA", "wetB", "wetC" }};
+        return juce::isPositiveAndBelow(index, static_cast<int>(ids.size()))
+            ? juce::String(ids[static_cast<size_t>(index)])
+            : juce::String();
+    }
+
+    void loadPreviewSolo()
+    {
+        previewSoloSlots.fill(false);
+        previewSoloFallbackToDisplaySlotsWhenEmpty = true;
+        previewSoloExportPreviewMix = false;
+        previewSoloMixPath.clear();
+
+        const auto solo = getObject(job, "previewSolo");
+        if (!solo.isObject())
+            return;
+
+        previewSoloFallbackToDisplaySlotsWhenEmpty = getBool(solo, "fallbackToDisplaySlotsWhenEmpty", true);
+        previewSoloExportPreviewMix = getBool(solo, "exportPreviewMix", getBool(solo, "writePreviewMix", false));
+
+        const auto enabled = getObject(solo, "enabledSlots");
+        if (auto* arr = enabled.getArray())
+        {
+            for (const auto& item : *arr)
+            {
+                const auto id = normaliseSourceId(item.toString());
+                for (int i = 0; i < static_cast<int>(previewSoloSlots.size()); ++i)
+                {
+                    if (id == previewSoloSourceId(i))
+                        previewSoloSlots[static_cast<size_t>(i)] = true;
+                }
+            }
+        }
     }
 
     static bool isKnownSourceId(const juce::String& source)
@@ -1450,6 +1489,7 @@ private:
         juce::Array<juce::var> figures;
         juce::Array<juce::var> dataFiles;
         juce::Array<juce::var> thesisFigures;
+        juce::Array<juce::var> derivedAudioFiles;
 
         const auto views = getViews();
         const auto preset = getExportPreset();
@@ -1543,15 +1583,18 @@ private:
             writeLayerFitData("layer_fit_fusion_" + settings.figureType, settings);
         }
 
+        writePreviewSoloMixIfRequested(outDir.getChildFile("derived_audio"), derivedAudioFiles);
+
         const auto manifestFile = outDir.getChildFile("manifest.json");
         const auto appendixFile = outDir.getChildFile("appendix_table.csv");
         writeAppendixTable(appendixFile, thesisFigures, dataFiles);
-        writeManifest(manifestFile, figures, dataFiles, thesisFigures, appendixFile);
+        writeManifest(manifestFile, figures, dataFiles, thesisFigures, appendixFile, derivedAudioFiles);
         const auto summaryFile = outDir.getChildFile("job_summary.md");
         writeJobSummary(summaryFile, figures, dataFiles, thesisFigures, appendixFile);
         response->setProperty("figures", juce::var(figures));
         response->setProperty("thesisFigures", juce::var(thesisFigures));
         response->setProperty("data", juce::var(dataFiles));
+        response->setProperty("derivedAudio", juce::var(derivedAudioFiles));
         response->setProperty("manifest", manifestFile.getFullPathName());
         response->setProperty("appendixTable", appendixFile.getFullPathName());
         response->setProperty("summary", summaryFile.getFullPathName());
@@ -1567,6 +1610,114 @@ private:
 
             writeAssetCurves(dataDir, "display" + juce::String(static_cast<int>(i + 1)), asset, dataFiles);
         }
+    }
+
+    juce::StringArray getResolvedPreviewSoloSourceIds(bool* fallbackUsed = nullptr) const
+    {
+        juce::StringArray resolved;
+        for (int i = 0; i < static_cast<int>(previewSoloSlots.size()); ++i)
+        {
+            if (!previewSoloSlots[static_cast<size_t>(i)])
+                continue;
+
+            const auto id = previewSoloSourceId(i);
+            if (getAssetById(id) != nullptr)
+                resolved.add(id);
+        }
+
+        bool usedFallback = false;
+        if (resolved.isEmpty() && previewSoloFallbackToDisplaySlotsWhenEmpty)
+        {
+            for (const auto& source : displaySlotSources)
+            {
+                const auto id = normaliseSourceId(source);
+                if (getAssetById(id) != nullptr && !resolved.contains(id))
+                    resolved.add(id);
+            }
+            usedFallback = resolved.size() > 0;
+        }
+
+        if (fallbackUsed != nullptr)
+            *fallbackUsed = usedFallback;
+
+        return resolved;
+    }
+
+    AssetPtr makePreviewSoloMixAsset(const juce::StringArray& sourceIds, juce::String& error) const
+    {
+        std::vector<const Asset*> inputs;
+        double sampleRate = 0.0;
+        int maxSamples = 0;
+
+        for (int i = 0; i < sourceIds.size(); ++i)
+        {
+            const auto id = normaliseSourceId(sourceIds[i]);
+            const auto* asset = getAssetById(id);
+            if (asset == nullptr)
+                continue;
+
+            if (sampleRate <= 0.0)
+                sampleRate = asset->sampleRate;
+            else if (std::abs(asset->sampleRate - sampleRate) > 1.0)
+            {
+                error = "Preview Solo mix currently requires matching sample rates.";
+                return {};
+            }
+
+            inputs.push_back(asset);
+            maxSamples = juce::jmax(maxSamples, asset->buffer.getNumSamples());
+        }
+
+        if (inputs.empty())
+        {
+            error = "Preview Solo has no resolved assets to mix.";
+            return {};
+        }
+
+        Asset mixed;
+        mixed.name = "Preview Solo Mix " + sourceIds.joinIntoString("+");
+        mixed.sourcePath = "preview_solo:" + sourceIds.joinIntoString("+");
+        mixed.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
+        mixed.buffer.setSize(2, maxSamples);
+        mixed.buffer.clear();
+
+        const float gain = 1.0f / static_cast<float>(inputs.size());
+        for (const auto* asset : inputs)
+        {
+            auto stereo = toStereoBuffer(asset->buffer);
+            const int samples = juce::jmin(maxSamples, stereo.getNumSamples());
+            for (int ch = 0; ch < mixed.buffer.getNumChannels(); ++ch)
+                mixed.buffer.addFrom(ch, 0, stereo, ch, 0, samples, gain);
+        }
+
+        refreshAnalysis(mixed);
+        return std::make_unique<Asset>(std::move(mixed));
+    }
+
+    void writePreviewSoloMixIfRequested(const juce::File& derivedDir, juce::Array<juce::var>& derivedAudioFiles)
+    {
+        if (!previewSoloExportPreviewMix)
+            return;
+
+        juce::String error;
+        const auto sourceIds = getResolvedPreviewSoloSourceIds();
+        auto mix = makePreviewSoloMixAsset(sourceIds, error);
+        if (mix == nullptr)
+        {
+            response->setProperty("previewSoloMixWarning", error);
+            return;
+        }
+
+        derivedDir.createDirectory();
+        const auto file = derivedDir.getChildFile(sanitizeFileToken(sessionId + "_preview_solo_mix")).withFileExtension(".wav");
+        if (!writeAudioFile(file, mix->buffer, mix->sampleRate, error))
+        {
+            response->setProperty("previewSoloMixWarning", error);
+            return;
+        }
+
+        previewSoloMixPath = file.getFullPathName();
+        derivedAudioFiles.add(previewSoloMixPath);
     }
 
     juce::String getExportPreset() const
@@ -1949,7 +2100,7 @@ private:
         for (auto* asset : data.fitSources)
             if (asset != nullptr && asset->sampleRate > 0.0)
                 return asset->sampleRate;
-        for (auto* asset : { data.dry, data.wetA, data.wetB, data.fitBounceSource })
+        for (auto* asset : { data.dry, data.wetA, data.wetB, data.wetC, data.fitBounceSource })
             if (asset != nullptr && asset->sampleRate > 0.0)
                 return asset->sampleRate;
         return 48000.0;
@@ -2095,12 +2246,14 @@ private:
         data.dry = getAssetById(displaySlotSources[0]);
         data.wetA = getAssetById(displaySlotSources[1]);
         data.wetB = getAssetById(displaySlotSources[2]);
+        data.wetC = nullptr;
         data.label1 = labelForSourceId(displaySlotSources[0]);
         data.label2 = labelForSourceId(displaySlotSources[1]);
         data.label3 = labelForSourceId(displaySlotSources[2]);
-        data.pluginA = makeFigurePluginInfo(hostA, renderInfoA);
-        data.pluginB = makeFigurePluginInfo(hostB, renderInfoB);
-        data.pluginC = makeFigurePluginInfo(hostC, renderInfoC);
+        data.label4 = "WET C";
+        data.pluginA = makeFigurePluginInfo(0, hostA, renderInfoA);
+        data.pluginB = makeFigurePluginInfo(1, hostB, renderInfoB);
+        data.pluginC = makeFigurePluginInfo(2, hostC, renderInfoC);
         data.view = figureViewForString(view);
         data.viewToken = view;
         data.processingNote = getString(job, "processingNote", getString(getObject(job, "export"), "processingNote"));
@@ -2144,6 +2297,19 @@ private:
         data.fitBounceLabel = bounceSource.isNotEmpty() ? labelForSourceId(bounceSource) : "Auto Bounce Selected Stems";
         data.fitBounceAuto = bounceSource.isEmpty();
         data.fitFigureType = data.maskingFusionSettings.figureType;
+
+        if (data.view == FigureView::groupDelay || data.view == FigureView::groupDelayCombo)
+        {
+            data.dry = dryAsset.get();
+            data.wetA = wetA.get();
+            data.wetB = wetB.get();
+            data.wetC = wetC.get();
+            data.label1 = "DRY A";
+            data.label2 = "WET A";
+            data.label3 = "WET B";
+            data.label4 = "WET C";
+        }
+
         return data;
     }
 
@@ -2154,9 +2320,11 @@ private:
         data.dry = getAssetById(sources[0]);
         data.wetA = getAssetById(sources[1]);
         data.wetB = getAssetById(sources[2]);
+        data.wetC = nullptr;
         data.label1 = labelForSourceId(sources[0]);
         data.label2 = labelForSourceId(sources[1]);
         data.label3 = labelForSourceId(sources[2]);
+        data.label4 = "WET C";
         data.view = thesisFigureViewForToken(templateToken);
         data.viewToken = getString(spec, "title", thesisFigureTitle(templateToken));
         data.processingNote = getString(spec, "processingNote", getString(job, "processingNote"));
@@ -2208,6 +2376,19 @@ private:
         data.fitBounceLabel = bounceSource.isNotEmpty() ? labelForSourceId(bounceSource) : "Auto Bounce Selected Stems";
         data.fitBounceAuto = bounceSource.isEmpty();
         data.fitFigureType = data.maskingFusionSettings.figureType;
+
+        if (data.view == FigureView::groupDelay || data.view == FigureView::groupDelayCombo)
+        {
+            data.dry = dryAsset.get();
+            data.wetA = wetA.get();
+            data.wetB = wetB.get();
+            data.wetC = wetC.get();
+            data.label1 = "DRY A";
+            data.label2 = "WET A";
+            data.label3 = "WET B";
+            data.label4 = "WET C";
+        }
+
         return data;
     }
 
@@ -2275,6 +2456,8 @@ private:
         append(1, labelToSourceId(data.label1, data.dry), data.dry);
         append(2, labelToSourceId(data.label2, data.wetA), data.wetA);
         append(3, labelToSourceId(data.label3, data.wetB), data.wetB);
+        if (data.wetC != nullptr)
+            append(4, labelToSourceId(data.label4, data.wetC), data.wetC);
         return juce::var(sources);
     }
 
@@ -2459,7 +2642,50 @@ private:
         return FigureView::spectrum;
     }
 
-    static FigurePluginInfo makeFigurePluginInfo(const PluginHost& host, const RenderInfo& renderInfo)
+    static juce::String compactPluginName(juce::String name)
+    {
+        name = name.replace("Kilohearts ", "", true)
+                   .replace("kHs ", "", true)
+                   .replace("kHs", "", true)
+                   .trim();
+        return name.isNotEmpty() ? name : "Plugin";
+    }
+
+    static juce::String compactPluginAlias(const juce::String& pluginName)
+    {
+        if (pluginName.containsIgnoreCase("transient"))
+            return "TS";
+        if (pluginName.containsIgnoreCase("distortion"))
+            return "Dist";
+        if (pluginName.containsIgnoreCase("reverb"))
+            return "Rev";
+        if (pluginName.containsIgnoreCase("compressor"))
+            return "Comp";
+
+        auto alias = compactPluginName(pluginName).upToFirstOccurrenceOf(" ", false, false);
+        return alias.isNotEmpty() ? alias : "Ins";
+    }
+
+    static juce::String compactPluginOrderName(const juce::String& pluginName)
+    {
+        if (pluginName.containsIgnoreCase("transient"))
+            return "Transient";
+        if (pluginName.containsIgnoreCase("distortion"))
+            return "Dist";
+        if (pluginName.containsIgnoreCase("reverb"))
+            return "Rev";
+        if (pluginName.containsIgnoreCase("compressor"))
+            return "Comp";
+
+        return compactPluginAlias(pluginName);
+    }
+
+    static juce::String formatCompactParameter(const PluginParameterSnapshot& param)
+    {
+        return param.name + " " + param.valueText;
+    }
+
+    FigurePluginInfo makeFigurePluginInfo(int slotIndex, const PluginHost& host, const RenderInfo& renderInfo) const
     {
         FigurePluginInfo info;
         if (host.getCurrentPlugin() == nullptr)
@@ -2472,18 +2698,68 @@ private:
             info.format = renderInfo.plugin.pluginFormatName;
             info.latencySamples = renderInfo.latencySamples;
             info.tailSeconds = renderInfo.tailSeconds;
-            return info;
+            info.chainRender = renderInfo.chainRender;
+            info.chainCount = renderInfo.chainCount;
+        }
+        else
+        {
+            const auto* desc = host.getCurrentPlugin();
+            info.valid = true;
+            info.name = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel : desc->name;
+            info.format = renderInfo.plugin.pluginFormatName.isNotEmpty() ? renderInfo.plugin.pluginFormatName : desc->pluginFormatName;
+            info.latencySamples = renderInfo.latencySamples;
+            info.tailSeconds = renderInfo.tailSeconds;
+            info.chainRender = renderInfo.chainRender;
+            info.chainCount = renderInfo.chainCount;
+
+            for (const auto& p : host.getChangedParameters())
+                info.changedParameters.push_back({ p.name, p.valueText, p.normalisedValue });
         }
 
-        const auto* desc = host.getCurrentPlugin();
-        info.valid = true;
-        info.name = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel : desc->name;
-        info.format = renderInfo.plugin.pluginFormatName.isNotEmpty() ? renderInfo.plugin.pluginFormatName : desc->pluginFormatName;
-        info.latencySamples = renderInfo.latencySamples;
-        info.tailSeconds = renderInfo.tailSeconds;
+        if (juce::isPositiveAndBelow(slotIndex, 3)
+            && !pluginChains[static_cast<size_t>(slotIndex)].empty()
+            && (renderInfo.chainRender || renderInfo.chainCount > 1))
+        {
+            juce::StringArray orderParts;
+            juce::StringArray paramParts;
+            int omittedParams = 0;
 
-        for (const auto& p : host.getChangedParameters())
-            info.changedParameters.push_back({ p.name, p.valueText, p.normalisedValue });
+            for (const auto& step : pluginChains[static_cast<size_t>(slotIndex)])
+            {
+                if (step.host == nullptr || step.host->getCurrentPlugin() == nullptr || step.bypassed)
+                    continue;
+
+                step.host->refreshChangedParameterSnapshot();
+                const auto pluginName = compactPluginName(step.host->getCurrentPlugin()->name);
+                orderParts.add(compactPluginOrderName(pluginName));
+
+                const auto& params = step.host->getChangedParameters();
+                if (params.empty())
+                    continue;
+
+                juce::String piece = compactPluginAlias(pluginName);
+                const int count = juce::jmin(2, static_cast<int>(params.size()));
+                for (int i = 0; i < count; ++i)
+                    piece += (i == 0 ? " " : ", ") + formatCompactParameter(params[static_cast<size_t>(i)]);
+
+                omittedParams += static_cast<int>(params.size()) - count;
+                paramParts.add(piece);
+            }
+
+            if (!orderParts.isEmpty())
+            {
+                info.valid = true;
+                info.chainRender = true;
+                info.chainCount = renderInfo.chainCount > 0 ? renderInfo.chainCount
+                                                            : static_cast<int>(orderParts.size());
+                info.name = renderInfo.chainLabel.isNotEmpty() ? renderInfo.chainLabel : "MIX" + juce::String(info.chainCount);
+                info.format = "FX Chain";
+                info.chainOrderText = orderParts.joinIntoString(" -> ");
+                info.chainParameterText = paramParts.joinIntoString(" | ");
+                if (omittedParams > 0)
+                    info.chainParameterText += (info.chainParameterText.isNotEmpty() ? " | +" : "+") + juce::String(omittedParams);
+            }
+        }
 
         return info;
     }
@@ -3086,7 +3362,8 @@ private:
     void writeManifest(const juce::File& manifestFile, const juce::Array<juce::var>& figures,
                        const juce::Array<juce::var>& dataFiles,
                        const juce::Array<juce::var>& thesisFigures,
-                       const juce::File& appendixFile)
+                       const juce::File& appendixFile,
+                       const juce::Array<juce::var>& derivedAudioFiles)
     {
         auto root = std::make_unique<juce::DynamicObject>();
         root->setProperty("schemaVersion", schemaVersion);
@@ -3119,7 +3396,9 @@ private:
         root->setProperty("thesisFigures", juce::var(thesisFigures));
         root->setProperty("appendixTable", appendixFile.getFullPathName());
         root->setProperty("dataFiles", juce::var(dataFiles));
+        root->setProperty("derivedAudioFiles", juce::var(derivedAudioFiles));
         root->setProperty("displaySlots", writeDisplaySlotsManifest());
+        root->setProperty("previewSolo", writePreviewSoloManifest());
         root->setProperty("renderRouting", writeRenderRoutingManifest());
         root->setProperty("dry", writeAssetManifest(dryAsset.get()));
         root->setProperty("dryA", writeAssetManifest(dryAsset.get()));
@@ -3218,6 +3497,52 @@ private:
             slots.add(juce::var(obj.release()));
         }
         return juce::var(slots);
+    }
+
+    juce::var writePreviewSoloManifest() const
+    {
+        juce::Array<juce::var> enabledSlots;
+        for (int i = 0; i < static_cast<int>(previewSoloSlots.size()); ++i)
+        {
+            if (previewSoloSlots[static_cast<size_t>(i)])
+                enabledSlots.add(previewSoloSourceId(i));
+        }
+
+        bool fallbackUsed = false;
+        const auto resolved = getResolvedPreviewSoloSourceIds(&fallbackUsed);
+        juce::Array<juce::var> resolvedIds;
+        juce::Array<juce::var> resolvedSources;
+        for (int i = 0; i < resolved.size(); ++i)
+        {
+            const auto id = normaliseSourceId(resolved[i]);
+            const auto* asset = getAssetById(id);
+            resolvedIds.add(id);
+
+            auto obj = std::make_unique<juce::DynamicObject>();
+            obj->setProperty("source", id);
+            obj->setProperty("label", labelForSourceId(id));
+            obj->setProperty("hasAsset", asset != nullptr);
+            if (asset != nullptr)
+            {
+                obj->setProperty("assetName", asset->name);
+                obj->setProperty("sourcePath", asset->sourcePath);
+                obj->setProperty("sampleRate", asset->sampleRate);
+                obj->setProperty("durationSeconds", asset->metrics.durationSeconds);
+            }
+            resolvedSources.add(juce::var(obj.release()));
+        }
+
+        auto root = std::make_unique<juce::DynamicObject>();
+        root->setProperty("enabledSlots", juce::var(enabledSlots));
+        root->setProperty("resolvedSourceIds", juce::var(resolvedIds));
+        root->setProperty("resolvedSources", juce::var(resolvedSources));
+        root->setProperty("fallbackUsed", fallbackUsed);
+        root->setProperty("fallbackToDisplaySlotsWhenEmpty", previewSoloFallbackToDisplaySlotsWhenEmpty);
+        root->setProperty("exportPreviewMix", previewSoloExportPreviewMix);
+        root->setProperty("mixGainMode", "equal_gain_average");
+        if (previewSoloMixPath.isNotEmpty())
+            root->setProperty("previewMixPath", previewSoloMixPath);
+        return juce::var(root.release());
     }
 
     juce::var writeRenderRoutingManifest() const
@@ -3572,6 +3897,10 @@ private:
     juce::File outDir;
     std::unique_ptr<juce::DynamicObject> response;
     std::array<juce::String, 3> displaySlotSources { "dryA", "wetA", "wetB" };
+    std::array<bool, 6> previewSoloSlots {};
+    bool previewSoloFallbackToDisplaySlotsWhenEmpty = true;
+    bool previewSoloExportPreviewMix = false;
+    juce::String previewSoloMixPath;
     AssetPtr dryAsset;
     AssetPtr dryBAsset;
     AssetPtr dryCAsset;
