@@ -1,15 +1,16 @@
 /*
   ==============================================================================
     iOSMainComponent.h
-    GOODMETER iOS - Root component with five-page horizontal swipe navigation
+    GOODMETER iOS - Root component with four-page horizontal swipe navigation
 
     Page 0 (NonoPageComponent): Nono/Guoba character, file import, analysis
-    Page 1 (MetersPageComponent): 8 scrollable meter cards + transport bar
+    Page 1 (Media): merged audio/video page — shows MetersPageComponent for
+                    audio files or VideoPageComponent for video files, chosen
+                    automatically by the type of the last imported/loaded media
     Page 2 (SettingsPageComponent): Skin selector, import button toggle
     Page 3 (HistoryPageComponent): Imported audio/video history
-    Page 4 (VideoPageComponent): Video player + hidden drawer transport
 
-    Navigation: horizontal swipe between pages, page indicator dots at bottom
+    Navigation: horizontal swipe between pages, nav icons at bottom
   ==============================================================================
 */
 
@@ -56,9 +57,16 @@ public:
             historyPage->refreshList();
 
             if (isVideoFile(file))
+            {
                 videoPage->loadVideo(file);
-            else if (videoPage->hasLoadedVideo())
-                videoPage->clearVideo();
+                setMediaMode(true);
+            }
+            else
+            {
+                if (videoPage->hasLoadedVideo())
+                    videoPage->clearVideo();
+                setMediaMode(false);
+            }
         };
 
         // ── Wire Settings callbacks ──
@@ -109,18 +117,22 @@ public:
             if (isVideoFile(file))
             {
                 // Kick the same video->audio extraction / playback pipeline that
-                // page 1 import uses, so page 5 meters read the video's audio
-                // instead of showing a silent shell when a video is loaded
+                // page 1 import uses, so the media page meters read the video's
+                // audio instead of showing a silent shell when a video is loaded
                 // directly from History.
                 nonoPage->loadLibraryFile(file);
 
                 if (videoPage->loadVideo(file))
-                    switchToPage(4);
+                {
+                    setMediaMode(true);
+                    switchToPage(1);
+                }
             }
             else if (nonoPage->loadLibraryFile(file))
             {
                 if (videoPage->hasLoadedVideo())
                     videoPage->clearVideo();
+                setMediaMode(false);
 
                 switchToPage(0);
             }
@@ -135,7 +147,10 @@ public:
             }
 
             if (videoPage->getCurrentVideoPath() == file.getFullPathName())
+            {
                 videoPage->clearVideo();
+                setMediaMode(false);
+            }
 
             if (file.existsAsFile())
                 file.deleteFile();
@@ -289,7 +304,7 @@ public:
     {
         g.fillAll(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
 
-        // Draw Chinese character navigation bar at bottom
+        // Draw graphic-icon navigation bar at bottom
         auto bounds = getLocalBounds();
         float navH = 60.0f;
         auto navBar = bounds.removeFromBottom((int)navH);
@@ -299,7 +314,7 @@ public:
                                 : GoodMeterLookAndFeel::textMain.withAlpha(0.08f));
         g.fillRect(navBar.removeFromTop(1));
 
-        float btnW = navBar.getWidth() / 5.0f;
+        float btnW = navBar.getWidth() / (float) numPages;
 
         for (int i = 0; i < numPages; ++i)
         {
@@ -330,7 +345,7 @@ public:
 
             switch (i)
             {
-                case 0: // 灵 - solid concentric circles
+                case 0: // Nono page - solid concentric circles
                 {
                     auto outer = juce::Rectangle<float>(22.2f, 22.2f).withCentre(centre);
                     auto inner = juce::Rectangle<float>(14.5f, 14.5f).withCentre(centre);
@@ -338,14 +353,14 @@ public:
                     g.drawEllipse(inner, 2.2f);
                     break;
                 }
-                case 1: // 音 - three rising capsules
+                case 1: // Media page (audio/video) - three rising capsules
                 {
                     drawPill(centre.x - 7.5f, centre.y + 0.2f, 4.2f, 13.0f);
                     drawPill(centre.x,        centre.y - 1.0f, 4.2f, 18.0f);
                     drawPill(centre.x + 7.5f, centre.y + 1.0f, 4.2f, 15.0f);
                     break;
                 }
-                case 2: // 定 - hollow D-pad cross
+                case 2: // Settings page - hollow D-pad cross
                 {
                     const float outerArm = 24.0f;
                     const float outerThickness = 10.1f;
@@ -371,28 +386,12 @@ public:
                     g.fillPath(innerCross);
                     break;
                 }
-                case 3: // 记 - stacked record lines
+                case 3: // History page - stacked record lines
                 {
                     drawPill(centre.x - 2.0f, centre.y - 7.2f, 17.0f, 3.2f);
                     drawPill(centre.x + 1.5f, centre.y,        21.0f, 3.2f);
                     drawPill(centre.x - 2.5f, centre.y + 7.2f, 15.0f, 3.2f);
                     drawDot(centre.x - 12.0f, centre.y - 7.2f, 2.7f);
-                    break;
-                }
-                case 4: // 视 - double hollow play triangles
-                {
-                    juce::Path outerTriangle;
-                    outerTriangle.addTriangle(centre.x - 8.0f, centre.y - 10.0f,
-                                              centre.x - 8.0f, centre.y + 10.0f,
-                                              centre.x + 10.5f, centre.y);
-
-                    juce::Path innerTriangle;
-                    innerTriangle.addTriangle(centre.x - 4.0f, centre.y - 6.2f,
-                                              centre.x - 4.0f, centre.y + 6.2f,
-                                              centre.x + 6.7f, centre.y);
-
-                    g.strokePath(outerTriangle, juce::PathStrokeType(2.35f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-                    g.strokePath(innerTriangle, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
                     break;
                 }
                 default:
@@ -427,7 +426,7 @@ public:
 
         if (navBar.contains(e.position.toInt()))
         {
-            float btnW = navBar.getWidth() / 5.0f;
+            float btnW = navBar.getWidth() / (float) numPages;
             int clickedPage = (int)(e.position.x / btnW);
             if (clickedPage >= 0 && clickedPage < numPages)
             {
@@ -441,7 +440,8 @@ public:
 
         swipeStartX = e.position.x;
         isSwiping = false;
-        suppressPageSwipe = (currentPage == 4
+        suppressPageSwipe = (currentPage == 1
+                             && mediaModeVideo
                              && videoPage != nullptr
                              && videoPage->shouldConsumeHorizontalSwipe(
                                     e.getEventRelativeTo(videoPage.get()).position));
@@ -533,10 +533,10 @@ private:
         if (newPage == currentPage) return;
 
         nonoPage->setVisible(newPage == 0);
-        metersPage->setVisible(newPage == 1);
+        metersPage->setVisible(newPage == 1 && !mediaModeVideo);
+        videoPage->setVisible(newPage == 1 && mediaModeVideo);
         settingsPage->setVisible(newPage == 2);
         historyPage->setVisible(newPage == 3);
-        videoPage->setVisible(newPage == 4);
 
         // Sync settings when entering settings page
         if (newPage == 2)
@@ -548,6 +548,24 @@ private:
         }
 
         currentPage = newPage;
+        repaint();
+    }
+
+    // Merged media page: page 1 renders in audio layout (meter cards) or
+    // video layout depending on the type of the last imported/loaded file.
+    void setMediaMode(bool videoMode)
+    {
+        if (mediaModeVideo == videoMode)
+            return;
+
+        mediaModeVideo = videoMode;
+
+        if (currentPage == 1)
+        {
+            metersPage->setVisible(!mediaModeVideo);
+            videoPage->setVisible(mediaModeVideo);
+        }
+
         repaint();
     }
 
@@ -570,8 +588,9 @@ private:
     std::unique_ptr<HistoryPageComponent> historyPage;
     std::unique_ptr<VideoPageComponent> videoPage;
 
-    static constexpr int numPages = 5;  // Nono, Meters, Settings, History, Video
+    static constexpr int numPages = 4;  // Nono, Media (audio/video), Settings, History
     int currentPage = 0;
+    bool mediaModeVideo = false;  // media page layout: false = audio meters, true = video
     float swipeStartX = 0.0f;
     bool isSwiping = false;
     bool suppressPageSwipe = false;

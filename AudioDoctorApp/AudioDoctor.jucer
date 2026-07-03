@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="AudDoc" name="Audio Doctor" projectType="guiapp" useAppConfig="0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" companyName="Solaris"
+              bundleIdentifier="com.solaris.AudioDoctor" version="1.0.2"
+              companyWebsite="https://github.com/fatimabarochow23-hash/GOODMETER"
+              companyCopyright="Solaris">
+  <MAINGROUP id="AudDocRoot" name="Audio Doctor">
+    <FILE id="AudioDoctorAppIcon" name="AAADOCTOR.PNG" compile="0" resource="1"
+          file="../AAADOCTOR.PNG"/>
+    <FILE id="AudioDoctorProjectIcon" name="audio_doctor_project_pigeon.icns"
+          compile="0" resource="0" file="../Assets/audio_doctor_project_pigeon.icns"/>
+    <FILE id="AudioDoctorConfirmBg" name="audio_doctor_plugin_confirm_bg.jpg"
+          compile="0" resource="1" file="../Assets/audio_doctor_plugin_confirm_bg.jpg"/>
+    <FILE id="AudioDoctorPreviewOn" name="audio_doctor_live_preview_active.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_live_preview_active.png"/>
+    <FILE id="AudioDoctorPreviewOff" name="audio_doctor_live_preview_inactive.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_live_preview_inactive.png"/>
+    <FILE id="AudioDoctorCursorRightDown" name="audio_doctor_cursor_right_down.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_right_down.png"/>
+    <FILE id="AudioDoctorCursorRightUp" name="audio_doctor_cursor_right_up.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_right_up.png"/>
+    <FILE id="AudioDoctorCursorLeftDown" name="audio_doctor_cursor_left_down.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_left_down.png"/>
+    <FILE id="AudioDoctorCursorLeftUp" name="audio_doctor_cursor_left_up.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_left_up.png"/>
+    <FILE id="AudioDoctorCursorSeniorLeft" name="audio_doctor_cursor_senior_left.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_senior_left.png"/>
+    <FILE id="AudioDoctorCursorSeniorRight" name="audio_doctor_cursor_senior_right.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_cursor_senior_right.png"/>
+    <FILE id="AudioDoctorDimInactive" name="audio_doctor_dim_inactive.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_dim_inactive.png"/>
+    <FILE id="AudioDoctorDimActive" name="audio_doctor_dim_active.png"
+          compile="0" resource="1" file="../Assets/audio_doctor_dim_active.png"/>
+    <GROUP id="AudDocSourceGroup" name="Source">
+      <FILE id="AudDocAppMain" name="AudioDoctorStandaloneApp.cpp" compile="1"
+            resource="0" file="Source/AudioDoctorStandaloneApp.cpp"/>
+      <FILE id="GoodMeterLookFeel" name="GoodMeterLookAndFeel.h" compile="0"
+            resource="0" file="../Source/GoodMeterLookAndFeel.h"/>
+      <FILE id="AudDocComponent" name="AudioDoctorComponent.h" compile="0"
+            resource="0" file="../Source/AudioDoctorComponent.h"/>
+      <FILE id="AudDocPluginHost" name="AudioDoctorPluginHost.h" compile="0"
+            resource="0" file="../Source/AudioDoctorPluginHost.h"/>
+      <FILE id="AudDocAnalysis" name="AudioDoctorAnalysis.h" compile="0"
+            resource="0" file="../Source/AudioDoctorAnalysis.h"/>
+      <FILE id="AudDocFigureRenderer" name="AudioDoctorFigureRenderer.h"
+            compile="0" resource="0" file="../Source/AudioDoctorFigureRenderer.h"/>
+      <FILE id="AudDocJobRunner" name="AudioDoctorJobRunner.h" compile="0"
+            resource="0" file="../Source/AudioDoctorJobRunner.h"/>
+    </GROUP>
+  </MAINGROUP>
+  <MODULES>
+    <MODULE id="juce_analytics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_animation" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_opengl" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_VST3_CAN_REPLACE_VST2="0"
+               JUCE_PLUGINHOST_AU="1" JUCE_PLUGINHOST_VST3="1" JUCE_PLUGINHOST_VST="0"/>
+  <EXPORTFORMATS>
+    <XCODE_MAC targetFolder="Builds/MacOSX" developmentTeamID="33NJKA4738"
+               bigIcon="AudioDoctorAppIcon" smallIcon="AudioDoctorAppIcon"
+               microphonePermissionNeeded="1"
+               microphonePermissionsText="Audio Doctor needs microphone access if live audio input is routed into analysis."
+               sendAppleEventsPermissionNeeded="1"
+               sendAppleEventsPermissionText="Some third-party audio plug-ins require Apple Events permission."
+               applicationCategory="public.app-category.music"
+               extraFrameworks="CoreAudio,AudioToolbox,AVFoundation,Accelerate"
+               customPList="&lt;plist&gt;&lt;dict&gt;&lt;key&gt;NSAudioCaptureUsageDescription&lt;/key&gt;&lt;string&gt;Audio Doctor needs System Audio Recording permission if live system audio is routed into analysis.&lt;/string&gt;&lt;key&gt;CFBundleDocumentTypes&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;CFBundleTypeName&lt;/key&gt;&lt;string&gt;Audio Doctor Project&lt;/string&gt;&lt;key&gt;CFBundleTypeIconFile&lt;/key&gt;&lt;string&gt;audio_doctor_project_pigeon.icns&lt;/string&gt;&lt;key&gt;CFBundleTypeRole&lt;/key&gt;&lt;string&gt;Editor&lt;/string&gt;&lt;key&gt;CFBundleTypeExtensions&lt;/key&gt;&lt;array&gt;&lt;string&gt;clz&lt;/string&gt;&lt;string&gt;goodmeterdoctor&lt;/string&gt;&lt;/array&gt;&lt;key&gt;LSHandlerRank&lt;/key&gt;&lt;string&gt;Owner&lt;/string&gt;&lt;key&gt;LSItemContentTypes&lt;/key&gt;&lt;array&gt;&lt;string&gt;com.solaris.audiodoctor.project&lt;/string&gt;&lt;/array&gt;&lt;key&gt;LSTypeIsPackage&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;&lt;/array&gt;&lt;key&gt;UTExportedTypeDeclarations&lt;/key&gt;&lt;array&gt;&lt;dict&gt;&lt;key&gt;UTTypeIdentifier&lt;/key&gt;&lt;string&gt;com.solaris.audiodoctor.project&lt;/string&gt;&lt;key&gt;UTTypeDescription&lt;/key&gt;&lt;string&gt;Audio Doctor Project&lt;/string&gt;&lt;key&gt;UTTypeIconFile&lt;/key&gt;&lt;string&gt;audio_doctor_project_pigeon.icns&lt;/string&gt;&lt;key&gt;UTTypeConformsTo&lt;/key&gt;&lt;array&gt;&lt;string&gt;com.apple.package&lt;/string&gt;&lt;/array&gt;&lt;key&gt;UTTypeTagSpecification&lt;/key&gt;&lt;dict&gt;&lt;key&gt;public.filename-extension&lt;/key&gt;&lt;array&gt;&lt;string&gt;clz&lt;/string&gt;&lt;string&gt;goodmeterdoctor&lt;/string&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/dict&gt;&lt;/array&gt;&lt;/dict&gt;&lt;/plist&gt;">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="Audio Doctor" macOSDeploymentTarget="14.2"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="Audio Doctor" macOSDeploymentTarget="14.2"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_analytics" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_animation" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_basics" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_devices" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_formats" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_audio_utils" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_core" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_data_structures" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_events" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_graphics" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_gui_basics" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_dsp" path="../../../Downloads/JUCE/modules"/>
+        <MODULEPATH id="juce_opengl" path="../../../Downloads/JUCE/modules"/>
+      </MODULEPATHS>
+    </XCODE_MAC>
+  </EXPORTFORMATS>
+</JUCERPROJECT>

@@ -88,6 +88,10 @@ private:
             if (++dragThrottleCounter % 2 != 0) return;
         }
 
+        // Page hidden: skip smoothing + repaint.
+        if (! isShowing())
+            return;
+
         currentLow = audioProcessor.rmsLevelLow.load(std::memory_order_relaxed);
         currentMid = audioProcessor.rmsLevelMid3Band.load(std::memory_order_relaxed);
         currentHigh = audioProcessor.rmsLevelHigh.load(std::memory_order_relaxed);

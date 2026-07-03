@@ -38,9 +38,11 @@ public:
 
     ~iOSAudioEngine()
     {
+        // Stop outside the lock so the render callback can acknowledge it.
+        transportSource.stop();
+
         {
             const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
-            transportSource.stop();
             transportSource.setSource(nullptr);
             readerSource.reset();
         }
@@ -77,11 +79,15 @@ public:
 
         auto newReaderSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
 
+        // Stop OUTSIDE the callback lock: stop() needs the render callback
+        // alive to acknowledge, and it may legitimately be playing here
+        // (e.g. loading a new video while the previous one's audio runs).
+        transportSource.stop();
+
         {
             const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
 
             fileLoaded = false;
-            transportSource.stop();
             transportSource.setPosition(0.0);
             transportSource.setSource(nullptr);
             readerSource.reset();
@@ -116,6 +122,9 @@ public:
 
     void clearFile()
     {
+        // Stop outside the lock — see loadFile() for why.
+        transportSource.stop();
+
         const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
 
         fileLoaded = false;
@@ -125,7 +134,6 @@ public:
         fileSampleRate = 0.0;
         fileLengthSamples = 0;
 
-        transportSource.stop();
         transportSource.setPosition(0.0);
         transportSource.setSource(nullptr);
         readerSource.reset();
@@ -228,7 +236,15 @@ public:
     //==========================================================================
     // State queries
     //==========================================================================
-    bool isPlaying() const { return transportSource.isPlaying(); }
+    // Report "not playing" as soon as a stop/pause has been requested, even
+    // though the transport keeps running silently during the declick fade.
+    // This keeps the 30Hz page-sync logic from issuing extra transport
+    // commands during the fade window.
+    bool isPlaying() const
+    {
+        return transportSource.isPlaying()
+            && !transportStopPending.load(std::memory_order_acquire);
+    }
     bool isFileLoaded() const { return fileLoaded; }
 
     double getCurrentPosition() const { return transportSource.getCurrentPosition(); }
@@ -280,22 +296,53 @@ private:
         juce::AudioBuffer<float> buffer(outputData, numOutputChannels, numSamples);
         buffer.clear();
 
-        if (forceOutputMute.load(std::memory_order_acquire))
-        {
-            buffer.clear();
-            return;
-        }
-
-        // Fill buffer from transport source (file playback)
+        // ALWAYS pull the transport, even while force-muted.
+        //
+        // Why: AudioTransportSource::stop() spin-waits (up to ~1 second) for
+        // getNextAudioBlock() to acknowledge the stop by setting its internal
+        // 'stopped' flag. The old early-return-on-mute meant that ack never
+        // happened, so every pause parked the message thread inside stop()
+        // for the full timeout — and because stop() used to be called while
+        // holding the device's audio callback lock, the CoreAudio render
+        // thread was starved for that entire second. Dozens of consecutive
+        // missed render deadlines are exactly the raspy "electric crackle"
+        // burst heard on pause. Pulling unconditionally keeps the ack path
+        // alive; a stopped transport just clears the region (position does
+        // not advance), so this costs nothing.
         juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
         transportSource.getNextAudioBlock(info);
 
-        // Feed through the processor so it can compute meters
-        juce::MidiBuffer midi;
-        processor.processBlock(buffer, midi);
+        // Meter DSP gate: while the transport is engaged (or briefly after it
+        // stops, so meters decay to silence naturally) run the full metering
+        // chain. Once parked, skip processBlock entirely — running K-weighting
+        // + FFT pushes on pure zeros 24/7 was wasted CPU that fed iPhone
+        // thermal throttling ("app gets slower the longer it runs").
+        const bool transportEngaged = transportSource.isPlaying()
+                                   || transportStopPending.load(std::memory_order_acquire);
+        if (transportEngaged)
+        {
+            const double sr = currentDeviceSampleRate > 0.0 ? currentDeviceSampleRate : 48000.0;
+            const int bs = juce::jmax(1, currentDeviceBufferSizeSamples);
+            idleMeterDecayBlocksRemaining = juce::jmax(1, (int) std::ceil(1.5 * sr / bs));
+        }
+
+        if (transportEngaged || idleMeterDecayBlocksRemaining > 0)
+        {
+            if (!transportEngaged)
+                --idleMeterDecayBlocksRemaining;
+
+            // Feed through the processor so it can compute meters
+            juce::MidiBuffer midi;
+            processor.processBlock(buffer, midi);
+        }
 
         maybeBeginEndFade();
         applyOutputEnvelope(buffer, numSamples);
+
+        // Force-mute is now a final output gate instead of an early return,
+        // so it can never break the transport's stop handshake.
+        if (forceOutputMute.load(std::memory_order_acquire))
+            buffer.clear();
 
         // Output buffer already points to outputData, so we're done
     }
@@ -385,34 +432,39 @@ private:
 
     void scheduleDeferredTransportStop(uint32_t serial, FadeCompletionAction action, double seekAfterFade)
     {
-        juce::Timer::callAfterDelay(getOutputFadeMilliseconds(),
+        // Wait long enough for the fade to have fully reached zero AND for at
+        // least one extra hardware buffer of guaranteed-silent output.
+        juce::Timer::callAfterDelay(getOutputFadeMilliseconds() + getPostMuteDrainMilliseconds(),
             [this, serial, action, seekAfterFade]()
             {
+                // Serial check is message-thread-safe without the lock:
+                // play()/seek()/pause() all mutate the serial on this same
+                // thread, and the audio callback never touches it.
+                if (transportCommandSerial.load(std::memory_order_relaxed) != serial)
+                    return;
+
+                // CRITICAL: stop() must be called WITHOUT holding the audio
+                // callback lock. It spin-waits for getNextAudioBlock() to
+                // acknowledge the stop; holding the lock here blocks the
+                // render callback, so the ack never arrives, stop() burns
+                // its full ~1s timeout, and CoreAudio is starved the whole
+                // time — that starvation burst was the pause crackle.
+                // The envelope has been at zero for a full drain period, so
+                // any transport-side discontinuity is multiplied by 0.
+                transportSource.stop();
+
                 const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
 
                 if (transportCommandSerial.load(std::memory_order_relaxed) != serial)
                     return;
 
+                if (action == FadeCompletionAction::stopAtStart)
+                    transportSource.setPosition(0.0);
+                else if (seekAfterFade >= 0.0)
+                    transportSource.setPosition(seekAfterFade);
+
+                transportStopPending.store(false, std::memory_order_release);
                 silenceOutputEnvelope();
-
-                juce::Timer::callAfterDelay(getPostMuteDrainMilliseconds(),
-                    [this, serial, action, seekAfterFade]()
-                    {
-                        const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
-
-                        if (transportCommandSerial.load(std::memory_order_relaxed) != serial)
-                            return;
-
-                        transportSource.stop();
-
-                        if (action == FadeCompletionAction::stopAtStart)
-                            transportSource.setPosition(0.0);
-                        else if (seekAfterFade >= 0.0)
-                            transportSource.setPosition(seekAfterFade);
-
-                        transportStopPending.store(false, std::memory_order_release);
-                        silenceOutputEnvelope();
-                    });
             });
     }
 
@@ -500,4 +552,5 @@ private:
     std::atomic<uint32_t> transportCommandSerial { 1 };
     std::atomic<bool> transportStopPending { false };
     std::atomic<bool> forceOutputMute { false };
+    int idleMeterDecayBlocksRemaining = 0; // audio-thread only
 };

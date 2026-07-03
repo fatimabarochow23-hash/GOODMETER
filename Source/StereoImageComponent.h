@@ -227,6 +227,10 @@ private:
             if (++dragThrottleCounter % 2 != 0) return;
         }
 
+        // Page hidden: skip FIFO drain + offscreen goniometer render + repaint.
+        if (! isShowing())
+            return;
+
         // Update LRMS levels (RMS dB values from processor)
         currentL = audioProcessor.rmsLevelL.load(std::memory_order_relaxed);
         currentR = audioProcessor.rmsLevelR.load(std::memory_order_relaxed);

@@ -351,6 +351,7 @@ private:
     int stagnantVideoFrameCount = 0;
     int stagnantVideoRecoveryAttempts = 0;
     std::uint32_t lastVideoRecoveryMs = 0;
+    int syncedAudioProbeCounter = 0; // throttles extracted-WAV disk probe to ~1Hz
 
 #if MARATHON_ART_STYLE
     std::unique_ptr<DotMatrixCanvas> bgCanvas;

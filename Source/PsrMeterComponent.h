@@ -138,6 +138,10 @@ private:
             if (++dragThrottleCounter % 2 != 0) return;
         }
 
+        // Page hidden: skip PSR math, waveform history and repaint.
+        if (! isShowing())
+            return;
+
         // Read peak and short-term LUFS from processor
         const float peakL = audioProcessor.peakLevelL.load(std::memory_order_relaxed);
         const float peakR = audioProcessor.peakLevelR.load(std::memory_order_relaxed);

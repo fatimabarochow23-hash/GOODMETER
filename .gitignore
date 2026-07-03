@@ -2,12 +2,15 @@
 Builds/MacOSX/build/
 Builds/MacOSX_Plugin/build/
 Builds/iOS/build/
+Builds/iOS/Builds/
+AudioDoctorApp/Builds/MacOSX/build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 DerivedData/
 
 # JUCE
 JuceLibraryCode/
+AudioDoctorApp/JuceLibraryCode/
 .jlcode_cache/
 
 # Compiled files

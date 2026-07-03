@@ -10,6 +10,7 @@
 # Usage:
 #   ./build.sh standalone     Build macOS Standalone + AU/VST3
 #   ./build.sh plugin         Build Plugin-only (AU/VST3, no Standalone)
+#   ./build.sh audio-doctor   Build extracted Audio Doctor macOS app
 #   ./build.sh ios            Build iOS (device arm64)
 #   ./build.sh ios-sim        Build iOS Simulator (arm64)
 #   ./build.sh all            Build all targets safely
@@ -26,11 +27,35 @@ PROJUCER_CANDIDATES=(
     "/Users/caiyiyang/Downloads/JUCE/Projucer.app/Contents/MacOS/Projucer"
     "/Users/MediaStorm/Downloads/JUCE/Projucer.app/Contents/MacOS/Projucer"
 )
-DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+
+find_developer_dir() {
+    local candidate
+
+    if [ -n "${DEVELOPER_DIR:-}" ]; then
+        echo "$DEVELOPER_DIR"
+        return
+    fi
+
+    for candidate in \
+        "/Applications/Xcode.app/Contents/Developer" \
+        /Applications/Xcode-*.app/Contents/Developer
+    do
+        if [ -x "$candidate/usr/bin/xcodebuild" ]; then
+            echo "$candidate"
+            return
+        fi
+    done
+
+    echo "Unable to find a full Xcode installation. Set DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer." >&2
+    exit 1
+}
+
+DEVELOPER_DIR="$(find_developer_dir)"
 XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
 SIMCTL="$DEVELOPER_DIR/usr/bin/simctl"
 
 JLCODE_DIR="$PROJECT_DIR/JuceLibraryCode"
+AUDIO_DOCTOR_JLCODE_DIR="$PROJECT_DIR/AudioDoctorApp/JuceLibraryCode"
 JLCODE_CACHE="$PROJECT_DIR/.jlcode_cache"
 ONNXRUNTIME_LIB_DIR="$PROJECT_DIR/ThirdParty/onnxruntime-osx-arm64-1.20.1/lib"
 ONNXRUNTIME_DYLIB="$ONNXRUNTIME_LIB_DIR/libonnxruntime.1.20.1.dylib"
@@ -39,10 +64,12 @@ AUDIO_DOCTOR_PROJECT_ICON="$PROJECT_DIR/Assets/audio_doctor_project_pigeon.icns"
 # .jucer → xcodeproj mapping
 JUCER_STANDALONE="$PROJECT_DIR/GOODMETER.jucer"
 JUCER_PLUGIN="$PROJECT_DIR/GOODMETER_Plugin.jucer"
+JUCER_AUDIO_DOCTOR="$PROJECT_DIR/AudioDoctorApp/AudioDoctor.jucer"
 JUCER_IOS="$PROJECT_DIR/GOODMETER_iOS.jucer"
 
 XCPROJ_STANDALONE="$PROJECT_DIR/Builds/MacOSX/GOODMETER.xcodeproj"
 XCPROJ_PLUGIN="$PROJECT_DIR/Builds/MacOSX_Plugin/GOODMETER.xcodeproj"
+XCPROJ_AUDIO_DOCTOR="$PROJECT_DIR/AudioDoctorApp/Builds/MacOSX/Audio Doctor.xcodeproj"
 XCPROJ_IOS="$PROJECT_DIR/Builds/iOS/GOODMETER.xcodeproj"
 
 # Keep signed macOS products off ExFAT/iCloud working trees. macOS code signing
@@ -67,19 +94,35 @@ done
 #==============================================================================
 # JuceLibraryCode snapshot management
 #==============================================================================
+jlcode_dir_for_target() {
+    case "$1" in
+        audio-doctor) echo "$AUDIO_DOCTOR_JLCODE_DIR" ;;
+        *)            echo "$JLCODE_DIR" ;;
+    esac
+}
+
 save_jlcode() {
     local target="$1"
     local cache_dir="$JLCODE_CACHE/$target"
+    local source_dir
+    source_dir="$(jlcode_dir_for_target "$target")"
+    if [ ! -d "$source_dir" ]; then
+        echo "  [cache] JuceLibraryCode not found for '$target' yet"
+        return 0
+    fi
     mkdir -p "$cache_dir"
-    rsync -a --delete "$JLCODE_DIR/" "$cache_dir/"
+    rsync -a --delete "$source_dir/" "$cache_dir/"
     echo "  [cache] Saved JuceLibraryCode → .jlcode_cache/$target"
 }
 
 restore_jlcode() {
     local target="$1"
     local cache_dir="$JLCODE_CACHE/$target"
+    local dest_dir
+    dest_dir="$(jlcode_dir_for_target "$target")"
     if [ -d "$cache_dir" ]; then
-        rsync -a --delete "$cache_dir/" "$JLCODE_DIR/"
+        mkdir -p "$dest_dir"
+        rsync -a --delete "$cache_dir/" "$dest_dir/"
         echo "  [cache] Restored JuceLibraryCode ← .jlcode_cache/$target"
         return 0
     fi
@@ -112,6 +155,23 @@ bundle_onnxruntime_for_app() {
     echo "  [bundle] Copied ONNX Runtime and Audio Doctor project icon"
 }
 
+bundle_audio_doctor_resources_for_app() {
+    local app_bundle="$1"
+    local resources_dir="$app_bundle/Contents/Resources"
+
+    mkdir -p "$resources_dir"
+
+    if [ -f "$AUDIO_DOCTOR_PROJECT_ICON" ]; then
+        COPYFILE_DISABLE=1 cp "$AUDIO_DOCTOR_PROJECT_ICON" "$resources_dir/"
+    else
+        echo "Audio Doctor project icon not found: $AUDIO_DOCTOR_PROJECT_ICON"
+        exit 1
+    fi
+
+    /usr/bin/codesign --force --sign - --preserve-metadata=entitlements,requirements,flags "$app_bundle" >/dev/null
+    echo "  [bundle] Copied Audio Doctor project icon"
+}
+
 verify_app_signature() {
     local app_bundle="$1"
     if find "$app_bundle" -name '._*' -type f | grep -q .; then
@@ -120,7 +180,7 @@ verify_app_signature() {
         exit 1
     fi
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_bundle" >/dev/null
-    echo "  [sign] Verified GOODMETER.app"
+    echo "  [sign] Verified $(basename "$app_bundle")"
 }
 
 #==============================================================================
@@ -138,6 +198,7 @@ resave_target() {
     case "$target" in
         standalone) jucer_file="$JUCER_STANDALONE" ;;
         plugin)     jucer_file="$JUCER_PLUGIN" ;;
+        audio-doctor) jucer_file="$JUCER_AUDIO_DOCTOR" ;;
         ios)        jucer_file="$JUCER_IOS" ;;
         *)          echo "Unknown target: $target"; exit 1 ;;
     esac
@@ -204,6 +265,39 @@ build_plugin() {
     echo "  ✓ Plugin build complete"
 }
 
+build_audio_doctor() {
+    echo ""
+    echo "=========================================="
+    echo " Building: Audio Doctor macOS app"
+    echo "=========================================="
+    prepare_jlcode "audio-doctor"
+    if [ ! -d "$XCPROJ_AUDIO_DOCTOR" ]; then
+        echo "  [project] Xcode project missing — running Projucer --resave"
+        resave_target "audio-doctor"
+    fi
+
+    local build_dir="$LOCAL_BUILD_ROOT/audio-doctor"
+    local objroot="$build_dir/OBJROOT"
+    local symroot="$build_dir/SYMROOT"
+    local products_dir="$build_dir/Products/Release"
+    local app_bundle="$products_dir/Audio Doctor.app"
+    mkdir -p "$objroot" "$symroot" "$products_dir"
+    rm -rf "$app_bundle"
+    echo "  [build] Products → $products_dir"
+        DEVELOPER_DIR="$DEVELOPER_DIR" "$XCODEBUILD" \
+        -project "$XCPROJ_AUDIO_DOCTOR" \
+        -scheme "Audio Doctor - App" \
+        -configuration Release \
+        OBJROOT="$objroot" \
+        SYMROOT="$symroot" \
+        CONFIGURATION_BUILD_DIR="$products_dir" \
+        build 2>&1 | tail -3
+    bundle_audio_doctor_resources_for_app "$app_bundle"
+    verify_app_signature "$app_bundle"
+    echo "  ✓ Audio Doctor build complete"
+    echo "  → $app_bundle"
+}
+
 build_ios() {
     echo ""
     echo "=========================================="
@@ -252,6 +346,9 @@ case "${1:-help}" in
     plugin)
         build_plugin
         ;;
+    audio-doctor)
+        build_audio_doctor
+        ;;
     ios)
         build_ios
         ;;
@@ -261,6 +358,7 @@ case "${1:-help}" in
     all)
         build_standalone
         build_plugin
+        build_audio_doctor
         build_ios
         build_ios_sim
         echo ""
@@ -271,7 +369,7 @@ case "${1:-help}" in
     resave)
         target="${2:-}"
         if [ -z "$target" ]; then
-            echo "Usage: ./build.sh resave <standalone|plugin|ios>"
+            echo "Usage: ./build.sh resave <standalone|plugin|audio-doctor|ios>"
             exit 1
         fi
         echo "Resaving $target..."
@@ -286,10 +384,11 @@ case "${1:-help}" in
         echo "Targets:"
         echo "  standalone   Build macOS Standalone + AU/VST3"
         echo "  plugin       Build Plugin-only (AU/VST3)"
+        echo "  audio-doctor Build extracted Audio Doctor macOS app"
         echo "  ios          Build iOS device (arm64)"
         echo "  ios-sim      Build iOS Simulator (arm64)"
         echo "  all          Build all targets safely"
-        echo "  resave <t>   Just resave a .jucer (standalone|plugin|ios)"
+        echo "  resave <t>   Just resave a .jucer (standalone|plugin|audio-doctor|ios)"
         echo ""
         echo "The script automatically manages JuceLibraryCode snapshots"
         echo "so targets never interfere with each other."

@@ -140,6 +140,12 @@ private:
             if (++dragThrottleCounter % 2 != 0) return;
         }
 
+        // Page hidden (e.g. iOS off-screen page): skip FIFO drain, smoothing
+        // and repaint entirely — a dozen always-on 60Hz meters were a major
+        // contributor to sustained CPU load / thermal throttling on iPhone.
+        if (! isShowing())
+            return;
+
         // === 1. Flush FIFO: drain everything, keep only the latest frame ===
         bool gotNewData = false;
         while (audioProcessor.fftFifoL.pop(tempBuffer.data(), numBins))

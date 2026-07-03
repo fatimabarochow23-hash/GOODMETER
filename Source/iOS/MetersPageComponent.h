@@ -1082,6 +1082,12 @@ private:
             lraFrameCounter = 0;
         }
 
+        // Page hidden: transport/LRA bookkeeping above must keep running
+        // (page-5 video playback relies on it), but every remaining line in
+        // this callback is visual-only — skip it all to cut idle CPU.
+        if (! isShowing())
+            return;
+
         float luRangeVal = processor.luRange.load(std::memory_order_relaxed);
 
         // Update setter-based components

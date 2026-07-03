@@ -108,3 +108,4 @@ YYYY-MM-DD HH:mm | action | result | path/commit if any
 ```
 
 2026-05-26 17:27 | patch/build | Preview Solo 无文字方块、Group Delay WET A/B/C 口径、JobRunner group-delay thesis 数据源补齐；standalone build passed | Source/AudioDoctorComponent.h, Source/AudioDoctorFigureRenderer.h, Source/AudioDoctorJobRunner.h
+2026-06-23 18:13 | sync/build | Desktop 本机线从硬盘最新版 d1c269a 同步 Audio Doctor Preview Solo / Group Delay / JobRunner 更新，生成本机提交 e9376e4；修正本机 Xcode/JUCE 路径后 standalone build passed，产物 `/Users/MediaStorm/Library/Caches/GOODMETERBuild/GOODMETER-2499123989/standalone/Products/Release/GOODMETER.app`；iOS 暂停电流声补丁仍保留为未提交改动 | /Users/MediaStorm/Desktop/GOODMETER

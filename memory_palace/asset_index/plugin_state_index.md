@@ -23,3 +23,12 @@
 - 输出目录和 manifest 路径
 - 论文用途
 
+## 2026-06-23｜Desktop 插件版代码健康检查
+
+- 构建环境：`/Applications/Xcode-26.4.app`，旧 `/Applications/Xcode.app` 已不存在；`build.sh` 已改为自动寻找完整 Xcode，避免落到 CommandLineTools 或失效旧路径。
+- 构建命令：`./build.sh plugin`
+- 构建结果：通过，输出 `GOODMETER.vst3`、`GOODMETER.component`、`juce_vst3_helper`。
+- 安装路径：`~/Library/Audio/Plug-Ins/VST3/GOODMETER.vst3`，`~/Library/Audio/Plug-Ins/Components/GOODMETER.component`。
+- 签名验证：VST3 与 AU 均通过 `codesign --verify --deep --strict`。
+- 代码隔离结论：`GOODMETER_Plugin.jucer` 和 `Builds/MacOSX_Plugin` 未引入 `AudioDoctor*` 或 `Source/iOS/*` 文件，插件工程仍只编译 `PluginProcessor.cpp`、`PluginEditor.cpp` 和插件 UI 相关资源；近期 Audio Doctor / iOS 大改没有污染插件源码列表。
+- 补充验证：`auval -v aufx GdMt SLRS` 通过，`AU VALIDATION SUCCEEDED`；本机未安装 `pluginval` / `vst3validator`，但用户本次关注代码健康，宿主打开验证由用户手测即可。

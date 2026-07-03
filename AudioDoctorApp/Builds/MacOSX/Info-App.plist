@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist>
+  <dict>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Audio Doctor needs System Audio Recording permission if live system audio is routed into analysis.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleTypeName</key>
+        <string>Audio Doctor Project</string>
+        <key>CFBundleTypeIconFile</key>
+        <string>audio_doctor_project_pigeon.icns</string>
+        <key>CFBundleTypeRole</key>
+        <string>Editor</string>
+        <key>CFBundleTypeExtensions</key>
+        <array>
+          <string>clz</string>
+          <string>goodmeterdoctor</string>
+        </array>
+        <key>LSHandlerRank</key>
+        <string>Owner</string>
+        <key>LSItemContentTypes</key>
+        <array>
+          <string>com.solaris.audiodoctor.project</string>
+        </array>
+        <key>LSTypeIsPackage</key>
+        <true/>
+      </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+      <dict>
+        <key>UTTypeIdentifier</key>
+        <string>com.solaris.audiodoctor.project</string>
+        <key>UTTypeDescription</key>
+        <string>Audio Doctor Project</string>
+        <key>UTTypeIconFile</key>
+        <string>audio_doctor_project_pigeon.icns</string>
+        <key>UTTypeConformsTo</key>
+        <array>
+          <string>com.apple.package</string>
+        </array>
+        <key>UTTypeTagSpecification</key>
+        <dict>
+          <key>public.filename-extension</key>
+          <array>
+            <string>clz</string>
+            <string>goodmeterdoctor</string>
+          </array>
+        </dict>
+      </dict>
+    </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Audio Doctor needs microphone access if live audio input is routed into analysis.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Some third-party audio plug-ins require Apple Events permission.</string>
+    <key>CFBundleExecutable</key>
+    <string>${EXECUTABLE_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>Icon.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.solaris.AudioDoctor</string>
+    <key>CFBundleName</key>
+    <string>Audio Doctor</string>
+    <key>CFBundleDisplayName</key>
+    <string>Audio Doctor</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.2</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.2</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Solaris</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+  </dict>
+</plist>

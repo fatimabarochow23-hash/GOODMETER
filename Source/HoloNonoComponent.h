@@ -809,12 +809,14 @@ public:
                 // Record Nono's local position at drag start
                 nonoPosAtDragStart = getPosition();
             }
+#if !JUCE_IOS
             else
             {
                 // Record the window's position at drag start
                 if (auto* topLevel = getTopLevelComponent())
                     windowPosAtDragStart = topLevel->getScreenPosition();
             }
+#endif
         }
 
         if (isDraggingWindow)
@@ -827,15 +829,19 @@ public:
                 if (onLocalDrag)
                     onLocalDrag(delta.x, delta.y);
             }
+#if !JUCE_IOS
             else
             {
-                // Normal: move the entire window
+                // Normal: move the entire window (desktop pet only). On iOS the
+                // top-level component is the app's root view — moving it drags
+                // the whole UI off-screen, so this branch must never run there.
                 if (auto* topLevel = getTopLevelComponent())
                 {
                     topLevel->setTopLeftPosition(windowPosAtDragStart.x + delta.x,
                                                  windowPosAtDragStart.y + delta.y);
                 }
             }
+#endif
         }
     }
 

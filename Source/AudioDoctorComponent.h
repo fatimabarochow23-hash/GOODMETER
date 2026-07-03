@@ -10,6 +10,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <optional>
 #include "GoodMeterLookAndFeel.h"
 #include "AudioDoctorPluginHost.h"
@@ -43,6 +44,8 @@ public:
         timeline,
         plugin
     };
+
+    using ProjectPathCallback = std::function<void(const juce::File&)>;
 
     class PreviewSoloButton : public juce::Button
     {
@@ -625,6 +628,11 @@ public:
     bool loadProjectPackageFromFile(const juce::File& projectPath, juce::String& error)
     {
         return loadProjectPackage(projectPath, error);
+    }
+
+    void saveProjectFromAppMenu(ProjectPathCallback onSaved = {})
+    {
+        saveProjectPackage(std::move(onSaved), true);
     }
 
 private:
@@ -6230,8 +6238,13 @@ private:
         juce::PopupMenu menu;
         menu.setLookAndFeel(&audioDoctorPopupLookAndFeel);
         menu.addItem(1, "Export figure + data");
-        menu.addSeparator();
-        menu.addItem(2, "Save Audio Doctor project...");
+        const bool saveLivesInAppMenu = getTopLevelComponent() != nullptr
+            && static_cast<bool>(getTopLevelComponent()->getProperties().getWithDefault("audioDoctorUsesAppMenuSave", false));
+        if (!saveLivesInAppMenu)
+        {
+            menu.addSeparator();
+            menu.addItem(2, "Save Audio Doctor project...");
+        }
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&exportBtn),
             [this](int result)
             {
@@ -6396,11 +6409,91 @@ private:
         return false;
     }
 
-    void saveProjectPackage()
+    struct MissingProjectPlugin
+    {
+        PluginSlot slot = PluginSlot::A;
+        juce::String name;
+        juce::String format;
+        juce::String fileOrIdentifier;
+    };
+
+    juce::StringArray makeCurrentProjectPluginReviewLines() const
+    {
+        juce::StringArray lines;
+        for (auto slot : { PluginSlot::A, PluginSlot::B, PluginSlot::C })
+        {
+            if (const auto* host = getPluginHostIfAllocated(slot, 0))
+            {
+                if (host->getCurrentPlugin() == nullptr)
+                    continue;
+
+                const auto description = host->getCurrentPluginDescriptionCopy();
+                auto line = "Plugin " + juce::String(slotName(slot)) + " - "
+                          + (description.name.isNotEmpty() ? description.name : host->getCurrentPluginName());
+                if (description.pluginFormatName.isNotEmpty())
+                    line << " (" << description.pluginFormatName << ")";
+                lines.add(line);
+            }
+        }
+        return lines;
+    }
+
+    bool confirmFirstSaveProjectPluginsIfNeeded()
+    {
+        if (currentProjectPath != juce::File{} || firstSavePluginReviewAccepted)
+            return true;
+
+        const auto pluginLines = makeCurrentProjectPluginReviewLines();
+        if (pluginLines.isEmpty())
+            return true;
+
+        auto message = "This project will save these plugin slots:\n\n"
+                     + pluginLines.joinIntoString("\n")
+                     + "\n\nReview the list before saving. Plugin state is stored with the project; DRY/WET audio files are packaged separately.";
+
+        const bool accepted = juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::InfoIcon,
+            "Project Plugins",
+            message,
+            "Continue Save",
+            "Cancel",
+            this,
+            nullptr);
+
+        if (accepted)
+            firstSavePluginReviewAccepted = true;
+
+        return accepted;
+    }
+
+    void saveProjectPackage(ProjectPathCallback onSaved = {}, bool preferCurrentProjectPath = false)
     {
         if (!hasAnySourceAsset())
         {
             setStatus("Nothing to save yet.");
+            return;
+        }
+
+        if (preferCurrentProjectPath && currentProjectPath != juce::File{})
+        {
+            juce::String error;
+            if (!writeProjectPackage(currentProjectPath, error))
+            {
+                setStatus(error);
+                return;
+            }
+
+            currentProjectPath = withProjectPackageExtension(currentProjectPath);
+            firstSavePluginReviewAccepted = true;
+            setStatus("Saved Audio Doctor project: " + currentProjectPath.getFileName());
+            if (onSaved)
+                onSaved(currentProjectPath);
+            return;
+        }
+
+        if (!confirmFirstSaveProjectPluginsIfNeeded())
+        {
+            setStatus("Save cancelled.");
             return;
         }
 
@@ -6412,12 +6505,12 @@ private:
         const auto defaultProject = projectsDir.getChildFile(makeExportBaseName(stamp)).withFileExtension(projectExtension());
 
         projectChooser = std::make_unique<juce::FileChooser>(
-            "Save Audio Doctor Project", defaultProject, "*.clz");
+            "Save Project", defaultProject, "*.clz");
 
         projectChooser->launchAsync(juce::FileBrowserComponent::saveMode
                                   | juce::FileBrowserComponent::canSelectDirectories
                                   | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this](const juce::FileChooser& fc)
+            [this, onSaved = std::move(onSaved)](const juce::FileChooser& fc)
             {
                 auto projectDir = fc.getResult();
                 if (projectDir == juce::File{})
@@ -6431,8 +6524,12 @@ private:
                 }
 
                 projectDir = withProjectPackageExtension(projectDir);
+                currentProjectPath = projectDir;
+                firstSavePluginReviewAccepted = true;
 
                 setStatus("Saved Audio Doctor project: " + projectDir.getFileName());
+                if (onSaved)
+                    onSaved(projectDir);
                 projectDir.revealToUser();
             });
     }
@@ -6588,6 +6685,14 @@ private:
             return false;
         }
 
+        const auto missingPlugins = findMissingProjectPlugins(root);
+        if (!missingPlugins.isEmpty() && !confirmOpenWithMissingProjectPlugins(missingPlugins))
+        {
+            error.clear();
+            setStatus("Open project cancelled.");
+            return false;
+        }
+
         resetAll();
 
         const auto projectDir = manifestFile.getParentDirectory();
@@ -6618,8 +6723,73 @@ private:
         if (!warnings.isEmpty())
             status += " | " + warnings.joinIntoString(" ; ");
         setStatus(status);
+        currentProjectPath = projectDir;
+        firstSavePluginReviewAccepted = true;
         error.clear();
         return true;
+    }
+
+    juce::Array<MissingProjectPlugin> findMissingProjectPlugins(const juce::var& root) const
+    {
+        juce::Array<MissingProjectPlugin> missing;
+        appendMissingProjectPlugin(root, PluginSlot::A, "pluginA", missing);
+        appendMissingProjectPlugin(root, PluginSlot::B, "pluginB", missing);
+        appendMissingProjectPlugin(root, PluginSlot::C, "pluginC", missing);
+        return missing;
+    }
+
+    void appendMissingProjectPlugin(const juce::var& root,
+                                    PluginSlot slot,
+                                    const char* key,
+                                    juce::Array<MissingProjectPlugin>& missing) const
+    {
+        const auto pluginSpec = projectProperty(root, key);
+        if (!pluginSpec.isObject())
+            return;
+
+        const auto path = projectString(pluginSpec, "fileOrIdentifier");
+        if (path.isEmpty())
+            return;
+
+        if (juce::File(path).exists())
+            return;
+
+        MissingProjectPlugin item;
+        item.slot = slot;
+        item.name = projectString(pluginSpec, "name", juce::File(path).getFileNameWithoutExtension());
+        item.format = projectString(pluginSpec, "format");
+        item.fileOrIdentifier = path;
+        missing.add(item);
+    }
+
+    bool confirmOpenWithMissingProjectPlugins(const juce::Array<MissingProjectPlugin>& missing)
+    {
+        juce::StringArray lines;
+        for (const auto& item : missing)
+        {
+            auto line = "Plugin " + juce::String(slotName(item.slot)) + " - "
+                      + (item.name.isNotEmpty() ? item.name : juce::File(item.fileOrIdentifier).getFileName());
+            if (item.format.isNotEmpty())
+                line << " (" << item.format << ")";
+            lines.add(line);
+        }
+
+        const auto countText = juce::String(missing.size()) + " plugin slot"
+                             + (missing.size() == 1 ? "" : "s");
+        auto message = "This project references " + countText + " that are not available on this Mac:\n\n"
+                     + lines.joinIntoString("\n")
+                     + "\n\nOpen the project with " + juce::String(missing.size())
+                     + " fewer plugin slot" + (missing.size() == 1 ? "" : "s")
+                     + "? DRY and WET audio files are stored inside the project and will not be changed.";
+
+        return juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::WarningIcon,
+            "Missing Project Plugins",
+            message,
+            "Open Anyway",
+            "Cancel",
+            this,
+            nullptr);
     }
 
     bool loadProjectAudioFiles(const juce::File& projectDir, const juce::var& root, juce::String& error)
@@ -7053,6 +7223,8 @@ private:
     void resetAll()
     {
         stopAudioPreview(true);
+        currentProjectPath = juce::File();
+        firstSavePluginReviewAccepted = false;
         dryAsset.reset();
         dryBAsset.reset();
         dryCAsset.reset();
@@ -9622,8 +9794,10 @@ private:
     std::unique_ptr<juce::FileChooser> audioChooser;
     std::unique_ptr<juce::FileChooser> pluginChooser;
     std::unique_ptr<juce::FileChooser> projectChooser;
+    juce::File currentProjectPath;
     juce::File lastAudioDirectory;
     juce::File lastPluginDirectory;
+    bool firstSavePluginReviewAccepted = false;
 
     std::unique_ptr<Asset> dryAsset;
     std::unique_ptr<Asset> dryBAsset;

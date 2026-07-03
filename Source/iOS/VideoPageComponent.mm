@@ -131,6 +131,28 @@
 }
 @end
 
+// Lightweight KVO bridge so the C++ player can re-apply its audio-track
+// enable/disable decision once the AVPlayerItem actually reaches
+// readyToPlay (playerItem.tracks is only populated at that point).
+@interface GOODMETERItemStatusObserver : NSObject
+@property (nonatomic, copy) void (^onStatusChange)(void);
+@end
+
+@implementation GOODMETERItemStatusObserver
+- (void)observeValueForKeyPath:(NSString*)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id>*)change
+                       context:(void*)context
+{
+    juce::ignoreUnused(object, change, context);
+    if (([keyPath isEqualToString:@"status"] || [keyPath isEqualToString:@"tracks"])
+        && self.onStatusChange != nil)
+    {
+        self.onStatusChange();
+    }
+}
+@end
+
 class VideoPageComponent::NativeVideoPlayer
 {
 public:
@@ -187,6 +209,36 @@ public:
         playerItem.preferredForwardBufferDuration = 0.0;
         videoView.playerLayer.player = player;
 
+        // Re-apply the audio-track enable/disable decision once the item is
+        // ready: when synced audio is active the audible audio comes from the
+        // JUCE engine and the AVPlayer's audio track must be fully disabled
+        // (not just muted) so its render node never ticks the shared output
+        // on rate/pause/seek changes.
+        {
+            statusObserver = [[GOODMETERItemStatusObserver alloc] init];
+            auto life = lifeToken;
+            auto* selfPtr = this;
+            statusObserver.onStatusChange = ^{
+                // KVO can fire on a background AVFoundation thread. Hop to the
+                // main queue (where load()/clear() run) so we never touch the
+                // player concurrently with teardown, and re-check the life
+                // token there.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (life->load(std::memory_order_relaxed))
+                        selfPtr->applyAudioTrackEnabledState();
+                });
+            };
+            [playerItem addObserver:statusObserver
+                         forKeyPath:@"status"
+                            options:NSKeyValueObservingOptionNew
+                            context:nullptr];
+            [playerItem addObserver:statusObserver
+                         forKeyPath:@"tracks"
+                            options:NSKeyValueObservingOptionNew
+                            context:nullptr];
+        }
+        applyAudioTrackEnabledState();
+
         durationSeconds = CMTimeGetSeconds(asset.duration);
         if (!std::isfinite(durationSeconds) || durationSeconds < 0.0)
             durationSeconds = 0.0;
@@ -225,6 +277,17 @@ public:
         if (player != nil)
             [player pause];
 
+        if (statusObserver != nil)
+        {
+            if (playerItem != nil)
+            {
+                [playerItem removeObserver:statusObserver forKeyPath:@"status"];
+                [playerItem removeObserver:statusObserver forKeyPath:@"tracks"];
+            }
+            statusObserver.onStatusChange = nil;
+            statusObserver = nil;
+        }
+
         if (videoView != nil)
         {
             videoView.playerLayer.player = nil;
@@ -249,6 +312,9 @@ public:
         {
             ++volumeRampSerial;
             player.muted = outputMuted ? YES : NO;
+            // Belt-and-braces: tracks may have populated after load(); make
+            // sure the audio track state is what we decided before rolling.
+            applyAudioTrackEnabledState();
             [player play];
         }
     }
@@ -381,6 +447,17 @@ public:
             player.muted = shouldMute ? YES : NO;
     }
 
+    // Fully disable (not just mute) the AVPlayer's audio track when the JUCE
+    // engine is the audible source. A merely-muted audio track keeps its
+    // render node attached to the shared output, and every rate/pause/seek
+    // change on it produces a hardware "click". Disabling the track removes
+    // the node entirely, so pause/stop/end become silent.
+    void setAudioTracksEnabled(bool shouldEnable)
+    {
+        audioTracksShouldBeEnabled = shouldEnable;
+        applyAudioTrackEnabledState();
+    }
+
     void rampVolumeTo(float targetVolume, int durationMs)
     {
         if (player == nil)
@@ -495,6 +572,22 @@ public:
     std::function<void()> onVideoTapped;
 
 private:
+    void applyAudioTrackEnabledState()
+    {
+        if (playerItem == nil)
+            return;
+
+        for (AVPlayerItemTrack* track in playerItem.tracks)
+        {
+            AVAssetTrack* assetTrack = track.assetTrack;
+            if (assetTrack != nil
+                && [assetTrack.mediaType isEqualToString:AVMediaTypeAudio])
+            {
+                track.enabled = audioTracksShouldBeEnabled ? YES : NO;
+            }
+        }
+    }
+
     void performQueuedSeek(bool exactPhase)
     {
         if (player == nil || !hasChasePosition)
@@ -554,6 +647,8 @@ private:
     GOODMETERVideoView* videoView = nil;
     AVPlayer* player = nil;
     AVPlayerItem* playerItem = nil;
+    GOODMETERItemStatusObserver* statusObserver = nil;
+    bool audioTracksShouldBeEnabled = true;
     double durationSeconds = 0.0;
     juce::String currentPath;
     CGSize presentationSize = CGSizeZero;
@@ -587,6 +682,7 @@ public:
     double getDuration() const { return 0.0; }
     void setVolume(float) {}
     void setMuted(bool) {}
+    void setAudioTracksEnabled(bool) {}
     void rampVolumeTo(float, int) {}
     void rampDownAndPause(int) {}
     void muteAndPause() {}
@@ -1079,6 +1175,7 @@ bool VideoPageComponent::attachSyncedAudioIfAvailable()
         syncedAudioLoaded = false;
         syncedAudioPath.clear();
         nativePlayer->setMuted(false);
+        nativePlayer->setAudioTracksEnabled(true);
         nativePlayer->setVolume((float) volumeSlider.getValue());
         return false;
     }
@@ -1087,6 +1184,7 @@ bool VideoPageComponent::attachSyncedAudioIfAvailable()
     syncedAudioPath = extractedPath;
     audioEngine.setVolume((float) volumeSlider.getValue());
     nativePlayer->setMuted(true);
+    nativePlayer->setAudioTracksEnabled(false);
     nativePlayer->setVolume(0.0f);
     return true;
 }
@@ -1769,11 +1867,13 @@ bool VideoPageComponent::loadVideo(const juce::File& file)
     if (!syncedAudioLoaded)
     {
         nativePlayer->setMuted(false);
+        nativePlayer->setAudioTracksEnabled(true);
         nativePlayer->setVolume((float) volumeSlider.getValue());
     }
     else
     {
         nativePlayer->setMuted(true);
+        nativePlayer->setAudioTracksEnabled(false);
         nativePlayer->setVolume(0.0f);
         syncAudioTransportToPosition(0.0, false);
     }
@@ -1885,6 +1985,7 @@ void VideoPageComponent::playTransport()
     syncAudioTransportToPosition(startPosition, false);
     nativePlayer->setVolume(syncedAudioLoaded ? 0.0f : (float) volumeSlider.getValue());
     nativePlayer->setMuted(syncedAudioLoaded);
+    nativePlayer->setAudioTracksEnabled(!syncedAudioLoaded);
     nativePlayer->play();
     if (syncedAudioLoaded)
         audioEngine.play();
@@ -2040,6 +2141,8 @@ void VideoPageComponent::refreshVideoPlaybackSurface(bool preservePlaybackState,
         return;
     }
 
+    nativePlayer->setAudioTracksEnabled(!syncedAudioLoaded);
+
     if (syncedAudioLoaded)
         syncAudioTransportToPosition(refreshPosition, preservePlaybackState);
 
@@ -2101,7 +2204,7 @@ void VideoPageComponent::timerCallback()
     if (!hasVideoLoaded)
     {
         autoRippleTimer += 0.033f;  // 30Hz timer
-        if (autoRippleTimer >= 15.0f && !rippleActive)
+        if (autoRippleTimer >= 15.0f && !rippleActive && isShowing())
         {
             autoRippleTimer = 0.0f;
 
@@ -2130,9 +2233,16 @@ void VideoPageComponent::timerCallback()
     }
 #endif
 
-    if (!syncedAudioLoaded)
+    // Probe for a freshly-extracted WAV at ~1Hz instead of 30Hz — this is
+    // disk I/O (existsAsFile) and was running every timer tick.
+    if (!syncedAudioLoaded && ++syncedAudioProbeCounter >= 30)
+    {
+        syncedAudioProbeCounter = 0;
         attachSyncedAudioIfAvailable();
+    }
 
+    if (isShowing())
+    {
     const float peakL = processor.peakLevelL.load(std::memory_order_relaxed);
     const float peakR = processor.peakLevelR.load(std::memory_order_relaxed);
     const float rmsL = processor.rmsLevelL.load(std::memory_order_relaxed);
@@ -2167,6 +2277,7 @@ void VideoPageComponent::timerCallback()
         bottomMeterAlpha = juce::jmin(1.0f, bottomMeterAlpha + 0.16f);
         bottomMeterCard->setAlpha(bottomMeterAlpha);
     }
+    } // if (isShowing()) — visual-only meter updates end here
 
     if (!hasVideoLoaded)
     {
