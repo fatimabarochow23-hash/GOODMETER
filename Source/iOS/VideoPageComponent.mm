@@ -6,6 +6,8 @@
 */
 
 #include "VideoPageComponent.h"
+#include "SpatialImpressionComponent.h"
+#include "SpectralTerrainComponent.h"
 
 #if JUCE_IOS
 
@@ -943,6 +945,10 @@ void VideoPageComponent::applyEmbeddedMeterTheme(juce::Component* content)
         meter->setMarathonDarkStyle(isDarkTheme);
     else if (auto* meter = dynamic_cast<SpectrogramComponent*>(content))
         meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<SpatialImpressionComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
+    else if (auto* meter = dynamic_cast<SpectralTerrainComponent*>(content))
+        meter->setMarathonDarkStyle(isDarkTheme);
     else if (auto* meter = dynamic_cast<PsrMeterComponent*>(content))
         meter->setMarathonDarkStyle(isDarkTheme);
 }
@@ -1095,15 +1101,15 @@ void VideoPageComponent::rebuildMeterSlot(bool topSlot)
         }
         case EmbeddedMeterKind::stereo:
         {
-            auto card = createCard("STEREO", GoodMeterLookAndFeel::accentSoftPink);
-            card->setContentComponent(std::make_unique<StereoImageComponent>(processor));
+            auto card = createCard("SPATIAL", GoodMeterLookAndFeel::accentSoftPink);
+            card->setContentComponent(std::make_unique<SpatialImpressionComponent>(processor));
             slotCard = std::move(card);
             break;
         }
         case EmbeddedMeterKind::spectrogram:
         {
-            auto card = createCard("SPECTROGRAM", GoodMeterLookAndFeel::accentYellow);
-            card->setContentComponent(std::make_unique<SpectrogramComponent>(processor));
+            auto card = createCard("TERRAIN", GoodMeterLookAndFeel::accentYellow);
+            card->setContentComponent(std::make_unique<SpectralTerrainComponent>(processor));
             slotCard = std::move(card);
             break;
         }

@@ -92,6 +92,44 @@ public:
     // Callback: long-press test tube
     std::function<void()> onTestTubeLongPressed;
 
+    // iOS spatial-recording gesture (long-press body to arm, then swipe):
+    //   onRecordArmed        — held long enough; show the "ready" hint
+    //   onRecordSwipe(dir)   — dir = -1 up (stereo), +1 down (ambeo/FOA), 0 none
+    //   onRecordCommitted(b) — released with a direction; b = true → FOA (down)
+    //   onRecordDisarmed     — released/aborted without committing
+    //   onRecordCancelHover  — finger over the test tube (the cancel target)
+    std::function<void()> onRecordArmed;
+    std::function<void(int dir)> onRecordSwipe;
+    std::function<void(bool foaMode)> onRecordCommitted;
+    std::function<void()> onRecordDisarmed;
+    std::function<void(bool hovering)> onRecordCancelHover;
+
+    /** Tube hit area translated into the parent's coordinate space (for the
+        page overlay to anchor the "drag here to cancel" leader line). */
+    juce::Rectangle<float> getTubeRectInParent() const
+    {
+        return tubeHitRect.translated((float) getX(), (float) getY());
+    }
+
+    /** Picks a new random label sticker for the test tube (called per take). */
+    void rerollTubeLabel()
+    {
+        tubeLabelVariant = pickChemLabelVariant(-1);
+        repaint();
+    }
+
+    /** Tear-off animation: the current label peels off and a fresh (always
+        different) one stamps on. Triggered when a take starts and when an
+        armed record gesture is cancelled on the tube. */
+    void triggerTubeLabelSwap()
+    {
+        outgoingLabelVariant = tubeLabelVariant;
+        tubeLabelVariant = pickChemLabelVariant(tubeLabelVariant);
+        labelSwapProgress = 0.0f;
+        tubeSpinPhase = 0.0f;             // new label lands facing the viewer
+        repaint();
+    }
+
     // Marker mode routing: when active, double-clicking the character surface
     // should place a marker instead of triggering the normal body flip/clear flow.
     std::function<bool()> isMarkerModeActive;
@@ -416,12 +454,12 @@ public:
                 break;
 
             case NonoState::ShowingResults:
-                // iOS Marathon mode: delegate to page component for wave animation
+                // iOS Marathon mode: page component clears its meter data /
+                // dot-matrix text (wave animation) — AND the character still
+                // pours out the tube (both used to be mutually exclusive,
+                // which silently dropped the pour animation on iOS).
                 if (!showAnalysisResults && onClearResultsRequested)
-                {
                     onClearResultsRequested();
-                    return;
-                }
                 nonoState = NonoState::ClearingData;
                 targetPourAngle = juce::degreesToRadians(120.0f);
                 bubbleFadeAlpha = 1.0f;
@@ -629,7 +667,8 @@ public:
         {
             drawVisor(g, cx, cy, radius, hScale);
 
-            if (audioProcessor.audioRecorder.getIsRecording())
+            if (audioProcessor.audioRecorder.getIsRecording()
+                || audioProcessor.iosRecordingActive.load(std::memory_order_relaxed))
                 drawRecordingGrid(g, cx, cy, radius, hScale);
             else
                 drawEyes(g, cx, cy, radius, hScale);
@@ -774,6 +813,17 @@ public:
         {
             pendingSmileClick = true;
             pendingSmileClickTime = juce::Time::getMillisecondCounter();
+
+           #if JUCE_IOS
+            // Same body press also starts the record-arm long-press timer.
+            // If it matures (held still ~450ms) it cancels the smile and arms
+            // recording; a quick tap still smiles as before.
+            recordArmPending = true;
+            recordArmed = false;
+            recordSwipeDir = 0;
+            recordArmPressTime = juce::Time::getMillisecondCounter();
+            recordArmStartPos = e.position;
+           #endif
         }
 
         if (nonoState == NonoState::Back && !visorHitPath.isEmpty()
@@ -784,6 +834,58 @@ public:
     void mouseDrag(const juce::MouseEvent& e) override
     {
         if (isOrbitLocked) return;
+
+       #if JUCE_IOS
+        // Record-arm gesture: must hold still to arm; once armed, vertical
+        // swipe picks the mode (up = stereo, down = FOA/ambeo).
+        if (recordArmPending && !recordArmed
+            && e.position.getDistanceFrom(recordArmStartPos) > 12.0f)
+        {
+            // Moved before the hold matured — it's a swipe/drag, not a long
+            // press. Abandon arming (no recording).
+            recordArmPending = false;
+        }
+
+        if (recordArmed)
+        {
+            // Cancel target: hovering the test tube overrides zone selection.
+            const bool overTube = !tubeHitRect.isEmpty()
+                && tubeHitRect.expanded(16.0f).contains(e.position);
+
+            if (overTube != recordCancelHover)
+            {
+                recordCancelHover = overTube;
+                if (onRecordCancelHover)
+                    onRecordCancelHover(overTube);
+            }
+
+            if (overTube)
+            {
+                if (recordSwipeDir != 0)
+                {
+                    recordSwipeDir = 0;
+                    if (onRecordSwipe)
+                        onRecordSwipe(0);
+                }
+                return;
+            }
+
+            // Zone-based selection: top half of the view = stereo, bottom half
+            // = FOA/ambeo. Only needs a small intentional move to engage, so a
+            // pure long-press-and-release (no move) cancels instead of firing.
+            const float moved = e.position.getDistanceFrom(recordArmStartPos);
+            const int newDir = (moved > 18.0f)
+                ? (e.position.y < getHeight() * 0.5f ? -1 : 1)
+                : 0;
+            if (newDir != recordSwipeDir)
+            {
+                recordSwipeDir = newDir;
+                if (onRecordSwipe)
+                    onRecordSwipe(recordSwipeDir);
+            }
+            return; // while armed, the drag drives mode selection only
+        }
+       #endif
 
         if (pendingTubeLongPress
             && e.position.getDistanceFrom(tubePressStartPos) > 8.0f)
@@ -853,6 +955,36 @@ public:
         tubeLongPressTriggered = false;
         if (wasDragging && onDragActiveChanged)
             onDragActiveChanged(false);
+
+       #if JUCE_IOS
+        if (recordArmed)
+        {
+            if (recordCancelHover)
+            {
+                // Released on the tube = explicit cancel. Tear the label off
+                // as the visual receipt of the aborted take.
+                triggerTubeLabelSwap();
+                if (onRecordDisarmed)
+                    onRecordDisarmed();
+            }
+            else if (recordSwipeDir != 0)
+            {
+                // down (+1) = FOA/ambeo, up (-1) = stereo
+                if (onRecordCommitted)
+                    onRecordCommitted(recordSwipeDir > 0);
+            }
+            else if (onRecordDisarmed)
+            {
+                onRecordDisarmed();
+            }
+        }
+        if (recordCancelHover && onRecordCancelHover)
+            onRecordCancelHover(false);
+        recordCancelHover = false;
+        recordArmPending = false;
+        recordArmed = false;
+        recordSwipeDir = 0;
+       #endif
     }
 
     void mouseMove(const juce::MouseEvent& e) override
@@ -1354,6 +1486,198 @@ private:
     juce::uint32 pendingTubeLongPressTime = 0;
     juce::Point<float> tubePressStartPos;
 
+    // iOS record gesture state (long-press body -> arm -> swipe up/down)
+    bool recordArmPending = false;
+    bool recordArmed = false;
+    juce::uint32 recordArmPressTime = 0;
+    juce::Point<float> recordArmStartPos;
+    int recordSwipeDir = 0;   // -1 up (stereo), +1 down (FOA), 0 none
+    bool recordCancelHover = false;    // finger over the tube while armed
+    float cancelHoverGlow = 0.0f;      // eased 0..1 for the tube cancel VFX
+    float cancelBubblePhase = 0.0f;    // procedural outward-bubble clock
+    static constexpr int numChemLabels = 26;
+    int tubeLabelVariant = juce::Random::getSystemRandom().nextInt(numChemLabels);
+    float labelSwapProgress = -1.0f;   // -1 idle; 0..1 = tear-off -> stamp-on
+    int outgoingLabelVariant = -1;
+    float tubeSpinPhase = 0.0f;        // tube self-rotation angle (radians)
+    juce::Image tubeLabelTexCache;     // cylindrical label texture cache
+    int tubeLabelTexVariant = -1;
+
+    //==========================================================================
+    // Chemistry label art: rigorous reagent stickers (true reagent colours)
+    // + periodic-table element tiles. Rendered flat for the tear/stamp swap
+    // and into a wrap-around texture for the spinning idle tube.
+    //==========================================================================
+    struct ChemLabelSpec
+    {
+        const char* formula;   // digits are rendered as true subscripts
+        const char* nameCJK;   // UTF-8 Chinese reagent name
+        juce::uint32 colour;   // label stripe / tile colour
+        juce::uint32 liquid;   // true solution colour (colourless ones = pale)
+        bool elementTile;      // periodic-table tile style
+        const char* corner;    // grade / atomic number / rarity
+        bool glow = false;     // SSR: liquid emits light (fluorescein/luminol)
+    };
+
+    static const ChemLabelSpec& chemLabel(int variant)
+    {
+        // Full chemistry set: 18 reagents + 6 element tiles + 2 glowing SSRs.
+        // Solution colours follow the real chemistry (colourless stays pale).
+        static const ChemLabelSpec specs[numChemLabels] = {
+            { "KMnO4",    "\xe9\xab\x98\xe9\x94\xb0\xe9\x85\xb8\xe9\x92\xbe",         0xFF7B1FA2, 0xFF8E24AA, false, "AR"  }, // 高锰酸钾 deep purple
+            { "CuSO4",    "\xe7\xa1\xab\xe9\x85\xb8\xe9\x93\x9c",                     0xFF1E88E5, 0xFF1E88E5, false, "AR"  }, // 硫酸铜 vivid blue
+            { "H2SO4",    "\xe6\xb5\x93\xe7\xa1\xab\xe9\x85\xb8",                     0xFFC9A227, 0xFFD9CFA0, false, "98%" }, // 浓硫酸 oily pale straw
+            { "FeCl3",    "\xe6\xb0\xaf\xe5\x8c\x96\xe9\x93\x81",                     0xFFB26A00, 0xFFC07818, false, "AR"  }, // 氯化铁 yellow-brown
+            { "AgNO3",    "\xe7\xa1\x9d\xe9\x85\xb8\xe9\x93\xb6",                     0xFF5D4037, 0xFFDDE3E8, false, "CP"  }, // 硝酸银 colourless
+            { "NaOH",     "\xe6\xb0\xa2\xe6\xb0\xa7\xe5\x8c\x96\xe9\x92\xa0",         0xFFE53935, 0xFFE4E9EC, false, "GR"  }, // 氢氧化钠 colourless
+            { "CrCl3",    "\xe6\xb0\xaf\xe5\x8c\x96\xe9\x93\xac",                     0xFF1B5E20, 0xFF2F7D4F, false, "AR"  }, // 氯化铬 deep green
+            { "I2",       "\xe7\xa2\x98\xe6\xb0\xb4",                                 0xFF6D4C41, 0xFF8D5524, false, "CP"  }, // 碘水 brown-red
+            { "Cu(NH3)4", "\xe9\x93\x9c\xe6\xb0\xa8\xe6\xba\xb6\xe6\xb6\xb2",         0xFF1A237E, 0xFF283593, false, "LR"  }, // 铜氨溶液 deep royal blue
+            { "NiSO4",    "\xe7\xa1\xab\xe9\x85\xb8\xe9\x95\x8d",                     0xFF00897B, 0xFF2E9E6B, false, "AR"  }, // 硫酸镍 emerald green
+            { "FeSO4",    "\xe7\xa1\xab\xe9\x85\xb8\xe4\xba\x9a\xe9\x93\x81",         0xFF4E8C6F, 0xFF9CCFB8, false, "AR"  }, // 硫酸亚铁 pale green
+            { "K2MnO4",   "\xe9\x94\xb0\xe9\x85\xb8\xe9\x92\xbe",                     0xFF12403A, 0xFF1B4D3E, false, "CP"  }, // 锰酸钾 ink green
+            { "K2CrO4",   "\xe9\x93\xac\xe9\x85\xb8\xe9\x92\xbe",                     0xFFC9A800, 0xFFF2D024, false, "AR"  }, // 铬酸钾 lemon yellow
+            { "K2Cr2O7",  "\xe9\x87\x8d\xe9\x93\xac\xe9\x85\xb8\xe9\x92\xbe",         0xFFD96C00, 0xFFF28C28, false, "AR"  }, // 重铬酸钾 orange
+            { "Br2",      "\xe6\xba\xb4\xe6\xb0\xb4",                                 0xFF8C4A10, 0xFFB25C1F, false, "CP"  }, // 溴水 orange-brown
+            { "Cl2",      "\xe6\xb0\xaf\xe6\xb0\xb4",                                 0xFFA8B860, 0xFFD7E8A0, false, "CP"  }, // 氯水 pale yellow-green
+            { "CoCl2",    "\xe6\xb0\xaf\xe5\x8c\x96\xe9\x92\xb4",                     0xFFE91E63, 0xFFF48FB1, false, "AR"  }, // 氯化钴 pink
+            { "Fe(SCN)3", "\xe7\xa1\xab\xe6\xb0\xb0\xe5\x8c\x96\xe9\x93\x81",         0xFF8E1515, 0xFFB71C1C, false, "LR"  }, // 硫氰化铁 blood red
+            { "Fe",       "\xe9\x93\x81",                                             0xFF546E7A, 0xFF78909C, true,  "26"  }, // 铁 steel grey
+            { "Cu",       "\xe9\x93\x9c",                                             0xFFB87333, 0xFFB87333, true,  "29"  }, // 铜 true copper
+            { "Au",       "\xe9\x87\x91",                                             0xFFD4AF37, 0xFFE6C84A, true,  "79"  }, // 金 gold
+            { "Ag",       "\xe9\x93\xb6",                                             0xFF9EA7B0, 0xFFC7CDD4, true,  "47"  }, // 银 silver
+            { "Hg",       "\xe6\xb1\x9e",                                             0xFF546E7A, 0xFFB6BEC6, true,  "80"  }, // 汞 liquid metal
+            { "S",        "\xe7\xa1\xab",                                             0xFFC9A227, 0xFFE8C547, true,  "16"  }, // 硫 sulfur yellow
+            { "C20H12O5", "\xe8\x8d\xa7\xe5\x85\x89\xe7\xb4\xa0",                     0xFF76FF03, 0xFF9CFF57, false, "SSR", true }, // 荧光素 neon green glow
+            { "C8H7N3O2", "\xe9\xb2\x81\xe7\xb1\xb3\xe8\xaf\xba",                     0xFF40C4FF, 0xFF6FD8FF, false, "SSR", true }, // 鲁米诺 blue chemiluminescence
+        };
+        return specs[juce::jlimit(0, numChemLabels - 1, variant)];
+    }
+
+    /** Weighted draw: 5% luminol, 5% fluorescein (the two glowing SSRs),
+        otherwise uniform over the 24 commons. Never returns `exclude`. */
+    static int pickChemLabelVariant(int exclude)
+    {
+        auto& rng = juce::Random::getSystemRandom();
+        for (int tries = 0; tries < 8; ++tries)
+        {
+            const float r = rng.nextFloat();
+            const int v = r < 0.05f ? numChemLabels - 1
+                        : r < 0.10f ? numChemLabels - 2
+                                    : rng.nextInt(numChemLabels - 2);
+            if (v != exclude)
+                return v;
+        }
+        return (exclude + 1) % numChemLabels;
+    }
+
+    /** Draws a chemical formula with real subscript digits (H2SO4 -> H₂SO₄). */
+    static void drawChemFormula(juce::Graphics& g, const juce::String& formula,
+                                juce::Rectangle<float> area, float fontH, juce::Colour col)
+    {
+        juce::Font big(juce::FontOptions(fontH, juce::Font::bold));
+        juce::Font sub(juce::FontOptions(fontH * 0.62f, juce::Font::bold));
+
+        float total = 0.0f;
+        for (int i = 0; i < formula.length(); ++i)
+        {
+            const auto ch = juce::String::charToString(formula[i]);
+            total += (juce::CharacterFunctions::isDigit(formula[i]) ? sub : big)
+                         .getStringWidthFloat(ch);
+        }
+
+        float x = area.getCentreX() - total * 0.5f;
+        const float baseY = area.getCentreY() + fontH * 0.36f;
+        g.setColour(col);
+        for (int i = 0; i < formula.length(); ++i)
+        {
+            const auto ch = juce::String::charToString(formula[i]);
+            const bool digit = juce::CharacterFunctions::isDigit(formula[i]);
+            const auto& f = digit ? sub : big;
+            g.setFont(f);
+            g.drawSingleLineText(ch, juce::roundToInt(x),
+                                 juce::roundToInt(baseY + (digit ? fontH * 0.14f : 0.0f)));
+            x += f.getStringWidthFloat(ch);
+        }
+    }
+
+    /** Paints one label's full artwork into r (paper, stripe, formula, name). */
+    void paintChemLabelContent(juce::Graphics& g, juce::Rectangle<float> r,
+                               int variant, float alpha) const
+    {
+        const auto& spec = chemLabel(variant);
+        const juce::Colour accent(spec.colour);
+        const juce::Colour ink = juce::Colour(0xFF2A2A35).withAlpha(0.92f * alpha);
+
+        // Paper (element tiles get a light tint of the metal colour)
+        auto paper = juce::Colour(0xFFF6F1E7);
+        if (spec.elementTile)
+            paper = paper.interpolatedWith(accent, 0.16f);
+        g.setColour(paper.withAlpha(0.94f * alpha));
+        g.fillRoundedRectangle(r, 1.5f);
+        g.setColour(ink.withAlpha(0.78f * alpha));
+        g.drawRoundedRectangle(r, 1.5f, 0.8f);
+
+        if (spec.elementTile)
+        {
+            // Periodic-table tile: atomic number top-left, big symbol, CJK name
+            g.setColour(ink);
+            g.setFont(juce::Font(juce::FontOptions(juce::jmax(4.5f, r.getHeight() * 0.26f))));
+            g.drawText(spec.corner, r.reduced(r.getWidth() * 0.07f, r.getHeight() * 0.06f),
+                       juce::Justification::topLeft, false);
+            g.setFont(juce::Font(juce::FontOptions(juce::jmax(6.0f, r.getHeight() * 0.52f), juce::Font::bold)));
+            g.setColour(accent.darker(0.35f).withAlpha(alpha));
+            g.drawText(spec.formula, r.translated(0.0f, -r.getHeight() * 0.04f),
+                       juce::Justification::centred, false);
+            g.setColour(ink);
+            g.setFont(juce::Font(juce::FontOptions(juce::jmax(4.5f, r.getHeight() * 0.24f))));
+            g.drawText(juce::String::fromUTF8(spec.nameCJK),
+                       r.withTrimmedTop(r.getHeight() * 0.70f),
+                       juce::Justification::centred, false);
+            return;
+        }
+
+        // Reagent sticker: true-colour band down the left edge
+        auto stripe = r.withWidth(r.getWidth() * 0.15f).reduced(1.0f);
+        g.setColour(accent.withAlpha(0.92f * alpha));
+        g.fillRoundedRectangle(stripe, 1.0f);
+
+        auto content = r.withTrimmedLeft(r.getWidth() * 0.17f).reduced(0.5f);
+        drawChemFormula(g, spec.formula,
+                        content.withTrimmedBottom(content.getHeight() * 0.42f),
+                        juce::jmax(5.0f, r.getHeight() * 0.38f), ink);
+        g.setColour(ink.withAlpha(0.85f * alpha));
+        g.setFont(juce::Font(juce::FontOptions(juce::jmax(4.5f, r.getHeight() * 0.27f))));
+        g.drawText(juce::String::fromUTF8(spec.nameCJK),
+                   content.withTrimmedTop(content.getHeight() * 0.58f),
+                   juce::Justification::centred, false);
+        // Grade mark, tiny, top-right
+        g.setColour(accent.darker(0.2f).withAlpha(0.8f * alpha));
+        g.setFont(juce::Font(juce::FontOptions(juce::jmax(3.8f, r.getHeight() * 0.18f), juce::Font::bold)));
+        g.drawText(spec.corner, content.reduced(1.0f, 0.5f),
+                   juce::Justification::topRight, false);
+    }
+
+    /** Returns (building if needed) the wrap-around cylinder texture: the
+        label artwork occupies the central 58% arc, the rest is bare glass. */
+    juce::Image& getTubeLabelTexture(int variant, int pxW, int pxH)
+    {
+        if (tubeLabelTexVariant != variant
+            || tubeLabelTexCache.getWidth() != pxW
+            || tubeLabelTexCache.getHeight() != pxH)
+        {
+            tubeLabelTexCache = juce::Image(juce::Image::ARGB, juce::jmax(8, pxW),
+                                            juce::jmax(8, pxH), true);
+            juce::Graphics tg(tubeLabelTexCache);
+            const float arc = 0.58f;
+            juce::Rectangle<float> r((float) pxW * (0.5f - arc * 0.5f), 0.5f,
+                                     (float) pxW * arc, (float) pxH - 1.0f);
+            paintChemLabelContent(tg, r, variant, 1.0f);
+            tubeLabelTexVariant = variant;
+        }
+        return tubeLabelTexCache;
+    }
+
     // Hit test regions (computed in paint, used in mouse handlers)
     juce::Rectangle<float> bodyHitRect;
     juce::Rectangle<float> tubeHitRect;
@@ -1482,7 +1806,8 @@ private:
         // First-order difference acts as a high-pass filter: responds to transients,
         // ignores sustained low-frequency content.
         {
-            bool nowRecording = audioProcessor.audioRecorder.getIsRecording();
+            bool nowRecording = audioProcessor.audioRecorder.getIsRecording()
+                || audioProcessor.iosRecordingActive.load(std::memory_order_relaxed);
             if (nowRecording)
             {
                 float hfEnergy = std::abs(audioLevel - prevGridLevel);
@@ -1727,6 +2052,7 @@ private:
                 isExploded = false;     // 碎玻璃瞬间复原！
                 isRefilling = true;
                 liquidHeight = 0.0f;    // 确保从空开始注水
+                triggerTubeLabelSwap(); // 换新瓶：撕旧签贴新签，液体换新试剂色
             }
         }
 
@@ -1785,6 +2111,52 @@ private:
             if (onTestTubeLongPressed)
                 onTestTubeLongPressed();
         }
+
+       #if JUCE_IOS
+        // Record-arm maturation: a short hold (~0.15s) arms recording so you can
+        // catch a fleeting sound immediately. A quick tap (shorter) still smiles;
+        // arming while armed cancels the smile, and releasing without moving
+        // disarms — so an over-long tap just flashes the hint, never records.
+        if (recordArmPending && !recordArmed
+            && juce::Time::getMillisecondCounter() - recordArmPressTime > 150)
+        {
+            recordArmPending = false;
+            recordArmed = true;
+            pendingSmileClick = false;  // this press is a record gesture, not a smile
+            recordSwipeDir = 0;
+            if (onRecordArmed)
+                onRecordArmed();
+        }
+
+        // Cancel-hover VFX clock: glow eases in/out, bubbles drift outward.
+        {
+            const float glowTarget = recordCancelHover ? 1.0f : 0.0f;
+            cancelHoverGlow += (glowTarget - cancelHoverGlow) * 0.22f;
+            if (cancelHoverGlow > 0.02f)
+            {
+                cancelBubblePhase += 0.016f;
+                if (cancelBubblePhase > 1.0f)
+                    cancelBubblePhase -= 1.0f;
+            }
+        }
+       #endif
+
+        // Tube label swap animation clock (~0.6s tear-off -> stamp-on)
+        if (labelSwapProgress >= 0.0f)
+        {
+            labelSwapProgress += 1.0f / 36.0f;
+            if (labelSwapProgress >= 1.0f)
+            {
+                labelSwapProgress = -1.0f;
+                outgoingLabelVariant = -1;
+            }
+        }
+
+        // Tube self-rotation: the label wraps the glass, so a slow constant
+        // spin lets the full reagent name scroll past the viewer (~9s/rev).
+        tubeSpinPhase += 0.0115f;
+        if (tubeSpinPhase > juce::MathConstants<float>::twoPi)
+            tubeSpinPhase -= juce::MathConstants<float>::twoPi;
 
         // Orbit animation progress (1.2s = 72 frames at 60Hz)
         if (isOrbiting)
@@ -1931,11 +2303,14 @@ private:
     {
         if (isOrbiting || isOrbitLocked) return;
         isSmiling = true;
+        smileFramesLeft = 120;       // 2 seconds at 60Hz
+       #if !JUCE_IOS
+        // Spinning/orbit only on desktop pet. On iOS a tap just smiles.
         isOrbiting = true;
         isOrbitLocked = true;
         orbitProgress = 0.0f;
-        smileFramesLeft = 120;       // 2 seconds at 60Hz
         orbitLockFramesLeft = 90;    // 1.5 seconds at 60Hz
+       #endif
 
         if (onSmileOrbitTriggered)
             onSmileOrbitTriggered();
@@ -3953,9 +4328,11 @@ private:
             liqPath.closeSubPath();
             liqPath.applyTransform(rotation);
 
-            // Color transition: magicPink → neonGreen based on editModeTransition
-            juce::Colour liqColTop = magicPink.interpolatedWith(neonGreen, editModeTransition);
-            juce::Colour liqColBot = magicPink.darker(0.4f).interpolatedWith(
+            // Liquid = the current label's true reagent colour (KMnO4 purple,
+            // CuSO4 blue, colourless ones pale); edit mode still turns green.
+            const juce::Colour reagent(chemLabel(tubeLabelVariant).liquid);
+            juce::Colour liqColTop = reagent.brighter(0.12f).interpolatedWith(neonGreen, editModeTransition);
+            juce::Colour liqColBot = reagent.darker(0.4f).interpolatedWith(
                 neonGreen.darker(0.3f), editModeTransition);
 
             juce::ColourGradient liqGrad(
@@ -3963,6 +4340,20 @@ private:
                 liqColBot.withAlpha(0.95f), tubeX, tBot, false);
             g.setGradientFill(liqGrad);
             g.fillPath(liqPath);
+
+            // SSR chemiluminescence: fluorescein / luminol liquids emit a
+            // soft pulsing bloom (layered ellipses, driven by the spin clock).
+            if (chemLabel(tubeLabelVariant).glow)
+            {
+                const float pulse = 0.65f + 0.35f * std::sin(tubeSpinPhase * 3.0f);
+                const auto lb = liqPath.getBounds();
+                g.setColour(reagent.withAlpha(0.22f * pulse));
+                g.fillEllipse(lb.expanded(5.0f));
+                g.setColour(reagent.withAlpha(0.12f * pulse));
+                g.fillEllipse(lb.expanded(11.0f));
+                g.setColour(juce::Colours::white.withAlpha(0.10f * pulse));
+                g.fillEllipse(lb.expanded(1.5f));
+            }
 
             // Boiling bubbles (visible when editModeTransition > 0)
             if (editModeTransition > 0.02f)
@@ -3992,6 +4383,146 @@ private:
                 }
             }
         }
+
+        // ── Chemistry label: wraps the glass cylinder and spins with the
+        // tube (idle), tears off flat / stamps back on during swaps ──
+        {
+            const float labH = tubeH * 0.26f;
+            const float labY = tTop + tubeH * 0.34f;
+            const float R = tubeW * 0.5f;
+
+            // Flat paper version — used while the label is mid-air (tear /
+            // stamp): a peeled sticker is no longer wrapped around anything.
+            auto drawFlatLabel = [&](int variantIn, juce::AffineTransform extra, float alpha)
+            {
+                if (alpha < 0.02f)
+                    return;
+                const int variant = juce::jlimit(0, numChemLabels - 1, variantIn);
+                const float labW = tubeW * 1.18f;
+                const float labX = tubeX - labW * 0.5f;
+                auto labelRot = juce::AffineTransform::rotation(
+                                    (variant - 3) * 0.03f, tubeX, labY + labH * 0.5f)
+                                    .followedBy(extra)
+                                    .followedBy(rotation);
+                juce::Graphics::ScopedSaveState save(g);
+                g.addTransform(labelRot);
+                paintChemLabelContent(g, { labX, labY, labW, labH }, variant, alpha);
+            };
+
+            // Cylindrical version: the label texture is mapped onto the tube
+            // via per-slice asin() projection; tubeSpinPhase scrolls it so the
+            // full reagent name rolls past (edges darken, centre glints).
+            auto drawWrappedLabel = [&](int variantIn, float alpha)
+            {
+                const int variant = juce::jlimit(0, numChemLabels - 1, variantIn);
+                const float twoPi = juce::MathConstants<float>::twoPi;
+                const int texW = juce::jmax(32, (int) (twoPi * R * 2.0f));
+                const int texH = juce::jmax(12, (int) (labH * 2.0f));
+                auto& tex = getTubeLabelTexture(variant, texW, texH);
+
+                juce::Graphics::ScopedSaveState save(g);
+                g.addTransform(rotation);
+
+                constexpr int nSlices = 20;
+                for (int s = 0; s < nSlices; ++s)
+                {
+                    const float x0 = tL + tubeW * (float) s / (float) nSlices;
+                    const float x1 = tL + tubeW * (float) (s + 1) / (float) nSlices;
+                    const float n0 = juce::jlimit(-0.999f, 0.999f, (x0 - tubeX) / R);
+                    const float n1 = juce::jlimit(-0.999f, 0.999f, (x1 - tubeX) / R);
+                    const float th0 = std::asin(n0), th1 = std::asin(n1);
+
+                    // Texture centred on angle 0 => label faces the viewer at
+                    // spin 0; the u=0 seam always sits in the bare-glass gap.
+                    const float p0 = std::fmod((th0 + tubeSpinPhase) / twoPi + 1.5f, 1.0f);
+                    const float p1 = p0 + (th1 - th0) / twoPi;
+                    const int su = (int) (p0 * (float) texW);
+                    const int sw = juce::jmax(1, (int) ((p1 - p0) * (float) texW));
+                    if (su + sw > texW)
+                        continue;   // seam crossing = inside the glass gap
+
+                    g.setOpacity(alpha);
+                    g.drawImage(tex,
+                                juce::roundToInt(x0), juce::roundToInt(labY),
+                                juce::roundToInt(x1 - x0 + 0.75f), juce::roundToInt(labH),
+                                su, 0, sw, texH);
+
+                    // Cylindrical shading toward the silhouette edges
+                    const float shade = (1.0f - std::cos((th0 + th1) * 0.5f)) * 0.30f;
+                    if (shade > 0.015f)
+                    {
+                        g.setColour(juce::Colours::black.withAlpha(shade * alpha));
+                        g.fillRect(x0, labY, x1 - x0 + 0.5f, labH);
+                    }
+                }
+
+                // Soft specular glint on the glass over the label band
+                g.setColour(juce::Colours::white.withAlpha(0.10f * alpha));
+                g.fillRect(tubeX - R * 0.45f, labY, R * 0.16f, labH);
+            };
+
+            if (labelSwapProgress < 0.0f)
+            {
+                drawWrappedLabel(tubeLabelVariant, 1.0f);
+            }
+            else if (labelSwapProgress < 0.45f)
+            {
+                // Phase A: old label peels off — rotates about its top-right
+                // corner, drifts up and away, fades. Bare glass underneath.
+                const float t = labelSwapProgress / 0.45f;
+                const float labW = tubeW * 1.18f;
+                const float labX = tubeX - labW * 0.5f;
+                auto tear = juce::AffineTransform::rotation(-0.9f * t, labX + labW, labY)
+                                .translated(t * labW * 0.8f, -t * labH * 2.2f);
+                drawFlatLabel(outgoingLabelVariant, tear, 1.0f - t * t);
+            }
+            else
+            {
+                // Phase B: new label stamps on with a scale-settle, then the
+                // idle branch takes over with the wrapped (spinning) render.
+                const float t = (labelSwapProgress - 0.45f) / 0.55f;
+                const float ease = 1.0f - (1.0f - t) * (1.0f - t);
+                const float sc = 1.35f - 0.35f * ease;
+                auto stamp = juce::AffineTransform::scale(sc, sc, tubeX, labY + labH * 0.5f);
+                drawFlatLabel(tubeLabelVariant, stamp, ease);
+            }
+        }
+
+       #if JUCE_IOS
+        // ── Cancel-hover VFX: outward-diffusing bubbles + soft ring ──
+        // Shown while an armed record gesture hovers the tube (= release to
+        // cancel). Fully procedural: no per-bubble state.
+        if (cancelHoverGlow > 0.02f)
+        {
+            const auto hot = accentCol();
+            g.setColour(hot.withAlpha(0.28f * cancelHoverGlow));
+            g.strokePath(tubePath, juce::PathStrokeType(5.0f));
+            g.setColour(juce::Colours::white.withAlpha(0.20f * cancelHoverGlow));
+            g.strokePath(tubePath, juce::PathStrokeType(2.0f));
+
+            constexpr int numCancelBubbles = 10;
+            for (int i = 0; i < numCancelBubbles; ++i)
+            {
+                // Per-bubble phase staggered around the shared clock
+                float ph = cancelBubblePhase + (float) i / (float) numCancelBubbles;
+                ph -= std::floor(ph);
+
+                const float ang = (float) i * juce::MathConstants<float>::twoPi
+                                      / (float) numCancelBubbles
+                                  + 0.7f * std::sin((float) i * 12.9898f);
+                const float dist = tubeW * (0.7f + ph * 2.6f);
+                const float bx = tubeX + std::cos(ang) * dist;
+                const float by = tubeY + std::sin(ang) * dist * 0.9f;
+                const float bsz = (1.6f + 1.3f * ((i * 7) % 3)) * (1.0f - ph * 0.5f);
+                const float ba = cancelHoverGlow * (1.0f - ph) * 0.75f;
+
+                g.setColour(hot.withAlpha(ba * 0.35f));
+                g.fillEllipse(bx - bsz * 1.6f, by - bsz * 1.6f, bsz * 3.2f, bsz * 3.2f);
+                g.setColour(juce::Colours::white.withAlpha(ba));
+                g.drawEllipse(bx - bsz, by - bsz, bsz * 2.0f, bsz * 2.0f, 1.0f);
+            }
+        }
+       #endif
 
         // Rim
         juce::Path rimPath;

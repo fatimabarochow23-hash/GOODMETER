@@ -81,6 +81,234 @@ private:
     bool isDarkMode = false;
 };
 
+//==============================================================================
+/** CharacterOptionButton-styled container hosting a text editor, so the date
+    button and the custom-prefix field read as two peer choices (either/or). */
+class PrefixOptionField : public juce::Component
+{
+public:
+    explicit PrefixOptionField(juce::Colour accentToUse) : accent(accentToUse)
+    {
+        editor.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        editor.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        editor.setColour(juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+        editor.setJustification(juce::Justification::centred);
+        // Display-only: editing happens in the centered dialog (the keyboard
+        // covered this bottom-of-page field completely while typing inline).
+        editor.setReadOnly(true);
+        editor.setInterceptsMouseClicks(false, false);
+        editor.setWantsKeyboardFocus(false);
+        editor.setCaretVisible(false);
+        addAndMakeVisible(editor);
+        refreshEditorColours();
+    }
+
+    void setDarkMode(bool dark) { isDarkMode = dark; refreshEditorColours(); repaint(); }
+    void setSelected(bool sel)  { selected = sel; repaint(); }
+    bool getSelected() const    { return selected; }
+
+    void paint(juce::Graphics& g) override
+    {
+        // Chrome identical to CharacterOptionButton (selected == toggled).
+        auto area = getLocalBounds().toFloat().reduced(1.2f);
+        auto baseFill = isDarkMode ? juce::Colours::black : GoodMeterLookAndFeel::bgMain;
+        const auto outline = selected ? accent
+                                      : (isDarkMode ? juce::Colours::white.withAlpha(0.16f)
+                                                    : GoodMeterLookAndFeel::textMain.withAlpha(0.16f));
+        const auto textCol = isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                        : GoodMeterLookAndFeel::textMain;
+        if (selected)
+            baseFill = accent.withAlpha(isDarkMode ? 0.18f : 0.08f);
+
+        const float radius = isDarkMode ? 9.0f : 12.0f;
+        g.setColour(baseFill);
+        g.fillRoundedRectangle(area, radius);
+        g.setColour(outline);
+        g.drawRoundedRectangle(area, radius, selected ? 2.2f : 1.2f);
+
+        g.setColour(selected ? accent.withAlpha(isDarkMode ? 0.55f : 0.35f)
+                             : textCol.withAlpha(isDarkMode ? 0.16f : 0.10f));
+        g.drawLine(area.getX() + 12.0f, area.getY() + 10.0f,
+                   area.getX() + 30.0f, area.getY() + 10.0f, 1.0f);
+
+        auto dotArea = area.removeFromTop(20.0f).removeFromLeft(20.0f).reduced(6.0f);
+        g.setColour(accent.withAlpha(selected ? 1.0f : 0.4f));
+        g.fillEllipse(dotArea);
+    }
+
+    void resized() override
+    {
+        editor.setBounds(getLocalBounds().reduced(12, 8));
+    }
+
+    void mouseDown(const juce::MouseEvent&) override        { if (onTap)  onTap(); }
+    void mouseDoubleClick(const juce::MouseEvent&) override { if (onEdit) onEdit(); }
+
+    std::function<void()> onTap;    // single tap: select this naming mode
+    std::function<void()> onEdit;   // double tap: open the edit dialog
+    juce::TextEditor editor;
+
+private:
+    void refreshEditorColours()
+    {
+        const auto textCol = isDarkMode ? juce::Colour(0xFFF6EEE3).withAlpha(0.96f)
+                                        : GoodMeterLookAndFeel::textMain;
+        editor.setColour(juce::TextEditor::textColourId, textCol);
+        editor.setColour(juce::CaretComponent::caretColourId, accent);
+        editor.applyColourToAllText(textCol);
+    }
+
+    juce::Colour accent;
+    bool isDarkMode = false;
+    bool selected = false;
+};
+
+//==============================================================================
+/** Game-rename-style centered dialog for editing the recording prefix: a big
+    text box in the upper third of the screen (clear of the keyboard), a live
+    view of what is being typed, and CANCEL / SAVE pills. */
+class PrefixEditDialog : public juce::Component
+{
+public:
+    PrefixEditDialog()
+    {
+        editor.setJustification(juce::Justification::centred);
+        editor.setInputRestrictions(10);
+        editor.setSelectAllWhenFocused(true);
+        editor.onReturnKey = [this]() { commit(); };
+        editor.onEscapeKey = [this]() { dismiss(); };
+        editor.onTextChange = [this]()
+        {
+            const auto t = editor.getText();
+            const auto legal = t.removeCharacters("\\/:*?\"<>|");
+            if (legal != t)
+                editor.setText(legal, juce::dontSendNotification);
+        };
+        addAndMakeVisible(editor);
+        setVisible(false);
+    }
+
+    std::function<void(const juce::String&)> onSave;
+
+    void open(const juce::String& current, bool dark)
+    {
+        isDark = dark;
+        const auto textCol = dark ? juce::Colour(0xFFF6EEE3) : GoodMeterLookAndFeel::textMain;
+        editor.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(20.0f, juce::Font::bold));
+        editor.setColour(juce::TextEditor::textColourId, textCol);
+        editor.setColour(juce::TextEditor::backgroundColourId,
+                         dark ? juce::Colours::white.withAlpha(0.08f)
+                              : juce::Colours::black.withAlpha(0.05f));
+        editor.setColour(juce::TextEditor::outlineColourId, textCol.withAlpha(0.30f));
+        editor.setColour(juce::TextEditor::focusedOutlineColourId, GoodMeterLookAndFeel::accentYellow);
+        editor.setColour(juce::CaretComponent::caretColourId, GoodMeterLookAndFeel::accentYellow);
+        editor.setText(current, juce::dontSendNotification);
+        editor.applyColourToAllText(textCol);
+        // 输入录音号前缀
+        editor.setTextToShowWhenEmpty(
+            juce::String::fromUTF8("\xE8\xBE\x93\xE5\x85\xA5\xE5\xBD\x95\xE9\x9F\xB3\xE5\x8F\xB7\xE5\x89\x8D\xE7\xBC\x80"),
+            textCol.withAlpha(0.35f));
+        setVisible(true);
+        toFront(true);
+        openedAt = juce::Time::getMillisecondCounter();
+        editor.grabKeyboardFocus();
+        repaint();
+    }
+
+    void resized() override
+    {
+        card = juce::Rectangle<float>((float) juce::jmin(340, getWidth() - 32), 186.0f)
+                   .withCentre({ (float) getWidth() * 0.5f, 0.0f })
+                   .withY(juce::jmax(12.0f, (float) getHeight() * 0.09f));
+
+        auto inner = card.reduced(18.0f);
+        inner.removeFromTop(24.0f);   // title
+        inner.removeFromTop(6.0f);
+        editor.setBounds(inner.removeFromTop(44.0f).toNearestInt());
+        inner.removeFromTop(6.0f);
+        hintArea = inner.removeFromTop(14.0f);
+        inner.removeFromTop(10.0f);
+        auto btnRow = inner.removeFromTop(38.0f);
+        const float bw = (btnRow.getWidth() - 12.0f) * 0.5f;
+        cancelRect = btnRow.removeFromLeft(bw);
+        btnRow.removeFromLeft(12.0f);
+        saveRect = btnRow;
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colours::black.withAlpha(0.45f));    // scrim
+
+        const auto bgCol = isDark ? juce::Colour(0xFF15181E) : juce::Colours::white;
+        const auto textCol = isDark ? juce::Colour(0xFFF6EEE3) : GoodMeterLookAndFeel::textMain;
+        g.setColour(bgCol);
+        g.fillRoundedRectangle(card, 14.0f);
+        g.setColour(textCol.withAlpha(0.25f));
+        g.drawRoundedRectangle(card, 14.0f, 1.2f);
+
+        // Title: 录音号前缀
+        g.setColour(textCol);
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(14.5f, juce::Font::bold));
+        g.drawText(juce::String::fromUTF8("\xE5\xBD\x95\xE9\x9F\xB3\xE5\x8F\xB7\xE5\x89\x8D\xE7\xBC\x80"),
+                   card.reduced(18.0f).removeFromTop(24.0f),
+                   juce::Justification::centred, false);
+
+        // Hint: 留空=年月日命名
+        g.setColour(textCol.withAlpha(0.5f));
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(11.0f));
+        g.drawText(juce::String::fromUTF8("\xE7\x95\x99\xE7\xA9\xBA=\xE5\xB9\xB4\xE6\x9C\x88\xE6\x97\xA5\xE5\x91\xBD\xE5\x90\x8D"),
+                   hintArea, juce::Justification::centred, false);
+
+        // CANCEL (outline pill) / SAVE (filled accent pill)
+        g.setColour(textCol.withAlpha(0.45f));
+        g.drawRoundedRectangle(cancelRect, cancelRect.getHeight() * 0.5f, 1.4f);
+        g.setColour(textCol.withAlpha(0.85f));
+        g.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(14.0f, juce::Font::bold));
+        g.drawText("CANCEL", cancelRect, juce::Justification::centred, false);
+
+        g.setColour(GoodMeterLookAndFeel::accentYellow);
+        g.fillRoundedRectangle(saveRect, saveRect.getHeight() * 0.5f);
+        g.setColour(juce::Colour(0xFF2A2A35));
+        g.drawText("SAVE", saveRect, juce::Justification::centred, false);
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        const auto p = e.position;
+        if (saveRect.contains(p))          commit();
+        else if (cancelRect.contains(p))   dismiss();
+        else if (! card.contains(p))
+        {
+            // Guard: the 2nd tap of a fast double-tap that opened this dialog
+            // lands on the scrim — don't let it instantly cancel.
+            if (juce::Time::getMillisecondCounter() - openedAt > 350)
+                dismiss();
+        }
+    }
+
+private:
+    void commit()
+    {
+        const auto text = editor.getText().trim();
+        dismiss();
+        if (onSave)
+            onSave(text);
+    }
+
+    void dismiss()
+    {
+        setVisible(false);
+        if (auto* parent = getParentComponent())
+            parent->unfocusAllComponents();   // put the iOS keyboard away
+    }
+
+    juce::TextEditor editor;
+    juce::Rectangle<float> card, hintArea, cancelRect, saveRect;
+    juce::uint32 openedAt = 0;
+    bool isDark = false;
+};
+
 class CapsuleToggleSwitch : public juce::Button
 {
 public:
@@ -156,6 +384,8 @@ public:
     std::function<void(bool show)> onShowClipNamesChanged;
     std::function<void(bool enabled)> onExportFeedbackWithMidiChanged;
     std::function<void(bool isDark)> onThemeChanged;         // false=Light, true=Dark
+    std::function<void(int mode)> onRecNamingModeChanged;    // 0=YYMMDD-001, 1=custom prefix-001
+    std::function<void(const juce::String&)> onRecPrefixChanged;
 
     SettingsPageComponent()
     {
@@ -335,6 +565,83 @@ public:
         importHintLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
         addAndMakeVisible(importHintLabel);
 
+        // ── Section: Recording file names ──
+        recNameSectionLabel.setText("REC FILE NAME", juce::dontSendNotification);
+        recNameSectionLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(12.5f, juce::Font::bold));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(recNameSectionLabel);
+        recNameSectionLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
+        addAndMakeVisible(recNameSectionLabel);
+
+        // One button ("年月日" = date-numbered) + one prefix box. Typing a
+        // prefix switches to prefix mode automatically; clearing it (or
+        // tapping the date button) returns to date mode.
+        recNameDateButton.setName(juce::String::fromUTF8("\xE5\xB9\xB4\xE6\x9C\x88\xE6\x97\xA5"));
+        recNameDateButton.setToggleState(true, juce::dontSendNotification);
+        recNameDateButton.onClick = [this]()
+        {
+            recNameDateButton.setToggleState(true, juce::dontSendNotification);
+            recPrefixField.setSelected(false);
+            unfocusAllComponents(); // also dismisses the keyboard
+            if (onRecNamingModeChanged)
+                onRecNamingModeChanged(0);
+            updateButtonStyles();
+        };
+        addAndMakeVisible(recNameDateButton);
+
+        // The inline field is a display-only entry point: tapping it opens
+        // the centered edit dialog (the keyboard used to fully cover this
+        // bottom-of-page field while typing). Max 10 chars, CJK allowed.
+        recPrefixField.editor.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(16.0f, juce::Font::bold));
+        // 输入录音号前缀
+        recPrefixField.editor.setTextToShowWhenEmpty(
+            juce::String::fromUTF8("\xE8\xBE\x93\xE5\x85\xA5\xE5\xBD\x95\xE9\x9F\xB3\xE5\x8F\xB7\xE5\x89\x8D\xE7\xBC\x80"),
+            GoodMeterLookAndFeel::textMuted);
+        recPrefixField.onTap = [this]()
+        {
+            // Single tap = just switch to prefix naming (mirrors the DATE
+            // button). With no prefix set yet there is nothing to select,
+            // so fall through to editing.
+            const auto text = recPrefixField.editor.getText().trim();
+            if (text.isEmpty())
+            {
+                prefixDialog.open(text, isDarkTheme);
+                return;
+            }
+            recPrefixField.setSelected(true);
+            recNameDateButton.setToggleState(false, juce::dontSendNotification);
+            if (onRecPrefixChanged)
+                onRecPrefixChanged(text);
+            if (onRecNamingModeChanged)
+                onRecNamingModeChanged(1);
+            updateButtonStyles();
+        };
+        recPrefixField.onEdit = [this]()
+        {
+            prefixDialog.open(recPrefixField.editor.getText(), isDarkTheme);
+        };
+        addAndMakeVisible(recPrefixField);
+
+        prefixDialog.onSave = [this](const juce::String& text)
+        {
+            const bool custom = text.isNotEmpty();
+            recPrefixField.editor.setText(text, juce::dontSendNotification);
+            recPrefixField.setSelected(custom);
+            recNameDateButton.setToggleState(!custom, juce::dontSendNotification);
+            if (onRecPrefixChanged)
+                onRecPrefixChanged(text);
+            if (onRecNamingModeChanged)
+                onRecNamingModeChanged(custom ? 1 : 0);
+            updateButtonStyles();
+        };
+        addChildComponent(prefixDialog);
+
+        recNameHintLabel.setText("260704-001 / yrhb-001",
+                                 juce::dontSendNotification);
+        recNameHintLabel.setFont(GoodMeterLookAndFeel::iosEnglishMonoFont(12.0f));
+        GoodMeterLookAndFeel::markAsIOSEnglishMono(recNameHintLabel);
+        recNameHintLabel.setColour(juce::Label::textColourId, GoodMeterLookAndFeel::textMuted);
+        addAndMakeVisible(recNameHintLabel);
+
         updateButtonStyles();
     }
 
@@ -390,50 +697,52 @@ public:
         drawSep(sectionDisplayY);
         drawSep(sectionLoudnessY);
         drawSep(sectionImportY);
+        drawSep(sectionRecNameY);
     }
 
     void resized() override
     {
         auto bounds = getLocalBounds();
+        prefixDialog.setBounds(bounds);   // full-page overlay (scrim + card)
         auto area = bounds.reduced(20, 0);
 
-        area.removeFromTop(52);
+        area.removeFromTop(44);
 
         // ── Theme section ──
         sectionThemeY = area.getY();
-        area.removeFromTop(8);
-        themeLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
+        area.removeFromTop(6);
+        themeLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
 
-        auto themeRow = area.removeFromTop(52);
+        auto themeRow = area.removeFromTop(46);
         int themeBtnW = (themeRow.getWidth() - 12) / 2;
         lightThemeButton.setBounds(themeRow.removeFromLeft(themeBtnW));
         themeRow.removeFromLeft(12);
         darkThemeButton.setBounds(themeRow.removeFromLeft(themeBtnW));
 
-        area.removeFromTop(16);
+        area.removeFromTop(10);
 
         // ── Character section ──
         sectionCharacterY = area.getY();
-        area.removeFromTop(8);
-        characterLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
+        area.removeFromTop(6);
+        characterLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
 
-        auto skinRow = area.removeFromTop(88);
+        auto skinRow = area.removeFromTop(76);
         int btnW = (skinRow.getWidth() - 12) / 2;
         nonoButton.setBounds(skinRow.removeFromLeft(btnW));
         skinRow.removeFromLeft(12);
         guobaButton.setBounds(skinRow.removeFromLeft(btnW));
 
-        area.removeFromTop(16);
+        area.removeFromTop(10);
 
         // ── Display section ──
         sectionDisplayY = area.getY();
-        area.removeFromTop(8);
-        displaySectionLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
+        area.removeFromTop(6);
+        displaySectionLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
 
-        auto displayRow = area.removeFromTop(78);
+        auto displayRow = area.removeFromTop(62);
         const int displayGap = 8;
         int displayBtnW = (displayRow.getWidth() - displayGap * 2) / 3;
         singleModeButton.setBounds(displayRow.removeFromLeft(displayBtnW));
@@ -442,53 +751,71 @@ public:
         displayRow.removeFromLeft(displayGap);
         eightUpModeButton.setBounds(displayRow.removeFromLeft(displayBtnW));
 
-        area.removeFromTop(16);
+        area.removeFromTop(10);
 
         // ── Loudness section ──
         sectionLoudnessY = area.getY();
-        area.removeFromTop(8);
-        loudnessSectionLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
+        area.removeFromTop(6);
+        loudnessSectionLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
 
         const int standardGap = 8;
-        const int standardBtnH = 42;
+        const int standardBtnH = 38;
         const int standardBtnW = (area.getWidth() - standardGap) / 2;
 
         auto row1 = area.removeFromTop(standardBtnH);
         streamingButton.setBounds(row1.removeFromLeft(standardBtnW));
         row1.removeFromLeft(standardGap);
         ebuButton.setBounds(row1);
-        area.removeFromTop(8);
+        area.removeFromTop(6);
 
         auto row2 = area.removeFromTop(standardBtnH);
         atscButton.setBounds(row2.removeFromLeft(standardBtnW));
         row2.removeFromLeft(standardGap);
         netflixButton.setBounds(row2);
-        area.removeFromTop(8);
+        area.removeFromTop(6);
 
         auto row3 = area.removeFromTop(standardBtnH);
         youtubeButton.setBounds(row3.removeFromLeft(standardBtnW));
         row3.removeFromLeft(standardGap);
         douyinButton.setBounds(row3);
-        area.removeFromTop(8);
+        area.removeFromTop(6);
 
         auto row4 = area.removeFromTop(standardBtnH);
         bilibiliButton.setBounds(row4.removeFromLeft(standardBtnW));
 
-        area.removeFromTop(16);
+        area.removeFromTop(10);
 
         // ── Import section ──
         sectionImportY = area.getY();
-        area.removeFromTop(8);
-        importSectionLabel.setBounds(area.removeFromTop(20));
-        area.removeFromTop(8);
-        showImportToggle.setBounds(area.removeFromTop(36));
-        area.removeFromTop(8);
-        showClipNamesToggle.setBounds(area.removeFromTop(36));
-        area.removeFromTop(8);
-        exportFeedbackWithMidiToggle.setBounds(area.removeFromTop(36));
-        area.removeFromTop(4);
-        importHintLabel.setBounds(area.removeFromTop(20));
+        area.removeFromTop(6);
+        importSectionLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
+        showImportToggle.setBounds(area.removeFromTop(32));
+        area.removeFromTop(6);
+        showClipNamesToggle.setBounds(area.removeFromTop(32));
+        area.removeFromTop(6);
+        exportFeedbackWithMidiToggle.setBounds(area.removeFromTop(32));
+        area.removeFromTop(2);
+        importHintLabel.setBounds(area.removeFromTop(18));
+
+        area.removeFromTop(10);
+
+        // ── Recording file-name section ──
+        sectionRecNameY = area.getY();
+        area.removeFromTop(6);
+        recNameSectionLabel.setBounds(area.removeFromTop(18));
+        area.removeFromTop(6);
+
+        auto recRow = area.removeFromTop(44);
+        const int recGap = 8;
+        const int recBtnW = juce::roundToInt((float) recRow.getWidth() * 0.38f);
+        recNameDateButton.setBounds(recRow.removeFromLeft(recBtnW));
+        recRow.removeFromLeft(recGap);
+        recPrefixField.setBounds(recRow);
+
+        area.removeFromTop(2);
+        recNameHintLabel.setBounds(area.removeFromTop(18));
     }
 
     /** Sync current skin to button state (called from outside) */
@@ -539,6 +866,22 @@ public:
         updateButtonStyles();
     }
 
+    /** Sync recording file-name scheme (0=date, 1=custom prefix). */
+    void setRecNaming(int mode, const juce::String& prefix)
+    {
+        recNameDateButton.setToggleState(mode == 0, juce::dontSendNotification);
+        recPrefixField.editor.setText(mode == 1 ? prefix : juce::String(), juce::dontSendNotification);
+        recPrefixField.setSelected(mode == 1);
+        updateButtonStyles();
+    }
+
+    /** Tap anywhere outside the prefix box: drop focus so the iOS keyboard
+        goes away (it otherwise stays up — very annoying). */
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        unfocusAllComponents();
+    }
+
     void setDarkTheme(bool dark)
     {
         isDarkTheme = dark;
@@ -581,6 +924,11 @@ private:
         douyinButton.setDarkMode(isDarkTheme);
         bilibiliButton.setDarkMode(isDarkTheme);
 
+        recNameSectionLabel.setColour(juce::Label::textColourId, mutedColor);
+        recNameHintLabel.setColour(juce::Label::textColourId, mutedColor);
+        recNameDateButton.setDarkMode(isDarkTheme);
+        recPrefixField.setDarkMode(isDarkTheme);
+
         updateButtonStyles();
         repaint();
     }
@@ -600,6 +948,8 @@ private:
         youtubeButton.repaint();
         douyinButton.repaint();
         bilibiliButton.repaint();
+        recNameDateButton.repaint();
+        recPrefixField.repaint();
     }
 
 #if MARATHON_ART_STYLE
@@ -658,11 +1008,11 @@ private:
 #endif
 
     // Layout tracking
-    int sectionThemeY = 0;
-    int sectionCharacterY = 0;
+    int sectionThemeY = 0;    int sectionCharacterY = 0;
     int sectionDisplayY = 0;
     int sectionLoudnessY = 0;
     int sectionImportY = 0;
+    int sectionRecNameY = 0;
 
     // Theme state
     bool isDarkTheme = false;
@@ -699,4 +1049,10 @@ private:
     CapsuleToggleSwitch showClipNamesToggle { "Show Clip Names" };
     CapsuleToggleSwitch exportFeedbackWithMidiToggle { "EXPORT FEEDBACK WITH MIDI" };
     juce::Label importHintLabel;
+
+    juce::Label recNameSectionLabel;
+    CharacterOptionButton recNameDateButton { "DATE", GoodMeterLookAndFeel::accentGreen };
+    PrefixOptionField recPrefixField { GoodMeterLookAndFeel::accentYellow };
+    PrefixEditDialog prefixDialog;
+    juce::Label recNameHintLabel;
 };

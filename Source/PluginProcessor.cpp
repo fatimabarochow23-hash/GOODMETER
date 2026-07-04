@@ -319,8 +319,16 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
     const float* channelDataL = buffer.getReadPointer(bestChannelL);
     const float* channelDataR = buffer.getReadPointer(bestChannelR);
 #else
-    // Plugin/iOS: Use first stereo pair (DAW provides correct routing)
-    const int numChannels = juce::jmin(2, totalNumInputChannels);
+    // Plugin/iOS: use the first stereo pair. IMPORTANT: trust the BUFFER's
+    // actual channel count, never the bus config — iOS capture delivers
+    // transient MONO buffers while AVCapture reconfigures the session (ambeo
+    // start, route changes). Reading channel 1 of a 1-channel AudioBuffer
+    // returns JUCE's null channel-list terminator, which was the whole
+    // SIGSEGV-at-0x0 crash family (ips-verified: crash survived locking fixes
+    // because it never was a race — it was this).
+    const int numChannels = juce::jmin(2, buffer.getNumChannels());
+    if (numChannels <= 0 || numSamples <= 0)
+        return;
     const float* channelDataL = buffer.getReadPointer(0);
     const float* channelDataR = numChannels > 1 ? buffer.getReadPointer(1) : channelDataL;
 #endif
@@ -408,8 +416,17 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 #if JUCE_IOS
         if (spectrogramSamplesSinceLastPush >= spectrogramHopSize)
         {
-            runFftFromRing(fftRingL);
-            fftFifoSpectrogramL.push(fftWorkBuffer.data(), fftSize / 2);
+            // Spectrogram gets its own SHORT (1024-sample, ~21ms) window over
+            // the most recent samples: crisp transients like AUDIO LAB,
+            // instead of the 4096 window smearing hits across ~8 columns.
+            for (int j = 0; j < spectroFftSize; ++j)
+                spectroWorkBuffer[(size_t) j] =
+                    fftRingL[(size_t) ((fftRingIndex + fftSize - spectroFftSize + j) % fftSize)];
+
+            std::fill(spectroWorkBuffer.begin() + spectroFftSize, spectroWorkBuffer.end(), 0.0f);
+            spectroWindow.multiplyWithWindowingTable(spectroWorkBuffer.data(), spectroFftSize);
+            spectroFft.performFrequencyOnlyForwardTransform(spectroWorkBuffer.data());
+            fftFifoSpectrogramL.push(spectroWorkBuffer.data(), spectroFftSize / 2);
             spectrogramSamplesSinceLastPush = 0;
         }
 #endif
@@ -422,10 +439,96 @@ void GOODMETERAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juc
 #if ! JUCE_IOS
             fftFifoSpectrogramL.push(fftWorkBuffer.data(), fftSize / 2);
 #endif
+#if JUCE_IOS
+            std::copy(fftWorkBuffer.begin(), fftWorkBuffer.begin() + fftSize / 2,
+                      spatialTempL.begin());
+#endif
 
             // Same for R channel
             runFftFromRing(fftRingR);
             fftFifoR.push(fftWorkBuffer.data(), fftSize / 2);
+
+#if JUCE_IOS
+            // Live spatial-impression grid — Audio Doctor recipe: pan from
+            // per-band dB balance (±30 dB = hard pan) scaled by pan authority,
+            // energy spread as a Gaussian whose sigma follows the window's
+            // Side/Mid ratio + correlation (widthIndex). The old per-bin point
+            // placement collapsed correlated stereo into one centre column.
+            {
+                spatialGridScratch.fill(0.0f);
+                const float nyq = currentSampleRate > 0.0 ? (float) (currentSampleRate * 0.5) : 24000.0f;
+                const float minHz = 100.0f, maxHz = 20000.0f;
+                const float invLogRange = 1.0f / std::log(maxHz / minHz);
+                const int halfBins = fftSize / 2;
+
+                // One pass over the analysis window: correlation + Side/Mid.
+                float sL2 = 1.0e-12f, sR2 = 1.0e-12f, sLR = 0.0f;
+                for (int j = 0; j < fftSize; ++j)
+                {
+                    const float l = fftRingL[(size_t) j], r = fftRingR[(size_t) j];
+                    sL2 += l * l; sR2 += r * r; sLR += l * r;
+                }
+                const float corr = juce::jlimit(-1.0f, 1.0f, sLR / std::sqrt(sL2 * sR2));
+                const float midE  = juce::jmax(0.0f, sL2 + sR2 + 2.0f * sLR);
+                const float sideE = juce::jmax(0.0f, sL2 + sR2 - 2.0f * sLR);
+                const float sideWidth = juce::jlimit(0.0f, 1.0f, 2.0f * sideE / (midE + sideE + 1.0e-12f));
+                const float corrWidth = juce::jlimit(0.0f, 1.0f, (1.0f - corr) * 0.5f);
+                const float gBalDb = 10.0f * std::log10(sR2 / sL2);
+                const float balWidth = juce::jlimit(0.0f, 1.0f, std::abs(gBalDb) / 18.0f);
+                const float widthIndex = juce::jlimit(0.0f, 1.0f,
+                    sideWidth * 0.72f + corrWidth * 0.20f + balWidth * 0.08f);
+                const float antiPhase = juce::jlimit(0.0f, 1.0f, -corr);
+
+                std::array<float, (size_t) spatialFreqSteps> bandL {}, bandR {}, bandE {};
+                for (int b = 1; b < halfBins; ++b)
+                {
+                    const float hz = (float) b * nyq / (float) halfBins;
+                    if (hz < minHz) continue;
+                    if (hz > maxHz) break;
+
+                    const float mL = spatialTempL[(size_t) b];
+                    const float mR = fftWorkBuffer[(size_t) b];
+                    const float sum = mL + mR;
+                    if (sum < 1.0e-6f) continue;
+
+                    const float fN = std::log(hz / minHz) * invLogRange;
+                    const int fi = juce::jlimit(0, spatialFreqSteps - 1, (int) (fN * (float) spatialFreqSteps));
+                    bandL[(size_t) fi] += mL;
+                    bandR[(size_t) fi] += mR;
+                    bandE[(size_t) fi] += sum * sum;
+                }
+
+                for (int fi = 0; fi < spatialFreqSteps; ++fi)
+                {
+                    const float e = bandE[(size_t) fi];
+                    if (e <= 0.0f) continue;
+
+                    const float balanceDb = juce::jlimit(-30.0f, 30.0f,
+                        20.0f * std::log10((bandR[(size_t) fi] + 1.0e-9f)
+                                         / (bandL[(size_t) fi] + 1.0e-9f)));
+                    const float rawPan = 0.5f + balanceDb / 60.0f;
+                    const float authority = juce::jlimit(0.12f, 0.92f,
+                        0.18f + std::pow(std::abs(balanceDb) / 30.0f, 0.72f) * 0.72f
+                              - antiPhase * 0.12f);
+                    const float pan = 0.5f + (rawPan - 0.5f) * authority;
+                    const float spread = juce::jlimit(0.018f, 0.235f,
+                        0.022f + std::pow(widthIndex, 1.32f) * 0.150f
+                               + corrWidth * 0.050f
+                               - (std::abs(balanceDb) / 30.0f) * 0.022f);
+
+                    for (int x = 0; x < spatialPanSteps; ++x)
+                    {
+                        const float xN = (float) x / (float) (spatialPanSteps - 1);
+                        const float d = (xN - pan) / spread;
+                        if (d < -3.2f || d > 3.2f) continue;
+                        spatialGridScratch[(size_t) (fi * spatialPanSteps + x)]
+                            += e * std::exp(-0.5f * d * d);
+                    }
+                }
+
+                spatialGridFifo.push(spatialGridScratch.data(), spatialPanSteps * spatialFreqSteps);
+            }
+#endif
 
             fftSamplesSinceLastPush = 0;
         }

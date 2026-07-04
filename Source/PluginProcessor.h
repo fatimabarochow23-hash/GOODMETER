@@ -16,6 +16,9 @@
 #include <atomic>
 #include "AudioRecorder.h"
 #include "AudioHistoryBuffer.h"
+#if JUCE_IOS
+#include "iOS/FOADoaAnalyzer.h"
+#endif
 #if JUCE_MAC && JucePlugin_Build_Standalone
 #include "SystemAudioCapture.h"
 #endif
@@ -208,6 +211,12 @@ public:
     // Retroactive recording — always-on audio history buffer
     AudioHistoryBuffer audioHistoryBuffer;
 
+    // iOS: true while the built-in-mic spatial recorder is capturing. Drives the
+    // character's recording-face animation and the on-screen recording border,
+    // and lets meters treat recorder-fed audio as "active". Stays false on
+    // desktop/plugin builds.
+    std::atomic<bool> iosRecordingActive { false };
+
     // Rewind duration setting (seconds): 30, 60, 120, 300
     std::atomic<int> rewindSeconds { 60 };
 
@@ -224,6 +233,52 @@ public:
     LockFreeFIFO<float, 256> fftFifoR;            // Spectrum analyzer
     LockFreeFIFO<float, 256> fftFifoSpectrogramL; // Spectrogram (independent)
 
+#if JUCE_IOS
+    // Live Spatial Impression (pan x freq energy grid, ported from Audio
+    // Doctor): built per FFT hop on the audio thread, consumed by
+    // SpatialImpressionComponent. pan 0=L .. 1=R, freq log 100Hz..20kHz.
+    static constexpr int spatialPanSteps = 25;
+    static constexpr int spatialFreqSteps = 36;
+    LockFreeFIFO<float, 64> spatialGridFifo;      // slots hold 25*36=900 floats
+
+    // FOA direction-of-arrival analyzer (DOA MAP card + virtual mic aiming).
+    // Fed by the playback FOA path and the capture tap; consumed by the UI.
+    FOADoaAnalyzer foaDoa;
+
+    // TRACKS card: per-channel peak-envelope rings (Pro Tools style lanes).
+    // Single producer at a time (playback OR capture), UI reads racily (ok).
+    struct TrackScope
+    {
+        static constexpr int cap = 512;
+        static constexpr int hop = 256;   // one envelope point per 256 samples
+        std::atomic<int> numChannels { 0 };
+        std::atomic<int> writeIndex { 0 };
+        std::array<std::array<float, (size_t) cap>, 4> lanes {};
+
+        void push(const float* const* chans, int nCh, int nSamps)
+        {
+            nCh = juce::jmin(4, nCh);
+            if (nCh <= 0 || nSamps <= 0) return;
+            numChannels.store(nCh, std::memory_order_relaxed);
+            for (int off = 0; off < nSamps; off += hop)
+            {
+                const int n = juce::jmin(hop, nSamps - off);
+                const int w = writeIndex.load(std::memory_order_relaxed);
+                for (int c = 0; c < nCh; ++c)
+                {
+                    float pk = 0.0f;
+                    const float* p = chans[c] + off;
+                    for (int i = 0; i < n; ++i)
+                        pk = juce::jmax(pk, std::abs(p[i]));
+                    lanes[(size_t) c][(size_t) (w % cap)] = pk;
+                }
+                writeIndex.store(w + 1, std::memory_order_relaxed);
+            }
+        }
+    };
+    TrackScope trackScope;
+#endif
+
     // Stereo Image Sample Buffer (for Goniometer/Lissajous)
     // Stores recent raw (L, R) sample pairs for XY plotting
     static constexpr int stereoSampleBufferSize = 1024;
@@ -233,6 +288,11 @@ public:
     // FFT Engine
     static constexpr int fftOrder = 12; // 2^12 = 4096
     static constexpr int fftSize = 1 << fftOrder;
+#if JUCE_IOS
+    static constexpr int spectrogramSourceFftSize = 1 << 10; // 1024
+#else
+    static constexpr int spectrogramSourceFftSize = fftSize;
+#endif
 
     /**
      * Calculate LRA in real-time (EBU Tech 3342)
@@ -292,6 +352,21 @@ private:
     // FFT engine
     juce::dsp::FFT fft { fftOrder };
     juce::dsp::WindowingFunction<float> window { fftSize, juce::dsp::WindowingFunction<float>::hann };
+
+#if JUCE_IOS
+    // Dedicated SHORT window for the spectrogram (matches AUDIO LAB's 1024 /
+    // ~21ms). The shared 4096 window (~85ms) smeared every transient across
+    // ~8 columns — the "blurry spectrogram" complaint.
+    static constexpr int spectroFftOrder = 10;
+    static constexpr int spectroFftSize = spectrogramSourceFftSize;
+    juce::dsp::FFT spectroFft { spectroFftOrder };
+    juce::dsp::WindowingFunction<float> spectroWindow { spectroFftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::array<float, spectroFftSize * 2> spectroWorkBuffer {};
+
+    // Scratch for the live spatial-impression grid (audio thread only)
+    std::array<float, fftSize / 2> spatialTempL {};
+    std::array<float, spatialPanSteps * spatialFreqSteps> spatialGridScratch {};
+#endif
 
     // 🎯 Stereo sample accumulation buffers (batch push to FIFO)
     std::array<float, 512> tempStereoBufL;

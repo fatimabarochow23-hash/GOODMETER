@@ -18,6 +18,7 @@
 #include "../VideoAudioExtractor.h"
 #include "../GoodMeterLookAndFeel.h"
 #include "iOSAudioEngine.h"
+#include "AmbisonicRecorder.h"
 #include "MarkerModel.h"
 #include "DigitalTimecodeRenderer.h"
 #include "IOSPhotoVideoPicker.h"
@@ -45,6 +46,28 @@ public:
 
     std::function<void(const juce::File&)> onImportedMediaCopied;
     std::function<void()> onMarkerDataChanged;
+    // Fired only after a spatial recording finishes, so the root component can
+    // jump to the media (audio) page for immediate playback. Manual imports do
+    // NOT fire this — they stay on the current page by design.
+    std::function<void()> onRecordingRequestsMediaPage;
+    // Fired when spatial recording starts (true) / stops (false): root shows the
+    // pulsing recording border and switches to the meters page during capture.
+    std::function<void(bool active)> onRecordingStateChanged;
+
+    // Root-facing recording controls. The STOP button lives on the root
+    // component so it stays visible after we auto-switch to the meters page
+    // during capture; the root calls these.
+    void stopSpatialRecordingFromUI() { stopAmbisonicRecording(); }
+    bool isSpatialRecording() const { return recordingActive; }
+    juce::String getRecordingElapsedText() const { return recordingElapsedText; }
+    bool isGuobaSkin() const { return holoNono != nullptr && holoNono->isGuoba(); }
+
+    /** Recording file-name scheme from Settings: 0 = YYMMDD-001, 1 = prefix-001. */
+    void setRecordingNaming(int mode, const juce::String& prefix)
+    {
+        recNamingMode = mode;
+        recCustomPrefix = prefix.trim();
+    }
 
     NonoPageComponent(GOODMETERAudioProcessor& proc, iOSAudioEngine& engine)
         : processor(proc), audioEngine(engine)
@@ -130,6 +153,68 @@ public:
         fileNameLabel.setVisible(false);
         addChildComponent(fileNameLabel);
 
+        // Spatial recorder (FOA on iPhone 16+/iOS 26, stereo fallback elsewhere).
+        // Started via a long-press-then-swipe gesture on Guoba (see the
+        // onRecord* callbacks below), not a button. Feeds the processor meters
+        // live while capturing so the audio page + Guoba's face react.
+        ambiRecorder = std::make_unique<AmbisonicRecorder>();
+        ambiRecorder->onCaptureBlock = [this](const juce::AudioBuffer<float>& buf)
+        {
+            // Capture-queue thread. MUST hold the engine's audio-callback lock:
+            // starting an ambeo take reconfigures the shared audio session,
+            // which can restart the playback device; the restart re-runs
+            // prepareToPlay (reallocating meter DSP buffers) under that lock.
+            // Feeding processBlock unlocked raced it -> SIGSEGV (ips-verified).
+            const juce::ScopedLock sl(audioEngine.getAudioCallbackLock());
+            juce::MidiBuffer midi;
+            processor.processBlock(const_cast<juce::AudioBuffer<float>&>(buf), midi);
+
+            // FOA takes also feed the DOA MAP card (ACN order W,Y,Z,X)
+            if (buf.getNumChannels() >= 4)
+                processor.foaDoa.process(buf.getReadPointer(0), buf.getReadPointer(1),
+                                         buf.getReadPointer(2), buf.getReadPointer(3),
+                                         buf.getNumSamples());
+
+            // TRACKS card: recording lanes (FOA = 4, stereo = 2)
+            {
+                const int nCh = juce::jmin(4, buf.getNumChannels());
+                const float* chs[4] = {};
+                for (int c = 0; c < nCh; ++c)
+                    chs[c] = buf.getReadPointer(c);
+                processor.trackScope.push(chs, nCh, buf.getNumSamples());
+            }
+        };
+
+        holoNono->onRecordArmed = [this]()
+        {
+            recordArmActive = true;
+            recordArmDir = 0;
+            repaint();
+        };
+        holoNono->onRecordSwipe = [this](int dir)
+        {
+            recordArmDir = dir;
+            repaint();
+        };
+        holoNono->onRecordCommitted = [this](bool foaMode)
+        {
+            recordArmActive = false;
+            recordArmDir = 0;
+            startAmbisonicRecording(foaMode);
+        };
+        holoNono->onRecordDisarmed = [this]()
+        {
+            recordArmActive = false;
+            recordArmDir = 0;
+            recordCancelHoverUi = false;
+            repaint();
+        };
+        holoNono->onRecordCancelHover = [this](bool hovering)
+        {
+            recordCancelHoverUi = hovering;
+            repaint();
+        };
+
         startTimerHz(30);  // 30Hz for smooth ripple animation
     }
 
@@ -165,6 +250,88 @@ public:
 #else
         g.fillAll(isDarkTheme ? juce::Colours::black : GoodMeterLookAndFeel::bgMain);
 #endif
+    }
+
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        if (!recordArmActive)
+            return;
+
+        // Long-press armed: split the view into top (STEREO) / bottom (AMBEO)
+        // zones and highlight whichever half the finger is over.
+        auto full = getLocalBounds().toFloat();
+        auto topHalf = full.withHeight(full.getHeight() * 0.5f);
+        auto bottomHalf = full.withTop(full.getCentreY());
+
+        const bool guoba = (holoNono != nullptr && holoNono->isGuoba());
+        const auto accent = guoba ? GoodMeterLookAndFeel::accentYellow
+                                  : GoodMeterLookAndFeel::accentBlue;
+        const auto baseCol = isDarkTheme ? juce::Colours::white : GoodMeterLookAndFeel::textMain;
+        const bool up   = (recordArmDir < 0);
+        const bool down = (recordArmDir > 0);
+
+        // Dim the whole surface a touch, then flood the active zone.
+        // While hovering the cancel target (tube), zones stay unlit.
+        g.setColour(juce::Colours::black.withAlpha(0.12f));
+        g.fillRect(full);
+        if (up && !recordCancelHoverUi)   { g.setColour(accent.withAlpha(0.28f)); g.fillRect(topHalf); }
+        if (down && !recordCancelHoverUi) { g.setColour(accent.withAlpha(0.28f)); g.fillRect(bottomHalf); }
+
+        // Divider line
+        g.setColour(baseCol.withAlpha(0.20f));
+        g.fillRect(full.getX(), full.getCentreY() - 0.5f, full.getWidth(), 1.0f);
+
+        auto drawZone = [&](juce::Rectangle<float> zone, const juce::String& label, bool active)
+        {
+            g.setColour(active ? accent : baseCol.withAlpha(0.70f));
+            g.setFont(juce::Font(juce::FontOptions(active ? 30.0f : 24.0f, juce::Font::bold)));
+            g.drawText(label, zone, juce::Justification::centred, false);
+        };
+
+        drawZone(topHalf,    "STEREO",      up);
+        drawZone(bottomHalf, "AMBEO (FOA)", down);
+
+        // Bottom hint (Chinese) — uses the system font so CJK renders.
+        g.setColour(baseCol.withAlpha(0.75f));
+        g.setFont(juce::Font(juce::FontOptions(14.0f)));
+        g.drawText(juce::String::fromUTF8("\xE9\x95\xBF\xE6\x8C\x89\xE6\xBB\x91\xE5\x8A\xA8\xE4\xBB\xA5\xE9\x80\x89\xE6\x8B\xA9\xE5\xBD\x95\xE5\x88\xB6\xE6\xA0\xBC\xE5\xBC\x8F"),
+                   full.withHeight(24.0f).withY(full.getBottom() - 40.0f),
+                   juce::Justification::centred, false);
+
+        // ── Cancel leader line: tube -> down -> hint at the lower-right ──
+        // (Kept below the tube so the text never sits on the sprite's face.)
+        if (holoNono != nullptr)
+        {
+            const auto tubeRect = holoNono->getTubeRectInParent();
+            if (!tubeRect.isEmpty())
+            {
+                const auto hot = juce::Colour(0xFFFF3B30);
+                const auto lineCol = recordCancelHoverUi ? hot : baseCol.withAlpha(0.65f);
+
+                const juce::Point<float> tubeAnchor(tubeRect.getCentreX(),
+                                                    tubeRect.getBottom() + 3.0f);
+                const juce::Point<float> elbow(tubeAnchor.x, tubeAnchor.y + 26.0f);
+
+                const float textW = 182.0f;
+                const float textH = 24.0f;
+                const float textX = juce::jlimit(8.0f, full.getWidth() - textW - 8.0f,
+                                                 tubeAnchor.x - textW * 0.3f + 20.0f);
+                juce::Rectangle<float> textArea(textX, elbow.y + 8.0f, textW, textH);
+
+                g.setColour(lineCol);
+                g.fillEllipse(tubeAnchor.x - 3.0f, tubeAnchor.y - 3.0f, 6.0f, 6.0f);
+                g.drawLine(tubeAnchor.x, tubeAnchor.y, elbow.x, elbow.y, 1.4f);
+                g.drawLine(elbow.x, elbow.y, textArea.getCentreX(), textArea.getY() - 2.0f, 1.4f);
+
+                // Rounded "cute" CJK font (Yuanti SC); falls back gracefully.
+                g.setFont(juce::Font(juce::FontOptions("Yuanti SC",
+                                                       recordCancelHoverUi ? 15.5f : 14.5f,
+                                                       juce::Font::plain)));
+                // 拖动到此以取消录音
+                g.drawText(juce::String::fromUTF8("\xE6\x8B\x96\xE5\x8A\xA8\xE5\x88\xB0\xE6\xAD\xA4\xE4\xBB\xA5\xE5\x8F\x96\xE6\xB6\x88\xE5\xBD\x95\xE9\x9F\xB3"),
+                           textArea, juce::Justification::centred, false);
+            }
+        }
     }
 
     void resized() override
@@ -309,6 +476,47 @@ public:
 
     void timerCallback() override
     {
+        // Recording elapsed + live peak readout (~3Hz).
+        if (recordingActive && ambiRecorder != nullptr && ambiRecorder->isRecording()
+            && ++recordUiRefreshCounter >= 10)
+        {
+            recordUiRefreshCounter = 0;
+            recordStartWatchdog = 0;
+            const int s = (int) ambiRecorder->getElapsedSeconds();
+            const float pk = juce::jmax(processor.peakLevelL.load(std::memory_order_relaxed),
+                                        processor.peakLevelR.load(std::memory_order_relaxed));
+            const juce::String dbText = pk <= -89.0f ? juce::String("--")
+                                                     : juce::String((int) std::round(pk));
+            recordingElapsedText = juce::String(s / 60) + ":"
+                                   + juce::String(s % 60).paddedLeft('0', 2)
+                                   + "  " + dbText + " dB";
+        }
+
+        // Watchdog: if a take was requested but the recorder never actually
+        // started (async session/permission failure), the UI would otherwise
+        // stay stuck in "recording" forever — which also left the meters-page
+        // transport (progress bar) hidden for good. After ~1.5s of
+        // "requested but not running", roll everything back cleanly.
+        if (recordingActive && ambiRecorder != nullptr && !ambiRecorder->isRecording())
+        {
+            if (++recordStartWatchdog > 45)
+            {
+                recordStartWatchdog = 0;
+                recordingActive = false;
+                processor.iosRecordingActive.store(false, std::memory_order_release);
+                audioEngine.setMeteringSuspended(false);
+                if (onRecordingStateChanged != nullptr)
+                    onRecordingStateChanged(false);
+                fileNameLabel.setText("Recording could not start", juce::dontSendNotification);
+                fileNameLabel.setVisible(true);
+                repaint();
+            }
+        }
+        else
+        {
+            recordStartWatchdog = 0;
+        }
+
 #if MARATHON_ART_STYLE
         if (rippleActive)
         {
@@ -839,6 +1047,130 @@ private:
         }
 
         loadAnalyzedFile(localCopy);
+    }
+
+    //==========================================================================
+    // Spatial recording — gesture driven (long-press Guoba + swipe up/down).
+    // Feeds the processor meters live while capturing, then auto-analyzes.
+    //==========================================================================
+    void startAmbisonicRecording(bool foaMode)
+    {
+        if (ambiRecorder == nullptr || ambiRecorder->isRecording())
+            return;
+
+        // Recording and playback must not fight over the audio session.
+        audioEngine.stop();
+
+        // The recorder feeds the processor meters from its capture queue, so
+        // make sure the engine's own metering is out of the way, the meter DSP
+        // is prepared, and the character/border know we're live.
+        audioEngine.setMeteringSuspended(true);
+        if (!meterDspPrepared)
+        {
+            // Prepare once, and INSIDE the engine's audio-callback lock: a
+            // message-thread prepareToPlay can otherwise race the render
+            // callback's processBlock over the same filter states.
+            audioEngine.prepareProcessorForRecording();
+            meterDspPrepared = true;
+        }
+        processor.iosRecordingActive.store(true, std::memory_order_release);
+
+        // FOA only if the device supports it AND the user swiped down (ambeo).
+        const bool foa = foaMode && ambiRecorder->isFOACaptureSupported();
+        const auto mode = foa ? AmbisonicRecorder::CaptureMode::foa
+                              : AmbisonicRecorder::CaptureMode::stereo;
+
+        auto docsDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        auto target = buildNextRecordingFile(docsDir);
+
+        juce::String error;
+        if (ambiRecorder->startRecording(target, mode, error))
+        {
+            recordingActive = true;
+            recordingElapsedText = "0:00";
+            recordUiRefreshCounter = 0;
+            if (holoNono != nullptr)
+                holoNono->triggerTubeLabelSwap(); // tear off -> fresh sticker per take
+            repaint();
+
+            // Root component: light the recording border + jump to the meters
+            // page so the user watches levels while capturing. The root also
+            // shows the STOP button (stays visible across the page switch).
+            if (onRecordingStateChanged != nullptr)
+                onRecordingStateChanged(true);
+        }
+        else
+        {
+            processor.iosRecordingActive.store(false, std::memory_order_release);
+            audioEngine.setMeteringSuspended(false);
+            fileNameLabel.setText(error, juce::dontSendNotification);
+            fileNameLabel.setVisible(true);
+        }
+    }
+
+    //==========================================================================
+    // Recording file naming (configured on the Settings page)
+    //   mode 0: YYMMDD-NNN  (e.g. 260704-001, sequence restarts each day)
+    //   mode 1: prefix-NNN  (e.g. yrhb-001, sequence continues per prefix)
+    // Stateless: the next sequence number is found by scanning existing files,
+    // so it survives restarts and never collides.
+    //==========================================================================
+    juce::File buildNextRecordingFile(const juce::File& dir) const
+    {
+        const juce::String base = (recNamingMode == 1 && recCustomPrefix.isNotEmpty())
+            ? recCustomPrefix
+            : (recNamingMode == 1 ? juce::String("REC")
+                                  : juce::Time::getCurrentTime().formatted("%y%m%d"));
+
+        int maxSeq = 0;
+        for (const auto& f : dir.findChildFiles(juce::File::findFiles, false, base + "-*.wav"))
+        {
+            const auto tail = f.getFileNameWithoutExtension().fromLastOccurrenceOf("-", false, false);
+            maxSeq = juce::jmax(maxSeq, tail.getIntValue());
+        }
+
+        for (int seq = maxSeq + 1;; ++seq)
+        {
+            auto f = dir.getChildFile(base + "-" + juce::String(seq).paddedLeft('0', 3) + ".wav");
+            if (!f.existsAsFile())
+                return f;
+        }
+    }
+
+    void stopAmbisonicRecording()
+    {
+        if (ambiRecorder == nullptr || !ambiRecorder->isRecording())
+            return;
+
+        auto safeThis = juce::Component::SafePointer<NonoPageComponent>(this);
+
+        ambiRecorder->stopRecording([safeThis](bool ok, juce::File file)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            safeThis->processor.iosRecordingActive.store(false, std::memory_order_release);
+            safeThis->audioEngine.setMeteringSuspended(false);
+            safeThis->recordingActive = false;
+            safeThis->repaint();
+
+            if (safeThis->onRecordingStateChanged != nullptr)
+                safeThis->onRecordingStateChanged(false);
+
+            if (!ok || !file.existsAsFile())
+                return;
+
+            // Same pipeline as a user import: history refresh + media-mode
+            // routing upstream, then straight into analysis + playback-ready.
+            if (safeThis->onImportedMediaCopied != nullptr)
+                safeThis->onImportedMediaCopied(file);
+
+            safeThis->refreshClipLayerAssets();
+            safeThis->loadAnalyzedFile(file);
+
+            if (safeThis->onRecordingRequestsMediaPage != nullptr)
+                safeThis->onRecordingRequestsMediaPage();
+        });
     }
 
     static bool isVideoFile(const juce::File& file)
@@ -3139,6 +3471,17 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     juce::TextButton importButton;
+    std::unique_ptr<AmbisonicRecorder> ambiRecorder;
+    int recordUiRefreshCounter = 0;
+    int recordStartWatchdog = 0;       // detects async record-start failures
+    bool recordingActive = false;
+    bool meterDspPrepared = false;     // prepareToPlay for recorder metering done once
+    int recNamingMode = 0;             // 0 = date-seq, 1 = custom prefix-seq
+    juce::String recCustomPrefix { "REC" };
+    bool recordArmActive = false;      // long-press armed, awaiting swipe direction
+    int recordArmDir = 0;              // -1 up (stereo), +1 down (FOA), 0 none
+    bool recordCancelHoverUi = false;  // finger on the tube (cancel target)
+    juce::String recordingElapsedText { "0:00" };
     juce::Label fileNameLabel;
 
     juce::AudioFormatManager clipFormatManager;

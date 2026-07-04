@@ -30,6 +30,10 @@
 #include "../PhaseCorrelationComponent.h"
 #include "../StereoImageComponent.h"
 #include "../SpectrogramComponent.h"
+#include "SpatialImpressionComponent.h"
+#include "SpectralTerrainComponent.h"
+#include "DoaMapComponent.h"
+#include "TrackLanesComponent.h"
 #include "../PsrMeterComponent.h"
 #include "iOSAudioEngine.h"
 #include "MarkerModel.h"
@@ -169,6 +173,13 @@ public:
         viewport->setScrollBarsShown(false, false, true, false);
         viewport->addMouseListener(this, true);
         contentComponent->addMouseListener(this, true);
+
+        // Low-friction flick glide: JUCE's built-in drag-scroll inertia dies
+        // almost immediately ("dry" feel). The assist tracks release velocity
+        // and keeps the list coasting with a gentle decay, so a light flick
+        // travels far. Finger-following remains native.
+        flickAssist = std::make_unique<FlickAssist>(*viewport);
+        viewport->addMouseListener(flickAssist.get(), true);
         // iPhone page 2 uses custom vertical drag forwarding from each card.
         // Disable Viewport's own drag scrolling so the two systems don't fight.
         viewport->setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::never);
@@ -438,12 +449,12 @@ public:
         phaseMeter = new PhaseCorrelationComponent();
         phaseCard->setContentComponent(std::unique_ptr<juce::Component>(phaseMeter));
 
-        stereoImageCard = std::make_unique<MeterCardComponent>("STEREO", GoodMeterLookAndFeel::accentSoftPink, true);
-        stereoImageMeter = new StereoImageComponent(processor);
+        stereoImageCard = std::make_unique<MeterCardComponent>("SPATIAL", GoodMeterLookAndFeel::accentSoftPink, true);
+        stereoImageMeter = new SpatialImpressionComponent(processor);
         stereoImageCard->setContentComponent(std::unique_ptr<juce::Component>(stereoImageMeter));
 
-        spectrogramCard = std::make_unique<MeterCardComponent>("SPECTROGRAM", GoodMeterLookAndFeel::accentYellow, true);
-        spectrogramMeter = new SpectrogramComponent(processor);
+        spectrogramCard = std::make_unique<MeterCardComponent>("TERRAIN", GoodMeterLookAndFeel::accentYellow, true);
+        spectrogramMeter = new SpectralTerrainComponent(processor);
         spectrogramCard->setContentComponent(std::unique_ptr<juce::Component>(spectrogramMeter));
 
         psrCard = std::make_unique<MeterCardComponent>("PSR", juce::Colour(0xFF20C997), true);
@@ -456,6 +467,31 @@ public:
             card.useMonospacedTitleFont = true;
         };
 
+        // DOA MAP: FOA direction-of-arrival heatmap + virtual mic (9th card)
+        doaCard = std::make_unique<MeterCardComponent>("DOA MAP", juce::Colour(0xFF56E1F2), true);
+        doaCard->contentInteractive = true;            // map taps must reach it
+        spectrogramCard->contentInteractive = true;    // TERRAIN drag-rotate
+        doaMap = new DoaMapComponent(processor);
+        doaCard->setContentComponent(std::unique_ptr<juce::Component>(doaMap));
+        doaMap->onVirtualMicChanged = [this](bool on, float az, float el, float p)
+        {
+            audioEngine.setVirtualMic(on, az, el, p);
+        };
+        doaMap->onExportBeam = [this](float az, float el, float p)
+        {
+            audioEngine.exportVirtualMicWav(az, el, p,
+                [this](juce::File) { if (doaMap != nullptr) doaMap->notifyExportDone(); });
+        };
+        doaMap->onExportBinaural = [this]()
+        {
+            audioEngine.exportBinauralWav(
+                [this](juce::File) { if (doaMap != nullptr) doaMap->notifyExportDone(); });
+        };
+        doaMap->onAppleSpatialToggle = [this](bool on) -> bool
+        {
+            return audioEngine.setAppleSpatialPlayback(on);
+        };
+
         configureMobileCard(*levelsCard);
         configureMobileCard(*vuMeterCard);
         configureMobileCard(*threeBandCard);
@@ -464,6 +500,13 @@ public:
         configureMobileCard(*stereoImageCard);
         configureMobileCard(*spectrogramCard);
         configureMobileCard(*psrCard);
+        configureMobileCard(*doaCard);
+
+        // TRACKS: Pro Tools style channel lanes (10th card)
+        tracksCard = std::make_unique<MeterCardComponent>("TRACKS", juce::Colour(0xFF22C55E), true);
+        trackLanes = new TrackLanesComponent(processor);
+        tracksCard->setContentComponent(std::unique_ptr<juce::Component>(trackLanes));
+        configureMobileCard(*tracksCard);
 
         // Add all cards to content
         contentComponent->addAndMakeVisible(levelsCard.get());
@@ -474,6 +517,8 @@ public:
         contentComponent->addAndMakeVisible(stereoImageCard.get());
         contentComponent->addAndMakeVisible(spectrogramCard.get());
         contentComponent->addAndMakeVisible(psrCard.get());
+        contentComponent->addAndMakeVisible(doaCard.get());
+        contentComponent->addAndMakeVisible(tracksCard.get());
 
         // Card height change callbacks -> relayout
         auto relayoutCb = [this]() { layoutCards(); };
@@ -485,6 +530,8 @@ public:
         stereoImageCard->onHeightChanged = relayoutCb;
         spectrogramCard->onHeightChanged = relayoutCb;
         psrCard->onHeightChanged = relayoutCb;
+        doaCard->onHeightChanged = relayoutCb;
+        tracksCard->onHeightChanged = relayoutCb;
 
         applyDisplayModeToCards();
         layoutCards();
@@ -494,6 +541,8 @@ public:
     ~MetersPageComponent() override
     {
         stopTimer();
+        if (viewport != nullptr && flickAssist != nullptr)
+            viewport->removeMouseListener(flickAssist.get());
     }
 
     void paint(juce::Graphics& g) override
@@ -568,7 +617,7 @@ public:
             g.drawRoundedRectangle(plate.reduced(0.5f), radius, 0.95f);
         }
 
-        if (transportReveal < 0.98f)
+        if (transportReveal < 0.98f && !transportHiddenForRecording)
         {
             const auto hookArea = getTransportHookBounds(landscape).toFloat();
             const auto hookColour = isDarkTheme
@@ -701,6 +750,10 @@ public:
             band3Meter->setMarathonDarkStyle(dark);
         if (psrMeter != nullptr)
             psrMeter->setMarathonDarkStyle(dark);
+        if (doaMap != nullptr)
+            doaMap->setMarathonDarkStyle(dark);
+        if (trackLanes != nullptr)
+            trackLanes->setMarathonDarkStyle(dark);
 
         // Propagate to all meter cards
         for (auto* card : getAllCards())
@@ -722,14 +775,17 @@ public:
             levelsMeter->setStandardById(standardId);
     }
 
+    DoaMapComponent* getDoaMap() const { return doaMap; }
+
 private:
-    std::array<MeterCardComponent*, 8> getAllCards() const
+    std::array<MeterCardComponent*, 10> getAllCards() const
     {
         return {
             levelsCard.get(), vuMeterCard.get(),
             threeBandCard.get(), spectrumCard.get(),
             phaseCard.get(), stereoImageCard.get(),
-            spectrogramCard.get(), psrCard.get()
+            spectrogramCard.get(), psrCard.get(),
+            doaCard.get(), tracksCard.get()
         };
     }
 
@@ -1051,6 +1107,33 @@ private:
     //==========================================================================
     void timerCallback() override
     {
+        // While the spatial recorder is live we auto-switch to this page for
+        // input metering — the playback transport (progress bar plate) is
+        // meaningless then. Tuck the whole bar away, hide its pull-up hook,
+        // and restore the previous state when recording ends.
+        const bool recordingNow = processor.iosRecordingActive.load(std::memory_order_relaxed);
+        if (recordingNow != transportHiddenForRecording)
+        {
+            transportHiddenForRecording = recordingNow;
+            if (recordingNow)
+            {
+                transportRevealBeforeRecording = transportTargetReveal;
+                transportTargetReveal = 0.0f;
+            }
+            else
+            {
+                transportTargetReveal = transportRevealBeforeRecording;
+            }
+            transportGestureHandle.setVisible(!recordingNow);
+            repaint();
+        }
+        else if (!recordingNow && !transportGestureHandle.isVisible())
+        {
+            // Self-heal: never leave the transport unreachable outside recording
+            transportGestureHandle.setVisible(true);
+            repaint();
+        }
+
         if (!transportHandleDragging && std::abs(transportReveal - transportTargetReveal) > 0.001f)
         {
             transportReveal += (transportTargetReveal - transportReveal) * 0.22f;
@@ -1075,7 +1158,16 @@ private:
         // Codex: 主人在 iOS 第 2 页发现 Levels 里的 LU Range 一直像没接值。
         // 桌面端会先把 short-term LUFS 推进 LRA history，再实时计算 LRA；
         // iOS 这条 timer 之前漏了这两步，所以这里只补 page-2 的同款接线。
-        if (++lraFrameCounter >= 6)
+        // LRA history + realtime calc: only while audio is actually playing.
+        // calculateLRARealtime copies and sorts an ever-growing vector (up to
+        // 5 min of samples) — running it 5Hz forever after playback ends was a
+        // slow-burn CPU/heat sink. When idle the last LU Range value just holds.
+        const bool transportPlaying =
+            (hasExternalTransport != nullptr && hasExternalTransport())
+                ? (isExternalTransportPlaying != nullptr && isExternalTransportPlaying())
+                : audioEngine.isPlaying();
+
+        if (transportPlaying && ++lraFrameCounter >= 6)
         {
             processor.pushShortTermLUFSForLRA(shortTerm);
             processor.calculateLRARealtime();
@@ -1323,7 +1415,10 @@ private:
             const int columnWidth = usableWidth;
             const int totalGridWidth = columnWidth * numColumns;
             const int startX = juce::jmax(sideInset, (width - totalGridWidth) / 2);
-            const bool transportHidden = transportReveal < 0.35f;
+            // Multi-row only when the USER collapsed the transport — the
+            // forced hide during recording must not reflow the layout
+            // (landscape single-column was cramming 2 squashed cards).
+            const bool transportHidden = transportReveal < 0.35f && !transportHiddenForRecording;
             const int rowsVisible = transportHidden ? (landscape ? 2 : 3) : 1;
             const int expandedCardHeight = transportHidden
                 ? juce::jmax(140, (viewHeight - spacing * (rowsVisible + 1)) / rowsVisible)
@@ -1394,6 +1489,77 @@ private:
     std::unique_ptr<juce::Viewport> viewport;
     std::unique_ptr<juce::Component> contentComponent;
 
+    //==========================================================================
+    // Low-friction kinetic scroll ("0.6 friction" feel): light flicks coast.
+    //==========================================================================
+    struct FlickAssist : public juce::MouseListener,
+                         private juce::Timer
+    {
+        explicit FlickAssist(juce::Viewport& v) : vp(v) {}
+        ~FlickAssist() override { stopTimer(); }
+
+        void mouseDown(const juce::MouseEvent& e) override
+        {
+            stopTimer();                    // touching the list halts the glide
+            velocity = 0.0f;
+            lastY = (float) e.getScreenY();
+            lastMs = juce::Time::getMillisecondCounter();
+        }
+
+        void mouseDrag(const juce::MouseEvent& e) override
+        {
+            const auto now = juce::Time::getMillisecondCounter();
+            const float y = (float) e.getScreenY();
+            const float dt = (float) juce::jmax((juce::uint32) 1, now - lastMs) * 0.001f;
+            // Exponential velocity smoothing rejects jitter but keeps flicks
+            velocity = velocity * 0.72f + ((y - lastY) / dt) * 0.28f;
+            lastY = y;
+            lastMs = now;
+        }
+
+        void mouseUp(const juce::MouseEvent&) override
+        {
+            // Ignore stale velocity from a touch that paused before release
+            if (juce::Time::getMillisecondCounter() - lastMs > 90)
+                velocity = 0.0f;
+            if (std::abs(velocity) > 70.0f)
+                startTimerHz(60);
+        }
+
+        void timerCallback() override
+        {
+            velocity *= 0.968f;             // low friction: ~1.2s coast half-life
+            if (std::abs(velocity) < 24.0f)
+            {
+                stopTimer();
+                return;
+            }
+            auto* content = vp.getViewedComponent();
+            if (content == nullptr)
+            {
+                stopTimer();
+                return;
+            }
+            const int maxY = juce::jmax(0, content->getHeight() - vp.getMaximumVisibleHeight());
+            const auto pos = vp.getViewPosition();
+            const int ny = juce::jlimit(0, maxY,
+                                        pos.y - juce::roundToInt(velocity / 60.0f));
+            if (ny == pos.y && (ny == 0 || ny == maxY))
+            {
+                stopTimer();                // hit the end stop
+                return;
+            }
+            vp.setViewPosition(pos.x, ny);
+        }
+
+        juce::Viewport& vp;
+        float velocity = 0.0f;
+        float lastY = 0.0f;
+        juce::uint32 lastMs = 0;
+    };
+
+    std::unique_ptr<FlickAssist> flickAssist;
+
     // Transport bar (Apple Music style)
     static constexpr int portraitTransportBarH = 104;
     static constexpr int landscapeTransportBarH = 42;
@@ -1424,6 +1590,8 @@ private:
     // Cards
     std::unique_ptr<MeterCardComponent> levelsCard, vuMeterCard, threeBandCard, spectrumCard;
     std::unique_ptr<MeterCardComponent> phaseCard, stereoImageCard, spectrogramCard, psrCard;
+    std::unique_ptr<MeterCardComponent> doaCard;
+    std::unique_ptr<MeterCardComponent> tracksCard;
 
     // Meter components (raw pointers -- owned by their cards)
     LevelsMeterComponent* levelsMeter = nullptr;
@@ -1431,9 +1599,11 @@ private:
     Band3Component* band3Meter = nullptr;
     SpectrumAnalyzerComponent* spectrumAnalyzer = nullptr;
     PhaseCorrelationComponent* phaseMeter = nullptr;
-    StereoImageComponent* stereoImageMeter = nullptr;
-    SpectrogramComponent* spectrogramMeter = nullptr;
+    SpatialImpressionComponent* stereoImageMeter = nullptr;
+    SpectralTerrainComponent* spectrogramMeter = nullptr;
     PsrMeterComponent* psrMeter = nullptr;
+    DoaMapComponent* doaMap = nullptr;
+    TrackLanesComponent* trackLanes = nullptr;
 
     int columnOverride = 0;
     DisplayMode displayMode = DisplayMode::singleColumn;
@@ -1447,6 +1617,8 @@ private:
     double pendingTransportSeekSeconds = 0.0;
     std::uint32_t lastTransportSeekCommitMs = 0;
     float transportReveal = 1.0f;
+    bool transportHiddenForRecording = false;      // transport tucked away while recording
+    float transportRevealBeforeRecording = 1.0f;   // restored after the take
     float transportTargetReveal = 1.0f;
     bool transportHandleDragging = false;
     float dragStartTransportReveal = 1.0f;

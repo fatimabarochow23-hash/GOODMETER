@@ -143,6 +143,16 @@ private:
 
     // FFT data storage
     static constexpr int numBins = GOODMETERAudioProcessor::fftSize / 2;
+
+    // Size of the FFT that actually FEEDS this display. On iOS the processor
+    // runs a dedicated short (1024) window for crisp transients; desktop
+    // keeps the shared 4096 frames.
+#if JUCE_IOS
+    static constexpr int srcFftSize = GOODMETERAudioProcessor::spectrogramSourceFftSize;
+#else
+    static constexpr int srcFftSize = GOODMETERAudioProcessor::fftSize;
+#endif
+    static constexpr int srcBins = srcFftSize / 2;
     std::array<float, numBins> fftData;
 
     // 时间平滑缓冲
@@ -204,10 +214,16 @@ private:
                 }
 
                 while (processedColumns < maxColumnsPerPass
-                       && audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), numBins))
+                       && audioProcessor.fftFifoSpectrogramL.pop(fftData.data(), srcBins))
                 {
                     if (threadShouldExit()) return;
 
+                   #if JUCE_IOS
+                    // No temporal smoothing: each column is one clean frame
+                    // (smoothing smeared transients across columns).
+                    smoothedFftData = fftData;
+                    isFirstFrame = false;
+                   #else
                     if (isFirstFrame)
                     {
                         smoothedFftData = fftData;
@@ -218,6 +234,7 @@ private:
                         for (int i = 0; i < numBins; ++i)
                             smoothedFftData[i] = smoothedFftData[i] * 0.1f + fftData[i] * 0.9f;
                     }
+                   #endif
 
                     updateAdaptivePeakDbFromFrame(smoothedFftData);
                     fftHistory[static_cast<size_t>(historyHead)] = smoothedFftData;
@@ -277,53 +294,53 @@ private:
         float normalized = juce::jmap(db, minDb, maxDb, 0.0f, 1.0f);
         normalized = juce::jlimit(0.0f, 1.0f, normalized);
 
+        // Same tone-curve structure as AUDIO LAB: hold the low 55% close to
+        // the background, saturate late — keeps mids clean instead of muddy.
         const juce::Colour bg = juce::Colours::white;
+        const juce::Colour soft(0xFFF08FAC);
         const juce::Colour mid(230, 51, 95);
         const juce::Colour peak(110, 15, 40);
 
-        if (normalized < 0.5f)
-            return bg.interpolatedWith(mid, normalized * 2.0f);
-        else
-            return mid.interpolatedWith(peak, (normalized - 0.5f) * 2.0f);
+        if (normalized < 0.55f)
+            return bg.interpolatedWith(soft, normalized / 0.55f);
+        if (normalized < 0.85f)
+            return soft.interpolatedWith(mid, (normalized - 0.55f) / 0.30f);
+        return mid.interpolatedWith(peak, (normalized - 0.85f) / 0.15f);
     }
 
     juce::Colour getMarathonDarkColourForDb(float db, float referencePeakDb) const
     {
+        // Exact AUDIO LAB recipe (the user's reference): LINEAR normalization
+        // over the 80 dB below the material's peak, and a palette that stays
+        // in dark saturated blue for the low 55% of the range, reaching
+        // near-white only in the top 15%. The previous map (pow-0.68 lift,
+        // bright cyan from 42%, whitish from 80%) is what made everything
+        // look washed with "white mud".
         const juce::Colour bg(0xFF0A0D13);
-        const juce::Colour haze(0xFF10265E);
-        const juce::Colour low(0xFF2D66EA);
-        const juce::Colour hot(0xFF54DFFF);
-        const juce::Colour peak(0xFF9DEEFF);
+        const juce::Colour deep(0xFF0A0A18);
+        const juce::Colour royal(0xFF2244AA);
+        const juce::Colour cyan(0xFF40C8E0);
+        const juce::Colour white(0xFFE8E4F0);
 
-        // Codex: 主人拿 Audio Lab 对比后指出我们现在这张图“又白又暗”，
-        // 真正差异不在换粉还是换蓝，而在于 Audio Lab 是按整条素材的相对峰值
-        // 做归一化。这里我把 live spectrogram 也切到“相对峰值 dB”逻辑，并加
-        // 一个绝对噪声门，避免暂停后静音帧被误判成浅蓝板从右往左刷过去。
-        const float effectiveFloorDb = juce::jmax(-92.0f, referencePeakDb - 72.0f);
-        if (db <= effectiveFloorDb)
+        const float floorDb = referencePeakDb - 80.0f;  // 4 decades, like AUDIO LAB
+        if (db <= floorDb)
             return bg;
 
-        float normalized = juce::jlimit(0.0f, 1.0f,
-            (db - effectiveFloorDb) / juce::jmax(18.0f, referencePeakDb - effectiveFloorDb));
-        normalized = std::pow(juce::jlimit(0.0f, 1.0f, normalized * 1.10f), 0.68f);
+        const float t = juce::jlimit(0.0f, 1.0f, (db - floorDb) / 80.0f);
 
-        if (normalized < 0.02f)
-            return bg;
-        if (normalized < 0.16f)
-            return bg.interpolatedWith(haze, (normalized - 0.02f) / 0.14f);
-        if (normalized < 0.42f)
-            return haze.interpolatedWith(low, (normalized - 0.16f) / 0.26f);
-        if (normalized < 0.80f)
-            return low.interpolatedWith(hot, (normalized - 0.42f) / 0.38f);
-        return hot.interpolatedWith(peak, (normalized - 0.80f) / 0.20f);
+        if (t < 0.55f)
+            return deep.interpolatedWith(royal, t / 0.55f);
+        if (t < 0.85f)
+            return royal.interpolatedWith(cyan, (t - 0.55f) / 0.30f);
+        return cyan.interpolatedWith(white, (t - 0.85f) / 0.15f);
     }
 
     float computeFramePeakDb(const std::array<float, numBins>& frame) const
     {
         float frameMax = 1.0e-10f;
-        for (float mag : frame)
-            frameMax = juce::jmax(frameMax, mag);
-        const float scaledAmplitude = frameMax / static_cast<float>(GOODMETERAudioProcessor::fftSize);
+        for (int i = 0; i < srcBins; ++i)
+            frameMax = juce::jmax(frameMax, frame[(size_t) i]);
+        const float scaledAmplitude = frameMax / static_cast<float>(srcFftSize);
         return juce::Decibels::gainToDecibels(scaledAmplitude, -120.0f);
     }
 
@@ -432,7 +449,7 @@ private:
     {
         const float sampleRate = static_cast<float>(audioProcessor.getSampleRate());
         const float frequencyRatio = maxFreq / minFreq;
-        const float fftSizeF = static_cast<float>(GOODMETERAudioProcessor::fftSize);
+        const float fftSizeF = static_cast<float>(srcFftSize);
 
         juce::Image::BitmapData bitmapData(spectrogramImage, imageX, 0, 1, height,
                                             juce::Image::BitmapData::writeOnly);
@@ -447,13 +464,13 @@ private:
             const float fraction = binFloat - static_cast<float>(binIndex);
 
             float rawMagnitude = 0.0f;
-            if (binIndex >= 0 && binIndex < numBins - 1)
+            if (binIndex >= 0 && binIndex < srcBins - 1)
             {
                 rawMagnitude = frame[binIndex] + fraction * (frame[binIndex + 1] - frame[binIndex]);
             }
             else
             {
-                rawMagnitude = frame[juce::jlimit(0, numBins - 1, binIndex)];
+                rawMagnitude = frame[juce::jlimit(0, srcBins - 1, binIndex)];
             }
 
             juce::ignoreUnused(normalizedY);

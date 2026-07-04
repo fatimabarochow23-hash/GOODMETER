@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+    <key>NSMotionUsageDescription</key>
+    <string>Head tracking keeps the spatial audio scene fixed while you turn your head during ambisonic playback.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>GOODMETER uses the microphone to record audio for analysis and playback testing.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>GOODMETER imports selected videos from Photos for audio analysis and marker work.</string>
 	<key>UIApplicationSceneManifest</key>

@@ -39,6 +39,10 @@ public:
 
     // Mobile list mode: no drag/resize/undock, only tap header to expand/collapse
     bool mobileListMode = false;
+    // Set true BEFORE setContentComponent for cards whose content needs touch
+    // (DOA MAP aiming, TERRAIN drag-rotate): list mode normally kills content
+    // mouse events so taps toggle the card instead.
+    bool contentInteractive = false;
     bool mobileAllowHeaderToggle = true;
 
     // Dark theme mode
@@ -532,8 +536,9 @@ public:
 
         if (contentComponent != nullptr)
         {
-            contentComponent->setInterceptsMouseClicks(!mobileListMode, !mobileListMode);
-            contentComponent->setViewportIgnoreDragFlag(mobileListMode);
+            contentComponent->setInterceptsMouseClicks(contentInteractive || !mobileListMode,
+                                                       contentInteractive || !mobileListMode);
+            contentComponent->setViewportIgnoreDragFlag(mobileListMode && !contentInteractive);
         }
 
         if (headerWidget != nullptr)
@@ -812,8 +817,9 @@ public:
         {
             addAndMakeVisible(contentComponent.get());
             contentComponent->setVisible(isExpanded);
-            contentComponent->setInterceptsMouseClicks(!mobileListMode, !mobileListMode);
-            contentComponent->setViewportIgnoreDragFlag(mobileListMode);
+            contentComponent->setInterceptsMouseClicks(contentInteractive || !mobileListMode,
+                                                       contentInteractive || !mobileListMode);
+            contentComponent->setViewportIgnoreDragFlag(mobileListMode && !contentInteractive);
 
             // CRITICAL: Recalculate heights with new content
             // This must happen AFTER content is set, not in constructor

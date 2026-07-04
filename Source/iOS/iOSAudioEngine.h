@@ -17,6 +17,20 @@
 
 #include <JuceHeader.h>
 #include "../PluginProcessor.h"
+#include "FOABinauralDecoder.h"
+#include "AdmParser.h"
+
+// Defined in AmbisonicRecorder.mm (ObjC++): true when the current output
+// route is personal listening (wired/BT headphones), false for speakers.
+bool goodmeter_outputIsHeadphones();
+// Headphone head-tracking (AirPods): yaw in radians, 0 when unavailable.
+void goodmeter_headTracker_start();
+void goodmeter_headTracker_stop();
+float goodmeter_headTracker_yaw();
+// Apple system spatializer bridge (multichannel PCM via AVAudioEngine).
+bool goodmeter_appleSpatial_play(const char* path);
+void goodmeter_appleSpatial_stop();
+bool goodmeter_appleSpatial_isPlaying();
 
 class iOSAudioEngine : private juce::ChangeListener,
                         private juce::AudioIODeviceCallback
@@ -34,6 +48,8 @@ public:
     {
         formatManager.registerBasicFormats();
         transportSource.addChangeListener(this);
+        foaScratch.setSize(4, FOABinauralDecoder::maxBlockSize); // preallocated: audio thread never allocates
+        mcScratch.setSize(16, FOABinauralDecoder::maxBlockSize); // multichannel (5.1..9.1.4) pull buffer
     }
 
     ~iOSAudioEngine()
@@ -79,6 +95,16 @@ public:
 
         auto newReaderSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
 
+        // Exactly 4ch = first-order-ambisonics take from the spatial recorder.
+        // (>= 4 would misroute 5.1/7.1 surround imports through the FOA
+        // decoder, reading L/R/C/LFE as W/Y/Z/X.)
+        const bool isFOAFile = ((int) reader->numChannels == 4);
+        // Anything else above stereo (5.1, 7.1, 7.1.4, 9.1.4, ADM beds...)
+        // gets a proper standards-based stereo downmix instead of silently
+        // playing only the first two channels.
+        const int srcChannels = juce::jmin(16, (int) reader->numChannels);
+        const bool isMultichannel = !isFOAFile && srcChannels > 2;
+
         // Stop OUTSIDE the callback lock: stop() needs the render callback
         // alive to acknowledge, and it may legitimately be playing here
         // (e.g. loading a new video while the previous one's audio runs).
@@ -95,7 +121,20 @@ public:
 
             readerSource = std::move(newReaderSource);
             transportSource.setSource(readerSource.get(), 0, nullptr,
-                                      reader->sampleRate, 2);
+                                      reader->sampleRate,
+                                      isFOAFile ? 4 : (isMultichannel ? srcChannels : 2));
+
+            foaPlaybackActive = isFOAFile;
+            mcPlaybackActive = isMultichannel;
+            mcChannels = srcChannels;
+            fumaPlaybackActive = isFOAFile
+                && file.getFileExtension().equalsIgnoreCase(".amb");
+            if (isFOAFile)
+                goodmeter_headTracker_start();   // no-op if unsupported
+            else
+                goodmeter_headTracker_stop();
+            foaDecoder.prepare(currentDeviceSampleRate);
+            foaDecoder.reset();
 
             // If the audio device is already running, re-prepare the transport
             // so it picks up the new source's length with a valid sampleRate.
@@ -138,6 +177,10 @@ public:
         transportSource.setSource(nullptr);
         readerSource.reset();
         resetOutputEnvelope();
+        foaPlaybackActive = false;
+        fumaPlaybackActive = false;
+        mcPlaybackActive = false;
+        goodmeter_headTracker_stop();
     }
 
     //==========================================================================
@@ -221,11 +264,42 @@ public:
         fadeCompletionSeekPosition = -1.0;
         outputEnvelopeSamplesRemaining = 0;
         transportSource.setPosition(positionSeconds);
+        foaDecoder.reset(); // position jump: clear binaural delay/filter tails
     }
 
     void setVolume(float newVolume)
     {
         playbackGain.store(juce::jlimit(0.0f, 1.0f, newVolume), std::memory_order_relaxed);
+    }
+
+    // While the built-in-mic recorder owns the processor's metering (it feeds
+    // processBlock from the capture queue), suspend our own processBlock calls
+    // so the two threads never touch the meter DSP concurrently.
+    void setMeteringSuspended(bool shouldSuspend)
+    {
+        meteringSuspended.store(shouldSuspend, std::memory_order_release);
+    }
+
+    // Reset the meter DSP for a recording take UNDER the audio callback lock.
+    // Calling prepareToPlay from the message thread while the render callback
+    // is mid-processBlock is a data race on the filter states (intermittent
+    // heap corruption -> the "swipe to ambeo sometimes crashes" family).
+    void prepareProcessorForRecording()
+    {
+        const juce::ScopedLock callbackLock(deviceManager.getAudioCallbackLock());
+        processor.setPlayConfigDetails(0, 2, 48000.0, 512);
+        processor.prepareToPlay(48000.0, 512);
+    }
+
+    // The recorder's meter tap must hold this lock while it feeds
+    // processor.processBlock: AVCapture session activation can restart the
+    // playback device mid-take, and the device-restart path re-runs
+    // prepareToPlay (reallocating the buffers processBlock iterates) under
+    // this same lock. Crash-log verified: all recording SIGSEGVs were
+    // processBlock on the capture queue racing exactly that.
+    juce::CriticalSection& getAudioCallbackLock()
+    {
+        return deviceManager.getAudioCallbackLock();
     }
 
     float getVolume() const
@@ -260,6 +334,175 @@ public:
 
     juce::String getCurrentFileName() const { return currentFileName; }
     juce::String getCurrentFilePath() const { return currentFilePath; }
+
+    /** A/B audition: hand the loaded multichannel file to Apple's own
+        spatializer (AVAudioEngine + system head tracking). Pauses our
+        transport while active; toggling off returns to the in-app renderer.
+        Returns the resulting on/off state. */
+    bool setAppleSpatialPlayback(bool shouldBeOn)
+    {
+        if (! shouldBeOn)
+        {
+            goodmeter_appleSpatial_stop();
+            return false;
+        }
+        const juce::File src(currentFilePath);
+        if (! src.existsAsFile())
+            return false;
+        stop();   // our transport yields the stage
+        return goodmeter_appleSpatial_play(currentFilePath.toRawUTF8());
+    }
+
+    bool isAppleSpatialPlaying() const { return goodmeter_appleSpatial_isPlaying(); }
+
+    //==========================================================================
+    // Virtual mic (FOA playback monitor + offline export)
+    //==========================================================================
+    void setVirtualMic(bool enabled, float azimuthRad, float elevationRad, float pattern)
+    {
+        vmicAz.store(azimuthRad, std::memory_order_relaxed);
+        vmicEl.store(elevationRad, std::memory_order_relaxed);
+        vmicPattern.store(juce::jlimit(0.0f, 1.0f, pattern), std::memory_order_relaxed);
+        vmicEnabled.store(enabled, std::memory_order_relaxed);
+    }
+
+    /** Offline-renders the loaded FOA file through the SAME binaural decoder
+        you monitor with, into a shareable stereo 24-bit "_BIN.wav". */
+    void exportBinauralWav(std::function<void(juce::File)> onDone)
+    {
+        const juce::File src(currentFilePath);
+        if (! src.existsAsFile())
+            return;
+        const bool fuma = fumaPlaybackActive;
+
+        juce::Thread::launch([src, fuma, onDone]()
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(src));
+            if (reader == nullptr)
+                return;
+
+            // Multichannel / Atmos ADM master: object+bed renderer instead
+            // of the FOA decoder (which is strictly the 4ch ambisonic path).
+            if ((int) reader->numChannels != 4)
+            {
+                if ((int) reader->numChannels >= 3)
+                {
+                    reader.reset();
+                    auto dest = src.getSiblingFile(src.getFileNameWithoutExtension() + "_ADM-BIN.wav");
+                    if (AdmParser::renderToBinaural(src, dest) && onDone)
+                        juce::MessageManager::callAsync([onDone, dest]() { onDone(dest); });
+                }
+                return;
+            }
+
+            auto decoder = std::make_unique<FOABinauralDecoder>();
+            decoder->prepare(reader->sampleRate);
+
+            auto dest = src.getSiblingFile(src.getFileNameWithoutExtension() + "_BIN.wav");
+            dest.deleteFile();
+            std::unique_ptr<juce::FileOutputStream> os(dest.createOutputStream());
+            if (os == nullptr)
+                return;
+            juce::WavAudioFormat wavFormat;
+            std::unique_ptr<juce::AudioFormatWriter> writer(
+                wavFormat.createWriterFor(os.get(), reader->sampleRate, 2, 24, {}, 0));
+            if (writer == nullptr)
+                return;
+            os.release();
+
+            const int bs = juce::jmin(8192, (int) FOABinauralDecoder::maxBlockSize);
+            juce::AudioBuffer<float> in(4, bs), out(2, bs);
+            juce::int64 pos = 0;
+            const auto total = (juce::int64) reader->lengthInSamples;
+            while (pos < total)
+            {
+                const int n = (int) juce::jmin<juce::int64>(bs, total - pos);
+                reader->read(&in, 0, n, pos, true, true);
+                if (fuma)
+                {
+                    auto* cw = in.getWritePointer(0); auto* c1 = in.getWritePointer(1);
+                    auto* c2 = in.getWritePointer(2); auto* c3 = in.getWritePointer(3);
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const float fx = c1[i], fy = c2[i], fz = c3[i];
+                        cw[i] *= 1.41421356f;
+                        c1[i] = fy; c2[i] = fz; c3[i] = fx;
+                    }
+                }
+                out.clear();
+                decoder->process(in, out, n);
+                writer->writeFromAudioSampleBuffer(out, 0, n);
+                pos += n;
+            }
+            writer->flush();
+
+            if (onDone)
+                juce::MessageManager::callAsync([onDone, dest]() { onDone(dest); });
+        });
+    }
+
+    /** Offline-renders the currently loaded FOA file through the virtual mic
+        into a mono 24-bit WAV next to it; onDone fires on the message thread. */
+    void exportVirtualMicWav(float az, float el, float p,
+                             std::function<void(juce::File)> onDone)
+    {
+        const juce::File src(currentFilePath);
+        if (! src.existsAsFile())
+            return;
+
+        juce::Thread::launch([src, az, el, p, onDone]()
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(src));
+            if (reader == nullptr || reader->numChannels < 4)
+                return;
+
+            const float dx = std::cos(el) * std::cos(az);
+            const float dy = std::cos(el) * std::sin(az);
+            const float dz = std::sin(el);
+            const float k  = (1.0f - p) * 1.7320508f;
+
+            auto dest = src.getSiblingFile(src.getFileNameWithoutExtension()
+                          + "_VMIC" + juce::String(juce::roundToInt(juce::radiansToDegrees(az)))
+                          + ".wav");
+            dest.deleteFile();
+            std::unique_ptr<juce::FileOutputStream> os(dest.createOutputStream());
+            if (os == nullptr)
+                return;
+
+            juce::WavAudioFormat wavFormat;
+            std::unique_ptr<juce::AudioFormatWriter> writer(
+                wavFormat.createWriterFor(os.get(), reader->sampleRate, 1, 24, {}, 0));
+            if (writer == nullptr)
+                return;
+            os.release();   // writer owns the stream now
+
+            juce::AudioBuffer<float> in(4, 8192), out(1, 8192);
+            juce::int64 pos = 0;
+            const auto total = (juce::int64) reader->lengthInSamples;
+            while (pos < total)
+            {
+                const int n = (int) juce::jmin<juce::int64>(8192, total - pos);
+                reader->read(&in, 0, n, pos, true, true);
+                const float* w = in.getReadPointer(0);
+                const float* y = in.getReadPointer(1);
+                const float* z = in.getReadPointer(2);
+                const float* x = in.getReadPointer(3);
+                float* o = out.getWritePointer(0);
+                for (int i = 0; i < n; ++i)
+                    o[i] = p * w[i] + k * (dx * x[i] + dy * y[i] + dz * z[i]);
+                writer->writeFromAudioSampleBuffer(out, 0, n);
+                pos += n;
+            }
+            writer->flush();
+
+            if (onDone)
+                juce::MessageManager::callAsync([onDone, dest]() { onDone(dest); });
+        });
+    }
 
     //==========================================================================
     // Audio source for processorPlayer
@@ -309,8 +552,169 @@ private:
         // burst heard on pause. Pulling unconditionally keeps the ack path
         // alive; a stopped transport just clears the region (position does
         // not advance), so this costs nothing.
-        juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
-        transportSource.getNextAudioBlock(info);
+        if (foaPlaybackActive && numOutputChannels >= 2
+            && numSamples <= FOABinauralDecoder::maxBlockSize
+            && foaDecoder.isPrepared())
+        {
+            // FOA take: pull all 4 ambisonic channels, then render binaural
+            // stereo into the device buffer (meters then see what you hear).
+            juce::AudioSourceChannelInfo foaInfo(&foaScratch, 0, numSamples);
+            foaScratch.clear(0, 0, numSamples);
+            foaScratch.clear(1, 0, numSamples);
+            foaScratch.clear(2, 0, numSamples);
+            foaScratch.clear(3, 0, numSamples);
+            transportSource.getNextAudioBlock(foaInfo);
+
+            // Feed meters/DOA/tracks only while actually rolling — a parked
+            // transport still gets pulled (stop-ack) but delivers zeros, and
+            // pushing those kept the DOA/TRACKS cards "alive" on silence.
+            const bool foaRolling = transportSource.isPlaying();
+
+            // FuMa (.amb) -> ambiX: reorder W,X,Y,Z -> W,Y,Z,X and undo the
+            // -3 dB FuMa W convention, so downstream code sees ambiX only.
+            if (fumaPlaybackActive)
+            {
+                auto* cw = foaScratch.getWritePointer(0);
+                auto* c1 = foaScratch.getWritePointer(1);
+                auto* c2 = foaScratch.getWritePointer(2);
+                auto* c3 = foaScratch.getWritePointer(3);
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float fx = c1[i], fy = c2[i], fz = c3[i];
+                    cw[i] *= 1.41421356f;
+                    c1[i] = fy; c2[i] = fz; c3[i] = fx;
+                }
+            }
+
+            // Head tracking: counter-rotate the sound field about Z by the
+            // headphone yaw so the scene stays world-fixed as you turn.
+            const float yaw = goodmeter_headTracker_yaw();
+            if (std::abs(yaw) > 0.005f)
+            {
+                const float c = std::cos(yaw), s = std::sin(yaw);
+                auto* cy = foaScratch.getWritePointer(1);   // Y
+                auto* cx = foaScratch.getWritePointer(3);   // X
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float xv = cx[i], yv = cy[i];
+                    cx[i] = c * xv + s * yv;
+                    cy[i] = -s * xv + c * yv;
+                }
+            }
+
+            // DOA MAP feed (ACN order: W, Y, Z, X)
+            if (foaRolling)
+                processor.foaDoa.process(foaScratch.getReadPointer(0), foaScratch.getReadPointer(1),
+                                         foaScratch.getReadPointer(2), foaScratch.getReadPointer(3),
+                                         numSamples);
+
+            // TRACKS card: 4 lanes = the raw ambisonic channels
+            if (foaRolling)
+            {
+                const float* chs[4] = { foaScratch.getReadPointer(0), foaScratch.getReadPointer(1),
+                                        foaScratch.getReadPointer(2), foaScratch.getReadPointer(3) };
+                processor.trackScope.push(chs, 4, numSamples);
+            }
+
+            if (vmicEnabled.load(std::memory_order_relaxed))            {
+                // Virtual first-order mic monitor: s = p*W + (1-p)*sqrt3*(d.XYZ)
+                // p: 1=omni, 0.5=cardioid, ~0.34=hypercardioid, 0=figure-8.
+                const float az = vmicAz.load(std::memory_order_relaxed);
+                const float el = vmicEl.load(std::memory_order_relaxed);
+                const float p  = vmicPattern.load(std::memory_order_relaxed);
+                const float dx = std::cos(el) * std::cos(az);
+                const float dy = std::cos(el) * std::sin(az);
+                const float dz = std::sin(el);
+                const float k  = (1.0f - p) * 1.7320508f;   // SN3D dipole gain
+                const float* w = foaScratch.getReadPointer(0);
+                const float* y = foaScratch.getReadPointer(1);
+                const float* z = foaScratch.getReadPointer(2);
+                const float* x = foaScratch.getReadPointer(3);
+                auto* outL = buffer.getWritePointer(0);
+                auto* outR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float s = p * w[i] + k * (dx * x[i] + dy * y[i] + dz * z[i]);
+                    outL[i] = s;
+                    if (outR != nullptr)
+                        outR[i] = s;
+                }
+            }
+            else if (! headphonesRoute.load(std::memory_order_relaxed))
+            {
+                // Loudspeaker route: binaural cues die in crosstalk — decode
+                // a clean mid/side stereo pair instead (cardioids at +/-90).
+                const float* w = foaScratch.getReadPointer(0);
+                const float* y = foaScratch.getReadPointer(1);
+                auto* outL = buffer.getWritePointer(0);
+                auto* outR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float m = 0.5f * w[i];
+                    const float s = 0.5f * 1.7320508f * y[i];
+                    outL[i] = m + s;
+                    if (outR != nullptr)
+                        outR[i] = m - s;
+                }
+            }
+            else
+            {
+                foaDecoder.process(foaScratch, buffer, numSamples);
+            }
+        }
+        else if (mcPlaybackActive && mcChannels > 2
+                 && numSamples <= FOABinauralDecoder::maxBlockSize)
+        {
+            // Multichannel (5.1 / 7.1 / 7.1.4 / 9.1.4 / ADM beds...): pull all
+            // channels, standards-based stereo downmix. SMPTE/Atmos order
+            // convention: L R C LFE then L/R pairs (sides, rears, wides, tops).
+            juce::AudioSourceChannelInfo mcInfo(&mcScratch, 0, numSamples);
+            for (int c = 0; c < mcScratch.getNumChannels(); ++c)
+                mcScratch.clear(c, 0, numSamples);
+            transportSource.getNextAudioBlock(mcInfo);
+
+            auto* outL = buffer.getWritePointer(0);
+            auto* outR = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+            const int n = mcChannels;
+            const int pairStart = n >= 6 ? 4 : 3;   // LFE only in 6ch+ layouts
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float l = mcScratch.getReadPointer(0)[i];
+                float r = n > 1 ? mcScratch.getReadPointer(1)[i] : l;
+                if (n > 2)  { const float c0 = mcScratch.getReadPointer(2)[i] * 0.7071f; l += c0; r += c0; }        // C
+                if (n >= 6) { const float lf = mcScratch.getReadPointer(3)[i] * 0.5f;    l += lf; r += lf; }        // LFE
+                for (int c = pairStart; c < n; ++c)
+                {
+                    const float v = mcScratch.getReadPointer(c)[i] * 0.7071f;   // surrounds/wides/tops
+                    if (((c - pairStart) & 1) == 0) l += v; else r += v;
+                }
+                outL[i] = l * 0.71f;                 // headroom against downmix build-up
+                if (outR != nullptr)
+                    outR[i] = r * 0.71f;
+            }
+
+            // TRACKS card: first 4 source lanes (scope is 4-lane capped)
+            if (transportSource.isPlaying())
+            {
+                const float* chs[4] = { mcScratch.getReadPointer(0), mcScratch.getReadPointer(1),
+                                        mcScratch.getReadPointer(2), mcScratch.getReadPointer(3) };
+                processor.trackScope.push(chs, juce::jmin(4, n), numSamples);
+            }
+        }
+        else
+        {
+            juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
+            transportSource.getNextAudioBlock(info);
+
+            // TRACKS card: stereo/mono lanes (only while actually playing)
+            if (transportSource.isPlaying() && buffer.getNumChannels() > 0)
+            {
+                const float* chs[2] = { buffer.getReadPointer(0),
+                                        buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : nullptr };
+                processor.trackScope.push(chs, chs[1] != nullptr ? 2 : 1, numSamples);
+            }
+        }
 
         // Meter DSP gate: while the transport is engaged (or briefly after it
         // stops, so meters decay to silence naturally) run the full metering
@@ -331,9 +735,13 @@ private:
             if (!transportEngaged)
                 --idleMeterDecayBlocksRemaining;
 
-            // Feed through the processor so it can compute meters
-            juce::MidiBuffer midi;
-            processor.processBlock(buffer, midi);
+            // Skip while the recorder owns the meter DSP (see setMeteringSuspended).
+            if (!meteringSuspended.load(std::memory_order_acquire))
+            {
+                // Feed through the processor so it can compute meters
+                juce::MidiBuffer midi;
+                processor.processBlock(buffer, midi);
+            }
         }
 
         maybeBeginEndFade();
@@ -355,6 +763,10 @@ private:
         currentDeviceSampleRate = sr > 0.0 ? sr : 48000.0;
         currentDeviceBufferSizeSamples = bs > 0 ? bs : 512;
         transportSource.prepareToPlay(bs, sr);
+        foaDecoder.prepare(currentDeviceSampleRate);
+        // Route changes restart the device, so this self-refreshes on
+        // plugging/unplugging headphones (binaural vs speaker mid/side).
+        headphonesRoute.store(goodmeter_outputIsHeadphones(), std::memory_order_relaxed);
 
         processor.setPlayConfigDetails(0, 2, sr, bs);
         processor.prepareToPlay(sr, bs);
@@ -370,6 +782,29 @@ private:
     {
         // End-of-file rewinds are handled by page-level transport code after a
         // declick fade. Seeking here bypasses that gate and can click on iOS.
+        //
+        // BUT: JUCE's AudioTransportSource does NOT clear its playing flag when
+        // the source hits EOF — it stays "playing but finished". For the pure
+        // audio path (no video page monitoring the end) that means our audio
+        // callback keeps running the full per-sample meter DSP on silence
+        // FOREVER after the file finishes. That runaway churn is a real heat /
+        // battery sink ("the phone warms up a while after playback ends").
+        //
+        // So when the stream has genuinely finished while still marked playing,
+        // park the transport. This runs on the message thread; stop() is called
+        // outside the audio callback lock (the callback keeps pulling the
+        // transport, so stop() acknowledges immediately). Position is left as
+        // is — play() rewinds from the end on the next start, and the video
+        // page owns its own transport position.
+        if (fileLoaded
+            && transportSource.hasStreamFinished()
+            && transportSource.isPlaying()
+            && !transportStopPending.load(std::memory_order_acquire))
+        {
+            ++transportCommandSerial;
+            transportSource.stop();
+            silenceOutputEnvelope();
+        }
     }
 
     void resetOutputEnvelope()
@@ -552,5 +987,20 @@ private:
     std::atomic<uint32_t> transportCommandSerial { 1 };
     std::atomic<bool> transportStopPending { false };
     std::atomic<bool> forceOutputMute { false };
+    std::atomic<bool> meteringSuspended { false };
     int idleMeterDecayBlocksRemaining = 0; // audio-thread only
+
+    // FOA (4ch ambisonic) playback -> binaural rendering
+    FOABinauralDecoder foaDecoder;
+    juce::AudioBuffer<float> foaScratch;   // preallocated 4ch pull buffer
+
+    // Virtual mic monitor params (UI thread writes, audio thread reads)
+    std::atomic<bool>  vmicEnabled { false };
+    std::atomic<float> vmicAz { 0.0f }, vmicEl { 0.0f }, vmicPattern { 0.5f };
+    std::atomic<bool>  headphonesRoute { true };   // false => speaker mid/side
+    bool foaPlaybackActive = false;        // guarded by the audio callback lock
+    bool fumaPlaybackActive = false;       // .amb import: FuMa->ambiX on the fly
+    bool mcPlaybackActive = false;         // >2ch non-FOA: stereo downmix path
+    int  mcChannels = 0;
+    juce::AudioBuffer<float> mcScratch;    // preallocated 16ch pull buffer
 };

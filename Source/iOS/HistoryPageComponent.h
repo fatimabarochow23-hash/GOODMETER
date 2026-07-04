@@ -407,6 +407,13 @@ public:
             setActionOpen(false, false);
 
         pyramidButton.setVisible(!selectionMode);
+
+        // In selection mode the whole row is one big tap target: child buttons
+        // must not swallow touches, or taps landing on them never reach the
+        // row's toggle logic ("tapped the row but it didn't select").
+        pyramidButton.setInterceptsMouseClicks(!selectionMode, !selectionMode);
+        loadButton.setInterceptsMouseClicks(!selectionMode, !selectionMode);
+
         resized();
         repaint();
     }
@@ -537,7 +544,10 @@ public:
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
-        if ((event.getPosition() - pressStartPos).getDistanceFromOrigin() > 8)
+        // Generous touch tolerance: fingers wobble ~10-20px during a press.
+        // The old 8px threshold silently cancelled both long-presses and
+        // selection taps ("tapped but nothing got selected").
+        if ((event.getPosition() - pressStartPos).getDistanceFromOrigin() > 24)
             pointerMoved = true;
     }
 
@@ -571,7 +581,9 @@ private:
         {
             keepRunning = true;
 
-            if (juce::Time::getMillisecondCounterHiRes() - pressStartMs >= 360.0)
+            // 0.2s hold on any part of a file row enters selection mode —
+            // short enough to feel instant, long enough to not fire on taps.
+            if (juce::Time::getMillisecondCounterHiRes() - pressStartMs >= 200.0)
             {
                 longPressTriggered = true;
                 pointerDown = false;
@@ -1601,30 +1613,30 @@ public:
 
         markerButton.onClick = [this]()
         {
+            exitSelectionMode(); // tapping any top tab always leaves multi-select
             if (markerButton.getToggleState())
             {
                 filterMode = FilterMode::marker;
-                exitSelectionMode();
                 refreshList();
             }
         };
 
         audioButton.onClick = [this]()
         {
+            exitSelectionMode();
             if (audioButton.getToggleState())
             {
                 filterMode = FilterMode::audio;
-                exitSelectionMode();
                 refreshList();
             }
         };
 
         videoButton.onClick = [this]()
         {
+            exitSelectionMode();
             if (videoButton.getToggleState())
             {
                 filterMode = FilterMode::video;
-                exitSelectionMode();
                 refreshList();
             }
         };
@@ -1657,9 +1669,11 @@ public:
         selectionSummaryLabel.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(selectionSummaryLabel);
 
-        cancelSelectionButton.setButtonText("CANCEL");
+        // Repurposed from CANCEL → EXPORT: shares the selected file(s) via the
+        // iOS share sheet. Tapping any top tab exits selection mode instead.
+        cancelSelectionButton.setButtonText("EXPORT");
         GoodMeterLookAndFeel::markAsIOSEnglishMono(cancelSelectionButton);
-        cancelSelectionButton.onClick = [this]() { exitSelectionMode(); };
+        cancelSelectionButton.onClick = [this]() { exportSelection(); };
         addAndMakeVisible(cancelSelectionButton);
 
         deleteSelectedButton.setButtonText("DELETE");
@@ -2269,6 +2283,47 @@ private:
             row->setSelectionMode(selectionMode);
             row->setSelected(selectedPaths.count(path) > 0);
             row->setActionOpen(!selectionMode && expandedPath == path, true);
+        }
+    }
+
+    void exportSelection()
+    {
+        if (selectedPaths.empty())
+            return;
+
+        std::vector<juce::File> filesToExport;
+        for (const auto& file : items)
+            if (selectedPaths.count(file.getFullPathName()) > 0 && file.existsAsFile())
+                filesToExport.push_back(file);
+
+        if (filesToExport.empty())
+            return;
+
+        // Single file: straight to the share sheet. Multiple: bundle into one
+        // zip first (the share helper takes one item), then share the zip.
+        if (filesToExport.size() == 1)
+        {
+            GoodMeterIOSShareHelpers::shareFile(filesToExport.front());
+            return;
+        }
+
+        juce::ZipFile::Builder builder;
+        for (const auto& f : filesToExport)
+            builder.addFile(f, 9, f.getFileName());
+
+        auto zipTarget = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("GOODMETER_Export_"
+                                           + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S")
+                                           + ".zip");
+        zipTarget.deleteFile();
+
+        if (auto output = zipTarget.createOutputStream())
+        {
+            if (builder.writeToStream(*output, nullptr))
+            {
+                output.reset(); // flush + close before handing to the share sheet
+                GoodMeterIOSShareHelpers::shareFile(zipTarget);
+            }
         }
     }
 

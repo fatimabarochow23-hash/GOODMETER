@@ -27,6 +27,29 @@
 #include "HistoryPageComponent.h"
 #include "VideoPageComponent.h"
 
+// Self-painting filled pill button. The shared LookAndFeel deliberately draws
+// TextButtons with a transparent normal state (so buttonColourId is ignored),
+// which made the recording STOP button blend into the background. This paints
+// its own solid fill so it reads clearly in any skin.
+class FilledPillButton : public juce::Button
+{
+public:
+    FilledPillButton() : juce::Button({}) {}
+    juce::Colour fill { juce::Colour(0xFFFF3B30) };
+    juce::Colour textCol { juce::Colours::white };
+
+    void paintButton(juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced(1.0f);
+        auto c = down ? fill.darker(0.18f) : (over ? fill.brighter(0.10f) : fill);
+        g.setColour(c);
+        g.fillRoundedRectangle(b, b.getHeight() * 0.5f);
+        g.setColour(textCol);
+        g.setFont(juce::Font(juce::FontOptions(16.0f, juce::Font::bold)));
+        g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred, false);
+    }
+};
+
 class iOSMainComponent : public juce::Component,
                          private juce::Timer
 {
@@ -34,6 +57,16 @@ public:
     iOSMainComponent()
     {
         setLookAndFeel(&lookAndFeel);
+
+        // Persistent app settings (first persistence infra on iOS — currently
+        // stores the recording file-name scheme; other settings can join later).
+        {
+            juce::PropertiesFile::Options opts;
+            opts.applicationName = "GOODMETER";
+            opts.filenameSuffix = ".settings";
+            opts.folderName = "GOODMETER";
+            appSettings = std::make_unique<juce::PropertiesFile>(opts);
+        }
 
         // Create processor and audio engine
         processor = std::make_unique<GOODMETERAudioProcessor>();
@@ -67,6 +100,40 @@ public:
                     videoPage->clearVideo();
                 setMediaMode(false);
             }
+        };
+
+        // After a spatial recording finishes, land on the media page so the
+        // fresh take is one tap from playback (import stays on its own page).
+        nonoPage->onRecordingRequestsMediaPage = [this]()
+        {
+            switchToPage(1);
+        };
+
+        // While a spatial recording is running: switch to the meters page so the
+        // user watches input levels, and pulse a red border around the screen.
+        nonoPage->onRecordingStateChanged = [this](bool active)
+        {
+            recordingActive = active;
+            recordStopButton.setVisible(active);
+            if (active)
+            {
+                // Colour the STOP button by skin so it reads clearly:
+                // Guoba = yellow (dark text), Nono = blue (white text).
+                const bool guoba = (nonoPage != nullptr && nonoPage->isGuobaSkin());
+                recordStopButton.fill = guoba ? GoodMeterLookAndFeel::accentYellow
+                                              : GoodMeterLookAndFeel::accentBlue;
+                recordStopButton.textCol = guoba ? GoodMeterLookAndFeel::textMain
+                                                 : juce::Colours::white;
+                recordStopButton.setEnabled(true);
+                recordStopButton.setButtonText("STOP  0:00");
+                setMediaMode(false);   // meters, not video
+                switchToPage(1);
+                recordStopButton.toFront(false);
+                recordingBorderPhase = 0.0f;
+                startTimerHz(30);      // drive the pulsing border + clock
+            }
+            resized();
+            repaint();
         };
 
         // ── Wire Settings callbacks ──
@@ -110,6 +177,20 @@ public:
         settingsPage->onThemeChanged = [this](bool isDark)
         {
             applyDarkTheme(isDark);
+        };
+
+        // Recording file-name scheme: persist + push to the recorder page.
+        settingsPage->onRecNamingModeChanged = [this](int mode)
+        {
+            appSettings->setValue("recNamingMode", mode);
+            appSettings->saveIfNeeded();
+            nonoPage->setRecordingNaming(mode, appSettings->getValue("recPrefix", "REC"));
+        };
+        settingsPage->onRecPrefixChanged = [this](const juce::String& prefix)
+        {
+            appSettings->setValue("recPrefix", prefix);
+            appSettings->saveIfNeeded();
+            nonoPage->setRecordingNaming(appSettings->getIntValue("recNamingMode", 0), prefix);
         };
 
         historyPage->onFileRequested = [this](const juce::File& file)
@@ -292,6 +373,26 @@ public:
         historyPage->setCurrentSkin(nonoPage->getCurrentSkinId());
         applyDarkTheme(settingsPage->isDark());
 
+        // Restore persisted recording naming scheme
+        {
+            const int recMode = appSettings->getIntValue("recNamingMode", 0);
+            const auto recPrefix = appSettings->getValue("recPrefix", "REC");
+            settingsPage->setRecNaming(recMode, recPrefix);
+            nonoPage->setRecordingNaming(recMode, recPrefix);
+        }
+
+        // Global STOP button — lives on the root so it stays visible while
+        // recording even after we auto-switch to the meters page.
+        recordStopButton.setButtonText("STOP");
+        recordStopButton.onClick = [this]()
+        {
+            recordStopButton.setEnabled(false); // debounce during finalize
+            if (nonoPage != nullptr)
+                nonoPage->stopSpatialRecordingFromUI();
+        };
+        recordStopButton.setVisible(false);
+        addChildComponent(recordStopButton); // hidden until recording (addAndMakeVisible would force-show it)
+
         setSize(400, 800);
     }
 
@@ -400,6 +501,66 @@ public:
         }
     }
 
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        if (!recordingActive)
+            return;
+
+        // "REC" anime VFX: staggered light waves spawn at the screen edge and
+        // sweep inward — white-hot leading edge, red body, fading tail —
+        // riding over a tight breathing base glow hugging the bezel.
+        const auto red = juce::Colour(0xFFFF3B30);
+        auto area = getLocalBounds().toFloat();
+        const float norm = recordingBorderPhase / juce::MathConstants<float>::twoPi;
+
+        // Layer 1: base glow, anchored at the edge, gentle breathing
+        const float breathe = 0.30f + 0.20f * (0.5f + 0.5f * std::sin(recordingBorderPhase * 2.0f));
+        for (int i = 0; i < 3; ++i)
+        {
+            const float inset = 1.0f + (float) i * 2.2f;
+            g.setColour(red.withAlpha(breathe * (1.0f - (float) i * 0.30f)));
+            g.drawRoundedRectangle(area.reduced(inset), 14.0f + inset * 0.4f,
+                                   2.2f - (float) i * 0.5f);
+        }
+
+        // Layer 2: three inward waves at mutually incommensurate speeds, each
+        // with a sin-shaped envelope (born and dying at exactly zero alpha) —
+        // the combined pattern never visibly repeats, no loop seam.
+        const float travel = juce::jmin(34.0f, area.getWidth() * 0.06f);
+        static constexpr float waveSpeed[3]  = { 0.62f, 0.47f, 0.383f };
+        static constexpr float waveOffset[3] = { 0.00f, 0.37f, 0.71f };
+        for (int k = 0; k < 3; ++k)
+        {
+            const float t = std::fmod(norm * waveSpeed[k] + waveOffset[k], 1.0f);
+            const float d = 1.0f - std::pow(1.0f - t, 1.6f);   // ease-out travel
+            const float inset = 2.0f + d * travel;
+            const float a = std::pow(std::sin(t * juce::MathConstants<float>::pi), 1.35f);
+            if (a < 0.02f)
+                continue;
+
+            const float r = 14.0f + inset * 0.55f;
+
+            // Fading tail between the wavefront and the edge
+            for (int j = 1; j <= 2; ++j)
+            {
+                const float tailIn = inset - (float) j * 3.5f;
+                if (tailIn < 1.5f)
+                    break;
+                g.setColour(red.withAlpha(a * 0.16f / (float) j));
+                g.drawRoundedRectangle(area.reduced(tailIn),
+                                       14.0f + tailIn * 0.55f, 3.0f);
+            }
+
+            // Red body of the wavefront
+            g.setColour(red.withAlpha(a * 0.55f));
+            g.drawRoundedRectangle(area.reduced(inset), r, 2.6f - d * 1.2f);
+
+            // White-hot core on the leading (inner) edge — the anime accent
+            g.setColour(juce::Colours::white.withAlpha(a * 0.35f));
+            g.drawRoundedRectangle(area.reduced(inset + 1.2f), r + 0.6f, 1.0f);
+        }
+    }
+
     void resized() override
     {
         auto bounds = getLocalBounds();
@@ -412,6 +573,12 @@ public:
         settingsPage->setBounds(contentArea);
         historyPage->setBounds(contentArea);
         videoPage->setBounds(contentArea);
+
+        // STOP button floats just above the nav bar, centered.
+        auto stopRow = bounds.withTrimmedBottom(60).removeFromBottom(64);
+        recordStopButton.setBounds(stopRow.withSizeKeepingCentre(
+            juce::jmin(220, stopRow.getWidth() - 48), 44));
+        recordStopButton.toFront(false);
     }
 
     //==========================================================================
@@ -495,17 +662,39 @@ public:
 private:
     void timerCallback() override
     {
-        const float delta = settingsIconTargetRotation - settingsIconRotation;
-        if (std::abs(delta) < 0.0025f)
+        bool keepRunning = false;
+
+        // Pulsing recording border
+        if (recordingActive)
         {
-            settingsIconRotation = settingsIconTargetRotation;
-            stopTimer();
+            recordingBorderPhase += 0.09f;
+            // Wrap far out (not at 2*pi): wrapping every revolution made all
+            // waves jump in unison once per cycle — the visible "loop seam".
+            if (recordingBorderPhase > juce::MathConstants<float>::twoPi * 10000.0f)
+                recordingBorderPhase = 0.0f;
+
+            if (nonoPage != nullptr)
+                recordStopButton.setButtonText("STOP  " + nonoPage->getRecordingElapsedText());
+
+            keepRunning = true;
             repaint();
-            return;
         }
 
-        settingsIconRotation += delta * 0.22f;
-        repaint();
+        // Settings gear rotation easing
+        const float delta = settingsIconTargetRotation - settingsIconRotation;
+        if (std::abs(delta) >= 0.0025f)
+        {
+            settingsIconRotation += delta * 0.22f;
+            keepRunning = true;
+            repaint();
+        }
+        else
+        {
+            settingsIconRotation = settingsIconTargetRotation;
+        }
+
+        if (!keepRunning)
+            stopTimer();
     }
 
     void applyDarkTheme(bool dark)
@@ -570,6 +759,7 @@ private:
     }
 
     GoodMeterLookAndFeel lookAndFeel;
+    std::unique_ptr<juce::PropertiesFile> appSettings;
 
     static bool isVideoFile(const juce::File& file)
     {
@@ -598,4 +788,7 @@ private:
     bool isDarkTheme = false;
     float settingsIconRotation = 0.0f;
     float settingsIconTargetRotation = 0.0f;
+    bool recordingActive = false;
+    float recordingBorderPhase = 0.0f;
+    FilledPillButton recordStopButton;
 };

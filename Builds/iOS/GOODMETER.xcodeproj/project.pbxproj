@@ -28,6 +28,7 @@
 		87ED2D36F7AA48EADBCD804B /* iOSMainApp.cpp */ = {isa = PBXBuildFile; fileRef = 6E81EC28E0310478D8B5D52C; };
 		8A1C0D2E4F6A8B0C1D3E5F70 /* VideoPageComponent.mm */ = {isa = PBXBuildFile; fileRef = 8A1C0D2E4F6A8B0C1D3E5F71; };
 		8A1C0D2E4F6A8B0C1D3E5F72 /* VideoAudioExtractor.mm */ = {isa = PBXBuildFile; fileRef = 8A1C0D2E4F6A8B0C1D3E5F73; };
+		8A1C0D2E4F6A8B0C1D3E5F80 /* AmbisonicRecorder.mm */ = {isa = PBXBuildFile; fileRef = 8A1C0D2E4F6A8B0C1D3E5F81; };
 		8A1C0D2E4F6A8B0C1D3E5F74 /* CoreMedia.framework */ = {isa = PBXBuildFile; fileRef = 8A1C0D2E4F6A8B0C1D3E5F75; };
 		8F88F0434E5E24E13A603C77 /* Metal.framework */ = {isa = PBXBuildFile; fileRef = AF90B403545695F8292C6A74; settings = { ATTRIBUTES = (Weak, ); }; };
 		9E818E31095EC16576B768D1 /* MetalKit.framework */ = {isa = PBXBuildFile; fileRef = C1FBC2A59F11C3DB45401879; settings = { ATTRIBUTES = (Weak, ); }; };
@@ -106,6 +107,7 @@
 		84F7984E71DA655E99B9E5BA /* iOSPluginDefines.h */ /* iOSPluginDefines.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = iOSPluginDefines.h; path = ../../Source/iOS/iOSPluginDefines.h; sourceTree = SOURCE_ROOT; };
 		8A1C0D2E4F6A8B0C1D3E5F71 /* VideoPageComponent.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = VideoPageComponent.mm; path = ../../Source/iOS/VideoPageComponent.mm; sourceTree = SOURCE_ROOT; };
 		8A1C0D2E4F6A8B0C1D3E5F73 /* VideoAudioExtractor.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = VideoAudioExtractor.mm; path = ../../Source/VideoAudioExtractor.mm; sourceTree = SOURCE_ROOT; };
+		8A1C0D2E4F6A8B0C1D3E5F81 /* AmbisonicRecorder.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = AmbisonicRecorder.mm; path = ../../Source/iOS/AmbisonicRecorder.mm; sourceTree = SOURCE_ROOT; };
 		8A1C0D2E4F6A8B0C1D3E5F75 /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		C0D3A1100507A00100000012 /* IOSPhotoVideoPicker.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = IOSPhotoVideoPicker.h; path = ../../Source/iOS/IOSPhotoVideoPicker.h; sourceTree = SOURCE_ROOT; };
 		C0D3A1100507A00100000013 /* IOSPhotoVideoPicker.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = IOSPhotoVideoPicker.mm; path = ../../Source/iOS/IOSPhotoVideoPicker.mm; sourceTree = SOURCE_ROOT; };
@@ -226,6 +228,7 @@
 				C0D3A1100507A00100000013,
 				8A1C0D2E4F6A8B0C1D3E5F71,
 				8A1C0D2E4F6A8B0C1D3E5F73,
+				8A1C0D2E4F6A8B0C1D3E5F81,
 				D7028884B4338F3999BDB705,
 				4D0975EAC8CA3B40F257EFBC,
 				2CF2819DD022B7A53A425A74,
@@ -420,6 +423,7 @@
 				87ED2D36F7AA48EADBCD804B,
 				8A1C0D2E4F6A8B0C1D3E5F70,
 				8A1C0D2E4F6A8B0C1D3E5F72,
+				8A1C0D2E4F6A8B0C1D3E5F80,
 				C0D3A1100507A00100000010,
 				0AC7362C39BF4008DFD96D50,
 				6BDDC55C459AFF871D8C56B0,
